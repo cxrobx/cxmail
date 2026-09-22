@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Merged into the generated Info.plist by the Tauri CLI. Only additive keys
+	  belong here — overriding a generated one (version, bundle id) fights the
+	  bundler.
+
+	  "Open in Claude" asks the running Ghostty for a new window over
+	  AppleScript, so CXMail sends an Apple Event to another process. TCC
+	  refuses that outright unless this purpose string exists, and the refusal
+	  is indistinguishable from Ghostty simply not answering — the handoff would
+	  silently fall back to spawning a second Ghostty instance forever. The
+	  string is the text of the one-time consent dialog, so it names the app and
+	  the reason rather than "CXMail wants to control your computer".
+
+	  This is only half of what a hardened-runtime app needs; the other half is
+	  com.apple.security.automation.apple-events in Entitlements.plist.
+	-->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>CXMail opens an email's Claude session in a new window of your existing Ghostty, instead of launching a second copy of Ghostty.</string>
+</dict>
+</plist>

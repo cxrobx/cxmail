@@ -1,0 +1,17 @@
+{
+  "name": "cxmail",
+  "metadata": {
+    "description": "CXMail's own Claude Code plugin — slash commands + embedded MCP server"
+  },
+  "owner": {
+    "name": "Chris Robinson"
+  },
+  "plugins": [
+    {
+      "name": "cxmail",
+      "description": "Slash commands for CXMail: draft, reply, send, triage, search, summarize, cleanup",
+      "source": "./claude-plugin",
+      "category": "productivity"
+    }
+  ]
+}

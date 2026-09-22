@@ -1,0 +1,38 @@
+[package]
+name = "cxmail-mcp"
+version = "1.0.0"
+license = "GPL-3.0-only"
+publish = false
+description = "cxmail's MCP server: the tool surface an AI agent drives the mailbox through"
+edition = "2021"
+rust-version = "1.77.2"
+
+# Lib-only, deliberately. `[[bin]] cxmail-mcp` stays in the app package: Tauri's
+# bundler enumerates that package's bin targets, and a binary missing from
+# cxmail.app/Contents/MacOS is one that keychain::macos_acl silently skips when
+# building the shared-ACL trusted-binary list — no error, just a Keychain prompt
+# on every credential read, forever. A lib named cxmail-mcp emits
+# libcxmail_mcp.rlib, which does not collide with that bin in target/release.
+[lib]
+name = "cxmail_mcp"
+
+[dependencies]
+cxmail-core = { path = "../cxmail-core" }
+cxmail-db = { path = "../cxmail-db" }
+cxmail-email = { path = "../cxmail-email" }
+
+rmcp = { version = "1", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+regex = { workspace = true }
+log = { workspace = true }
+tracing = "0.1"
+futures = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+mail-builder = "0.3"
+rusqlite = { workspace = true }
+# Downloads / home dir for the attachment tools.
+dirs = { workspace = true }

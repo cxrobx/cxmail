@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  CXMail ships with the HARDENED RUNTIME on (confirm with
+	  `codesign -dv /Applications/cxmail.app` — look for `flags=0x10000(runtime)`).
+	  Hardened runtime blocks Apple Events outright unless this entitlement is
+	  granted, no matter what Info.plist says, so "Open in Claude" would never
+	  reach Ghostty and would silently fall back to spawning a second Ghostty
+	  instance.
+
+	  Both halves are required and neither is sufficient alone:
+	    - this entitlement            → the hardened runtime permits the event
+	    - NSAppleEventsUsageDescription → TCC is willing to ask the user
+
+	  CXTasks needs only the Info.plist half because it signs without hardened
+	  runtime; do not copy that conclusion here.
+
+	  Keep this file minimal. Every entitlement widens what a compromised
+	  renderer could reach, and this app parses untrusted email.
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

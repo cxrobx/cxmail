@@ -1,0 +1,417 @@
+@import "tailwindcss";
+
+/* ─── Tailwind v4 theme tokens ────────────────────────────── */
+/*
+   Three background tokens are ALPHA-AWARE and four deliberately are not.
+   `base`, `sidebar` and `surface` are *panes*: they tile the window and carry
+   its transparency, so they resolve through `--alpha-*`, which
+   `uiStore::applyWindow` writes. Everything else stays fully opaque, because it
+   is a thing that FLOATS OVER the window rather than being part of it.
+
+   A floating surface has no pane behind it to composite against — a Radix menu
+   or dialog portals to the document root, so its backdrop is the transparent
+   window itself, and a translucent one is text on raw wallpaper. Even the
+   non-portaled modals stack over already-translucent panes, which is two sheets
+   of glass and no readable text.
+
+   `base-solid` / `surface-solid` are the SAME COLOURS with no alpha, and exist
+   so a modal or menu keeps exactly the tone it has today instead of being
+   pushed onto `elevated`'s lighter one. That they share a triplet with their
+   alpha-aware twin has a useful consequence: an alpha-aware child inside a
+   solid parent of the same colour composites to the identical result, so
+   nesting one in the other (AccountSetup inside the add-account modal) needs no
+   edit at all.
+
+   The alpha lives here rather than being baked into the triplets on purpose:
+   the triplets are consumed as `rgb(var(--x) / 0.3)` in a dozen places, and
+   pre-multiplying them would break every one of those slots. */
+@theme {
+  /* Backgrounds — panes (alpha-aware) */
+  --color-base: rgb(var(--bg-primary) / var(--alpha-pane));
+  --color-sidebar: rgb(var(--bg-sidebar) / var(--alpha-sidebar));
+  --color-surface: rgb(var(--bg-surface) / var(--alpha-surface));
+  /* The message body's veils (`emailVeilAlphas` in uiStore.ts). Each is the SAME
+     colour as the surface it lies on — the reading pane, or a thread card —
+     which is what makes the composite exact rather than a tint. */
+  --color-email-veil: rgb(var(--bg-primary) / var(--alpha-email-veil));
+  --color-email-veil-card: rgb(var(--bg-surface) / var(--alpha-email-veil-card));
+
+  /* Backgrounds — anything that floats over the window (always opaque) */
+  --color-base-solid: rgb(var(--bg-primary));
+  --color-surface-solid: rgb(var(--bg-surface));
+  --color-elevated: rgb(var(--bg-elevated));
+  --color-input: rgb(var(--bg-input));
+
+  /* Borders */
+  --color-border: rgb(var(--border-default));
+  --color-border-subtle: rgb(var(--border-subtle));
+
+  /* Text */
+  --color-content: rgb(var(--text-primary));
+  --color-content-secondary: rgb(var(--text-secondary));
+  --color-content-muted: rgb(var(--text-muted));
+  --color-content-faint: rgb(var(--text-faint));
+
+  /* Accent */
+  --color-accent: rgb(var(--accent));
+  --color-accent-hover: rgb(var(--accent-hover));
+
+  /* Semantic */
+  --color-success: rgb(var(--success));
+  --color-error: rgb(var(--error));
+  --color-warning: rgb(var(--warning));
+
+  /* AI */
+  --color-ai: rgb(var(--ai-accent));
+  --color-ai-surface: rgb(var(--ai-bg));
+
+  /* Overlay */
+  --color-overlay: rgb(0 0 0 / 0.5);
+
+  /* Shadows */
+  --shadow-macos: 0 2px 8px rgb(var(--shadow-color) / 0.3), 0 1px 3px rgb(var(--shadow-color) / 0.2);
+  --shadow-macos-lg: 0 8px 32px rgb(var(--shadow-color) / 0.4), 0 2px 8px rgb(var(--shadow-color) / 0.3);
+
+  /* Font */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+/* ─── Theme variables ──────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg-primary: 28 26 23;
+  --bg-sidebar: 35 32 28;
+  --bg-surface: 42 39 34;
+  --bg-elevated: 53 49 43;
+  --bg-input: 35 32 28;
+
+  --border-default: 74 68 57;
+  --border-subtle: 53 49 43;
+
+  --text-primary: 255 255 255;
+  --text-secondary: 210 208 205;
+  --text-muted: 155 153 150;
+  --text-faint: 115 113 110;
+
+  --accent: 10 132 255;
+  --accent-hover: 8 106 204;
+
+  --success: 143 179 136;
+  --error: 212 118 106;
+  --warning: 212 168 90;
+
+  --ai-accent: 160 140 120;
+  --ai-bg: 38 35 30;
+
+  --shadow-color: 0 0 0;
+}
+
+[data-theme="light"] {
+  --bg-primary: 248 247 245;
+  --bg-sidebar: 243 242 240;
+  --bg-surface: 255 255 254;
+  --bg-elevated: 251 250 248;
+  --bg-input: 255 255 254;
+
+  --border-default: 225 222 218;
+  --border-subtle: 238 236 232;
+
+  --text-primary: 30 25 15;
+  --text-secondary: 75 70 60;
+  --text-muted: 130 125 115;
+  --text-faint: 170 165 155;
+
+  --accent: 10 132 255;
+  --accent-hover: 8 106 204;
+
+  --success: 125 155 118;
+  --error: 196 92 74;
+  --warning: 196 146 58;
+
+  --ai-accent: 139 115 85;
+  --ai-bg: 250 249 247;
+
+  --shadow-color: 44 31 14;
+}
+
+/* ─── Window transparency ─────────────────────────────────────
+   The three pane alphas are written as INLINE styles on <html> by
+   `uiStore::applyWindow`, derived from one continuous slider value. They are
+   not defined per-level in CSS: the useful amount depends entirely on the
+   wallpaper behind the window, so this is a dial the user turns rather than
+   three points someone else picked.
+
+   These declarations are only the pre-hydrate fallback. Without a value here
+   every alpha is invalid at computed-value time, so the panes paint fully
+   TRANSPARENT and the app flashes as bare glass with floating text
+   before React mounts. Opaque is the safe answer.
+
+   An inline style beats any selector, so there is no specificity to get wrong. */
+:root {
+  --alpha-pane: 1;
+  --alpha-sidebar: 1;
+  --alpha-surface: 1;
+  /* 0, not 1: a veil is an extra layer and "no veil" is its neutral value —
+     the panes beneath are what go opaque before hydrate. */
+  --alpha-email-veil: 0;
+  --alpha-email-veil-card: 0;
+}
+
+/* ─── Transparency slider ─────────────────────────────────────
+   A native range input rather than a Radix slider: it is one control, it is
+   keyboard- and VoiceOver-accessible for free, and it avoids a dependency for a
+   single use. WebKit needs the vendor pseudo-elements spelled out — without
+   `-webkit-appearance: none` on the input AND on the thumb, macOS draws its own
+   aqua slider and every rule below is ignored. */
+.cx-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: grab;
+}
+.cx-slider:active {
+  cursor: grabbing;
+}
+.cx-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  /* Filled portion drawn with a hard-stop gradient driven by `--fill`, which
+     the component sets from the value. Cheaper and smoother during a drag than
+     a second absolutely-positioned element. */
+  background: linear-gradient(
+    to right,
+    rgb(var(--accent)) 0%,
+    rgb(var(--accent)) var(--fill, 0%),
+    rgb(var(--text-faint) / 0.35) var(--fill, 0%),
+    rgb(var(--text-faint) / 0.35) 100%
+  );
+}
+.cx-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px; /* centres the 14px thumb on the 4px track */
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.4);
+}
+.cx-slider:focus-visible {
+  outline: none;
+}
+.cx-slider:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid rgb(var(--accent) / 0.6);
+  outline-offset: 2px;
+}
+
+/* ─── Density modes ────────────────────────────────────────── */
+[data-density="comfortable"] {
+  --row-padding-y: 12px;
+  --row-padding-x: 16px;
+  --font-size-list: 14px;
+  --font-size-snippet: 12px;
+  --sidebar-item-py: 6px;
+  --avatar-size: 32px;
+}
+
+[data-density="compact"] {
+  --row-padding-y: 6px;
+  --row-padding-x: 12px;
+  --font-size-list: 13px;
+  --font-size-snippet: 11px;
+  --sidebar-item-py: 3px;
+  --avatar-size: 28px;
+}
+
+[data-density="ultra-compact"] {
+  --row-padding-y: 2px;
+  --row-padding-x: 10px;
+  --font-size-list: 12px;
+  --font-size-snippet: 11px;
+  --sidebar-item-py: 1px;
+  --avatar-size: 0px;
+}
+
+/* Message list items */
+.message-list-item {
+  padding: var(--row-padding-y) var(--row-padding-x) !important;
+  font-size: var(--font-size-list);
+}
+
+/* Transient highlight for a row changed by Claude (MCP live bridge). The
+   keyframe animates background-color, overriding the row's static Tailwind
+   background for the duration, then reverts when the animation ends. */
+@keyframes cxRowFlash {
+  0% { background-color: rgb(var(--accent) / 0.30); }
+  100% { background-color: rgb(var(--accent) / 0); }
+}
+.cx-row-flash {
+  animation: cxRowFlash 1.5s ease-out;
+}
+
+.message-list-item .msg-snippet {
+  font-size: var(--font-size-snippet);
+}
+
+.message-list-item .msg-avatar {
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  min-width: var(--avatar-size);
+}
+
+[data-density="ultra-compact"] .message-list-item .msg-avatar {
+  display: none;
+}
+
+[data-density="ultra-compact"] .message-list-item .msg-snippet {
+  display: none;
+}
+
+[data-density="compact"] .message-list-item .msg-snippet {
+  display: none;
+}
+
+/* Sidebar items */
+.sidebar-item {
+  padding-top: var(--sidebar-item-py) !important;
+  padding-bottom: var(--sidebar-item-py) !important;
+}
+
+[data-density="ultra-compact"] .sidebar-item {
+  font-size: 12px;
+}
+
+[data-density="compact"] .sidebar-item {
+  font-size: 13px;
+}
+
+/* ─── Tooltip speech bubble arrow ─────────────────────────── */
+.tooltip-bubble {
+  position: relative;
+  /* padding-bottom creates a hoverable bridge to the trigger (margin doesn't receive pointer events) */
+  padding-bottom: 14px;
+}
+
+.tooltip-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 6px;
+  right: 24px;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid rgb(var(--bg-elevated));
+  filter: drop-shadow(0 1px 0 rgb(var(--border-subtle)));
+}
+
+/* ─── Base styles ──────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+/* `transparent`, NOT the base colour. The window is a transparent Tauri window
+   with a desktop blur behind the webview (see `glass_macos.rs`), and an
+   opaque body paints straight over it — the blur would be there, correctly
+   configured, and completely invisible. The visible background comes from the
+   panes themselves, which are alpha-aware, so a fully-opaque setting still
+   covers the blur and nothing is lost by not painting it twice. */
+body {
+  background: transparent;
+  color: rgb(var(--text-primary));
+  margin: 0;
+}
+
+::selection {
+  background: rgb(var(--border-default) / 0.4);
+  color: inherit;
+}
+
+/* ─── Scrollbars ───────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--border-default) / 0.5); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--border-default)); }
+
+/* ─── TipTap editor ───────────────────────────────────────── */
+.tiptap {
+  color: rgb(var(--text-primary));
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: small;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: rgb(var(--text-muted));
+  pointer-events: none;
+  height: 0;
+}
+.tiptap a {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+}
+.tiptap ul,
+.tiptap ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+.tiptap ul {
+  list-style: disc;
+}
+.tiptap ol {
+  list-style: decimal;
+}
+/* Tailwind v4 preflight zeroes <p> margins; the editor has no `prose` plugin
+   loaded, so paragraphs render flush. Restore inter-paragraph spacing for both
+   typed multi-paragraph drafts and MCP-generated <p>...</p><p>...</p> bodies. */
+.tiptap p {
+  margin: 0 0 0.75em 0;
+}
+.tiptap p:last-child {
+  margin-bottom: 0;
+}
+/* Styled-HTML blocks (MCP layout="card"/"rich") are editable in place, unlike the
+   sealed signature and quote blocks. Nothing in the block's own markup says so,
+   hence this affordance. Compose-only — it's scoped to .tiptap, so it never
+   reaches the sent HTML or the reading pane. `outline` rather than `border` so it
+   costs no layout and can't shift the design being edited. */
+.tiptap .cx-html-block {
+  outline: 1px dashed transparent;
+  outline-offset: 3px;
+  border-radius: 2px;
+  transition: outline-color 120ms ease;
+}
+.tiptap .cx-html-block:hover {
+  outline-color: rgb(var(--border));
+}
+/* Focus keeps the hover treatment's language — a hairline dashed marker, not a
+   solid ring. A designed body is often the WHOLE draft, and a solid accent
+   outline around all of it reads as a validation error on a form field rather
+   than as "this region is preserved markup you can type in". */
+.tiptap .cx-html-block:focus,
+.tiptap .cx-html-block:focus-within {
+  outline-color: rgb(var(--accent) / 0.45);
+}
+
+/* Window dragging is driven by the `data-tauri-drag-region` ATTRIBUTE, not by
+   CSS. `-webkit-app-region: drag` is an Electron property and a silent no-op in
+   WKWebView, so markup is the only thing that decides what drags — plus the
+   ACL grant for `core:window:allow-start-dragging`, without which correct
+   markup produces a drag that is authorized away. See gotcha #51.
+
+   All this rule does is stop a drag from *looking* like a text selection.
+   Tauri already calls preventDefault() when it accepts the drag, so this is
+   belt-and-braces for the frame before that, plus it kills the I-beam cursor
+   over a strip that isn't text. Form fields opt back in — selecting text there
+   is the point, and `user-select` inherits. */
+[data-tauri-drag-region] {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+[data-tauri-drag-region] :is(input, textarea, [contenteditable="true"]) {
+  -webkit-user-select: auto;
+  user-select: auto;
+  cursor: auto;
+}

@@ -1,0 +1,18 @@
+[package]
+name = "cxmail-db"
+version = "1.0.0"
+license = "GPL-3.0-only"
+publish = false
+description = "cxmail's SQLite layer: schema migrations, message/thread storage, FTS5 search"
+edition = "2021"
+rust-version = "1.77.2"
+
+[dependencies]
+cxmail-core = { path = "../cxmail-core" }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+html-escape = { workspace = true }
+log = { workspace = true }

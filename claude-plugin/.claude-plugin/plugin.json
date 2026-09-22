@@ -1,0 +1,6 @@
+{
+  "name": "cxmail",
+  "version": "0.1.0",
+  "description": "Slash commands + MCP server registration for the CXMail email client",
+  "author": { "name": "Chris Robinson" }
+}

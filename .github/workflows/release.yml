@@ -1,0 +1,198 @@
+name: Release CXMail
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "cxmail-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    # Releases are signed and notarized with credentials that exist only in the
+    # private repo's secrets. The public source repo carries this workflow too;
+    # without this guard every tag pushed there would start a release that fails.
+    if: github.repository == 'cxrobx/cxmail-private'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm install --global npm@11.6.2
+      - run: npm ci
+      - run: npm test -- --run
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate production OAuth clients
+        env:
+          CXMAIL_GOOGLE_CLIENT_ID: ${{ secrets.CXMAIL_GOOGLE_CLIENT_ID }}
+          CXMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.CXMAIL_GOOGLE_CLIENT_SECRET }}
+          CXMAIL_MS_CLIENT_ID: ${{ secrets.CXMAIL_MS_CLIENT_ID }}
+        run: |
+          [[ "$CXMAIL_GOOGLE_CLIENT_ID" =~ ^[0-9]+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$ ]] || {
+            echo "CXMAIL_GOOGLE_CLIENT_ID is missing or malformed" >&2
+            exit 1
+          }
+          # The secret is not in the source tree; a release built without it
+          # has no Gmail sign-in at all (secrets.rs).
+          [[ -n "$CXMAIL_GOOGLE_CLIENT_SECRET" ]] || {
+            echo "CXMAIL_GOOGLE_CLIENT_SECRET is missing" >&2
+            exit 1
+          }
+          [[ "$CXMAIL_MS_CLIENT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || {
+            echo "CXMAIL_MS_CLIENT_ID is missing or malformed" >&2
+            exit 1
+          }
+
+      - name: Build universal companion binaries
+        env:
+          CXMAIL_GOOGLE_CLIENT_ID: ${{ secrets.CXMAIL_GOOGLE_CLIENT_ID }}
+          CXMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.CXMAIL_GOOGLE_CLIENT_SECRET }}
+          CXMAIL_MS_CLIENT_ID: ${{ secrets.CXMAIL_MS_CLIENT_ID }}
+        run: |
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-helper --target aarch64-apple-darwin
+          cp src-tauri/target/aarch64-apple-darwin/release/cxmail-helper \
+            src-tauri/binaries/cxmail-helper-aarch64-apple-darwin
+          # Tauri's build script validates externalBin before Cargo finishes the
+          # x86 helper. Seed the required path, then replace it with the real build.
+          cp src-tauri/binaries/cxmail-helper-aarch64-apple-darwin \
+            src-tauri/binaries/cxmail-helper-x86_64-apple-darwin
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-helper --target x86_64-apple-darwin
+          cp src-tauri/target/x86_64-apple-darwin/release/cxmail-helper \
+            src-tauri/binaries/cxmail-helper-x86_64-apple-darwin
+          lipo -create \
+            src-tauri/binaries/cxmail-helper-aarch64-apple-darwin \
+            src-tauri/binaries/cxmail-helper-x86_64-apple-darwin \
+            -output src-tauri/binaries/cxmail-helper-universal-apple-darwin
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-mcp --target aarch64-apple-darwin
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-mcp --target x86_64-apple-darwin
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-tracker --target aarch64-apple-darwin
+          cargo build --release --manifest-path src-tauri/Cargo.toml --bin cxmail-tracker --target x86_64-apple-darwin
+          mkdir -p src-tauri/target/universal-apple-darwin/release
+          for companion in cxmail-helper cxmail-mcp cxmail-tracker; do
+            lipo -create \
+              "src-tauri/target/aarch64-apple-darwin/release/${companion}" \
+              "src-tauri/target/x86_64-apple-darwin/release/${companion}" \
+              -output "src-tauri/target/universal-apple-darwin/release/${companion}"
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/cxmail-signing.keychain-db"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+      - name: Write App Store Connect notarization key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$API_KEY_PATH"
+          chmod 600 "$API_KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Build, notarize, staple, and publish
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: Christopher Robinson (CCYV5HQZCM)"
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CXMAIL_GOOGLE_CLIENT_ID: ${{ secrets.CXMAIL_GOOGLE_CLIENT_ID }}
+          CXMAIL_GOOGLE_CLIENT_SECRET: ${{ secrets.CXMAIL_GOOGLE_CLIENT_SECRET }}
+          CXMAIL_MS_CLIENT_ID: ${{ secrets.CXMAIL_MS_CLIENT_ID }}
+        with:
+          tagName: cxmail-v__VERSION__
+          releaseName: "CXMail __VERSION__"
+          releaseBody: "Download the universal macOS DMG below. This build is signed, notarized, and eligible for automatic updates."
+          releaseDraft: true
+          prerelease: false
+          args: "--target universal-apple-darwin --bundles app,dmg"
+
+      - name: Notarize and staple the final DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          DMG_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
+          test -n "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          spctl --assess --type open --context context:primary-signature -v "$DMG_PATH"
+          # Address the release by the tag tauri-action created (tagName:
+          # cxmail-v__VERSION__), NOT $GITHUB_REF_NAME. On a tag push those are
+          # identical, but on workflow_dispatch GITHUB_REF_NAME is the branch
+          # ("main") and this fails with "release not found" — AFTER notarizing,
+          # leaving the draft holding the un-stapled DMG that tauri-action
+          # uploaded. release-check.sh enforces version parity across
+          # package.json / tauri.conf.json / Cargo.toml, so package.json is
+          # authoritative here.
+          RELEASE_TAG="cxmail-v$(node -p "require('./package.json').version")"
+          gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+
+      - name: Upload paid installer and updater artifacts to optional S3 storage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CXMAIL_DOWNLOAD_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CXMAIL_DOWNLOAD_SECRET_ACCESS_KEY }}
+          CXMAIL_DOWNLOAD_S3_ENDPOINT: ${{ secrets.CXMAIL_DOWNLOAD_S3_ENDPOINT }}
+          CXMAIL_DOWNLOAD_BUCKET: ${{ secrets.CXMAIL_DOWNLOAD_BUCKET }}
+        run: |
+          if [[ -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" || -z "$CXMAIL_DOWNLOAD_S3_ENDPOINT" || -z "$CXMAIL_DOWNLOAD_BUCKET" ]]; then
+            echo "S3 release storage is not configured; keeping artifacts in the private draft release for NAS publication."
+            exit 0
+          fi
+          command -v aws >/dev/null || brew install awscli
+          mkdir -p "$RUNNER_TEMP/cxmail-release"
+          # Same tag derivation as the notarize step — see the comment there.
+          RELEASE_TAG="cxmail-v$(node -p "require('./package.json').version")"
+          gh release download "$RELEASE_TAG" \
+            --pattern "*.tar.gz" --pattern "*.zip" --pattern "*.sig" --pattern "latest.json" \
+            --dir "$RUNNER_TEMP/cxmail-release"
+          DMG_PATH="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' -type f -print -quit)"
+          test -n "$DMG_PATH"
+          jq --arg base "https://cxventures.io/api/products/cxmail/update" \
+            '(.platforms[] | .url) |= ($base + "/" + (split("/") | last))' \
+            "$RUNNER_TEMP/cxmail-release/latest.json" > "$RUNNER_TEMP/cxmail-release/latest.rewritten.json"
+          mv "$RUNNER_TEMP/cxmail-release/latest.rewritten.json" "$RUNNER_TEMP/cxmail-release/latest.json"
+          aws s3 cp "$DMG_PATH" "s3://${CXMAIL_DOWNLOAD_BUCKET}/cxmail/CXMail.dmg" \
+            --endpoint-url "$CXMAIL_DOWNLOAD_S3_ENDPOINT" --content-type application/x-apple-diskimage
+          for artifact in "$RUNNER_TEMP"/cxmail-release/*; do
+            aws s3 cp "$artifact" "s3://${CXMAIL_DOWNLOAD_BUCKET}/cxmail/updates/$(basename "$artifact")" \
+              --endpoint-url "$CXMAIL_DOWNLOAD_S3_ENDPOINT"
+          done

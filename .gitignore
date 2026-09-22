@@ -1,0 +1,14 @@
+node_modules/
+dist/
+target/
+*.log
+.DS_Store
+.playwright-mcp/
+cxmail-before-click.png
+src-tauri/cxmail.db
+src-tauri/binaries/cxmail-helper-universal-apple-darwin
+src-tauri/binaries/cxmail-helper-x86_64-apple-darwin
+
+# Maintainer-only notes, loaded by Claude Code locally
+CLAUDE.local.md
+docs/internal

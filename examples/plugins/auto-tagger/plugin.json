@@ -1,0 +1,9 @@
+{
+  "name": "auto-tagger",
+  "version": "1.0.0",
+  "description": "Automatically tag emails based on content rules",
+  "author": "cx",
+  "permissions": ["read_emails", "flag_email"],
+  "triggers": ["on_new_email"],
+  "main": "index.js"
+}

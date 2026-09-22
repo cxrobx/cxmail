@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "cxmail": {
+      "command": "./src-tauri/target/release/cxmail-mcp"
+    }
+  }
+}

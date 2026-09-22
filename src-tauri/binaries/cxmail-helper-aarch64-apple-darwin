@@ -1,0 +1,15 @@
+#!/bin/sh
+# Placeholder, not the helper. Tauri's build refuses to run unless every
+# `externalBin` in tauri.conf.json exists, so this file is committed to let
+# `cargo build`, `cargo test` and `tauri dev` work from a fresh clone.
+#
+# A real bundle must carry a real helper. release.yml builds both architectures
+# before bundling; for a local build, stage one first (see .claude/commands/ship.md):
+#
+#   cd src-tauri
+#   cargo build --release --bin cxmail-helper --target aarch64-apple-darwin
+#   cp target/aarch64-apple-darwin/release/cxmail-helper binaries/cxmail-helper-aarch64-apple-darwin
+#
+# Then `git checkout -- src-tauri/binaries/` afterwards, so a built helper is never committed.
+echo "cxmail-helper: this is the committed placeholder, not a build. See src-tauri/binaries/cxmail-helper-aarch64-apple-darwin." >&2
+exit 1

@@ -1,0 +1,16 @@
+services:
+  cxmail-tracker:
+    build:
+      context: ../
+      dockerfile: tracker/Dockerfile
+    container_name: cxmail-tracker
+    ports:
+      - "8090:8090"
+    volumes:
+      - tracker-data:/data
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  tracker-data:

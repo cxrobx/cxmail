@@ -1,0 +1,213 @@
+[workspace]
+members = ["crates/*"]
+
+# Pin every shared dependency ONCE. Version skew between members is the classic
+# workspace failure and rusqlite is the sharp edge: two versions in the graph
+# means `Connection` is a distinct type per crate, and the mismatch surfaces as
+# an inscrutable trait error rather than "you have two rusqlites".
+[workspace.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+regex = "1"
+html-escape = "0.2"
+base64 = "0.22"
+log = "0.4"
+keyring = { version = "3", features = ["apple-native"] }
+security-framework = "2.11"
+dirs = "6"
+
+[package]
+name = "cxmail"
+version = "1.0.0"
+# Proprietary. Declared so a licence audit of the dependency tree reports no
+# UNKNOWN rows — the whole point of the audit is that anything unresolved is
+# visible. `publish = false` keeps this off crates.io regardless.
+license = "GPL-3.0-only"
+publish = false
+description = "macOS-first email client"
+authors = ["cx"]
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "cxmail"
+
+[lib]
+name = "cxmail_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "cxmail-mcp"
+path = "src/bin/mcp.rs"
+
+[[bin]]
+name = "cxmail-tracker"
+path = "src/bin/tracker.rs"
+
+[[bin]]
+name = "cxmail-helper"
+path = "src/bin/helper.rs"
+
+# Dependency debug symbols dominate target/debug (~10 GB of the ~15 GB across
+# ~900 crates), so they carry none.
+[profile.dev.package."*"]
+debug = false
+
+# Our own code keeps line tables — enough for a backtrace to name a file and
+# line, which is what this project actually debugs with (logs, `tauri dev`,
+# gotcha #19). What it gives up is variable inspection under a debugger, and
+# there is no debugger workflow here to give up: no launch.json, no .lldbinit,
+# no Xcode project on the Rust side. Full DWARF for 55K lines across five
+# crates was the single biggest thing in target/debug after the dependency
+# override above. One line to revert if you ever do want to step through it.
+[profile.dev]
+debug = "line-tables-only"
+
+# NEVER add panic = "abort" here. Malformed HTML emails panic inside
+# ammonia/html5ever, and the catch_unwind guards around parse_message and
+# sanitize_html are what keep one bad message from taking down sync.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = "s"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+cxmail-core = { path = "crates/cxmail-core" }
+cxmail-db = { path = "crates/cxmail-db" }
+cxmail-email = { path = "crates/cxmail-email" }
+cxmail-mcp = { path = "crates/cxmail-mcp" }
+
+# Tauri framework
+tauri = { version = "2.11", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-log = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-deep-link = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-std = "1"
+
+# IMAP
+async-imap = "0.10"
+async-native-tls = "0.5"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Email parsing
+mail-parser = "0.9"
+
+# HTML sanitization
+ammonia = "4"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# macOS Keychain
+keyring = { version = "3", features = ["apple-native"] }
+# Used only to ENUMERATE our own Keychain items (attributes, never data), which
+# needs no ACL authorization and so never prompts. Already in the tree via
+# keyring's apple-native feature, so this adds no build cost. Item creation goes
+# through keychain::macos_acl instead — this crate exposes the SecAccess type
+# but none of the calls that populate an ACL. See gotcha #31.
+security-framework = "2.11"
+
+# OAuth2
+oauth2 = "4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Streams
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+# Named-zone → IANA → UTC resolution with per-date DST (plain-text invite times)
+chrono-tz = "0.10"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Base64 (for IMAP SASL XOAUTH2)
+base64 = "0.22"
+
+# Image decoding (for clipboard write_image — must decode to RGBA first)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# URL parsing (image-source scheme validation)
+url = "2"
+
+# SMTP
+mail-send = "0.4"
+mail-builder = "0.3"
+
+# Full-text search is SQLite FTS5 (bundled rusqlite) — no external engine.
+
+# Directories
+dirs = { workspace = true }
+
+
+# Auto-updater
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+# Plugin runtime (QuickJS)
+rquickjs = { version = "0.9", features = ["bindgen", "classes", "macro", "futures", "parallel"] }
+
+# MCP server
+rmcp = { version = "1", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing = "0.1"
+
+# Regex (for HTML body unsubscribe link scanning)
+regex = "1"
+
+# HTML entity decoding (for snippet plain-text extraction)
+html-escape = "0.2"
+
+# LaunchAgent daemon
+plist = "1"
+libc = "0.2"
+
+# Native notifications (helper binary)
+notify-rust = "4"
+
+# Native macOS notification click handling
+objc2 = "0.6"
+objc2-foundation = "0.3"
+block2 = "0.6"
+
+# The NSVisualEffectView behind the webview — the blur half of the translucent
+# window. See `vibrancy_macos` for why CSS cannot do this.
+window-vibrancy = "0.8"
+
+# Tracker service
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+roxmltree = "0.21.1"
+hickory-resolver = { version = "0.25.2", default-features = false, features = ["tokio", "system-config"] }
+urlencoding = "2.1.3"
