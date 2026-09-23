@@ -4,6 +4,10 @@ A macOS-first email client with a Rust (Tauri 2) backend and a React 19 + TypeSc
 It speaks IMAP/SMTP directly, sanitizes and sandboxes all rendered mail, and ships a built-in
 [MCP server](docs/mcp-setup.md) so Claude can search, draft, and send email for you.
 
+![CXMail drafting a reply in your own voice — app replica, seeded demo data](docs/media/cxmail-demo.gif)
+
+<sub>App replica with seeded demo data. [Watch the full 50-second film with sound](https://cxventures.io/products/cxmail).</sub>
+
 ## Get it
 
 Two ways, same code:
