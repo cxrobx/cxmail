@@ -92,8 +92,19 @@ export PATH="$HOME/.nvm/versions/node/v24.11.1/bin:$PATH"
 2. **If you changed `src-tauri/` MCP source, rebuild the live MCP binary IMMEDIATELY** (Rule #8 — the
    registered MCP server points at this exact path; leaving it stale/absent breaks the `cxmail` MCP):
    ```bash
-   source "$HOME/.cargo/env" && cd src-tauri && cargo build --release --bin cxmail-mcp && cd ..
+   source "$HOME/.cargo/env" && cd src-tauri && \
+     secret run -k CXMAIL_GOOGLE_CLIENT_ID -k CXMAIL_GOOGLE_CLIENT_SECRET -- \
+     cargo build --release --bin cxmail-mcp && cd ..
+   strings src-tauri/target/release/cxmail-mcp | grep -q apps.googleusercontent.com \
+     && echo "client id OK" || echo "STOP: MCP built without the Google client — rebuild with secret run"
    ```
+   **The `secret run` is not optional.** The Google client is compiled in by `option_env!`, so a
+   bare `cargo build` succeeds and produces an MCP whose every Gmail token refresh sends
+   `client_id=""` — Google answers *"Could not determine client ID from request"*, which reads
+   like a broken account and sends you off to reconnect it. Happened 2026-09-23 (T207 ship):
+   the draft for chris@artistadvisory.io failed minutes after this step ran bare. The check line
+   above is the tripwire; the ID is public, so `strings` is fine for it (the *secret* needs the
+   Python check in 1b).
    Restart the `cxmail` MCP session afterward so the new binary is loaded.
 
    > **No `-p`, and that is deliberate.** `src-tauri/` is a Cargo workspace now, so a
