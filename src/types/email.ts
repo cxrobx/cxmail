@@ -413,6 +413,31 @@ export interface Identity {
 }
 
 export interface InboxGroupRule {
+/**
+ * One address an account may put in a `From:` header.
+ *
+ * Built in Rust (`db::identities::build_send_as`), never assembled here: the
+ * account's own address is always the primary, every `identities` row is an
+ * alias, and a row that merely restates the account address folds INTO the
+ * primary carrying its display name and signature. That fold is what keeps the
+ * pre-alias world — where the single `identities` row existed only to hold a
+ * signature — showing one From entry rather than the same address twice.
+ */
+export interface SendAsAddress {
+  account_id: string;
+  email: string;
+  display_name: string | null;
+  signature_html: string | null;
+  is_primary: boolean;
+  identity_id: number | null;
+}
+
+/** An address this account has received mail at that is not yet configured. */
+export interface SendAsSuggestion {
+  email: string;
+  message_count: number;
+}
+
   id: number;
   group_id: number;
   field: string;

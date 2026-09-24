@@ -44,6 +44,11 @@ export function buildDraftComposeProps(
     referencesHeader: detail.references || undefined,
     draftContext: { accountId, folder, uid },
     defaultAttachments,
+    // The draft's own From, so a draft saved from an alias reopens FROM the
+    // alias. Without it the composer falls back to the primary and the next
+    // save silently rewrites the From. `resolveFrom` ignores an address the
+    // account cannot send as, so a stale one degrades to the primary.
+    fromAddress: detail.from_email || undefined,
   };
 }
 

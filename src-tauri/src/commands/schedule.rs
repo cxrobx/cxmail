@@ -43,6 +43,28 @@ pub async fn schedule_send(
     email: smtp::OutgoingEmail,
     send_at: String,
 ) -> Result<ScheduleResult, AppError> {
+    // Resolve the From now, while the user is here to be told — the fire-time
+    // worker deliberately sends what was already approved rather than
+    // re-validating, so an alias deleted after scheduling cannot turn an
+    // approved send into a silent failure.
+    let mut email = email;
+    {
+        let conn = state.db.safe_lock();
+        let account = db::accounts::get_by_id(&conn, &account_id)?
+            .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?;
+        let from = db::identities::resolve_for_account(
+            &conn,
+            &account.id,
+            &account.email,
+            account.display_name.as_deref(),
+            Some(email.from_email.as_str()),
+        )?;
+        email.from_email = from.email.clone();
+        if let Some(name) = from.display_name {
+            email.from_name = Some(name);
+        }
+    }
+
     let email_json = serde_json::to_string(&email)
         .map_err(|e| AppError::General(format!("Failed to serialize email: {}", e)))?;
 

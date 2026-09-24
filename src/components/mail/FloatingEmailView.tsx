@@ -67,6 +67,8 @@ export default function FloatingEmailView({ accountId, folder, uid }: FloatingEm
           ? [detail.references, detail.message_id].filter(Boolean).join(" ")
           : undefined,
         accountId,
+        // Lets the composer default From to the alias this message was sent to.
+        replyContext: { accountId, folder, uid },
       },
     });
   };

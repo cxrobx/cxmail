@@ -571,6 +571,10 @@ export default function ReadingPane() {
       const popProps: Record<string, unknown> = {
         mode: inlineComposeProps.mode,
         accountId: popAccountId,
+        // Carry the From ADDRESS too, not just its account: an alias the user
+        // picked (or that the reply default chose) is otherwise re-derived in
+        // the new window, which loses an explicit choice.
+        fromAddress: snapshot.from_email || undefined,
         // ALL To recipients, not just the first — taking to[0] silently dropped
         // every other recipient when popping out a multi-recipient inline compose.
         defaultTo: snapshot.to.map((r) => r.email),

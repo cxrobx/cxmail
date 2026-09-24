@@ -3,6 +3,7 @@ import { Mail, Monitor, Moon, Sun, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore, type DensityMode, type ThemePreference } from "@/stores/uiStore";
 import TriageSection from "./TriageSection";
+import SendAsSection from "./SendAsSection";
 
 // "System" sits last rather than first: the two explicit choices are the ones
 // with muscle memory behind them, and moving them would retrain a click that
@@ -243,6 +244,8 @@ export default function SettingsDialog() {
               </span>
             </p>
           </section>
+
+          <SendAsSection />
 
           <TriageSection />
         </div>

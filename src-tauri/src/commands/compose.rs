@@ -43,6 +43,17 @@ pub async fn send_email(
     };
 
     let mut email = email;
+    // Validate the From before anything reaches SMTP. Unlike the draft path,
+    // `smtp::send_email` has always honoured `from_email` verbatim — so
+    // without this an arbitrary address from the frontend would go out on the
+    // wire. Resolving also normalizes the spelling and picks up the alias's
+    // own display name.
+    let from = resolve_from(&state, &account, &email)?;
+    email.from_email = from.email.clone();
+    if let Some(name) = from.display_name.clone() {
+        email.from_name = Some(name);
+    }
+
     maybe_inject_tracking_pixel(&state.db, &account, &mut email).await;
 
     let delay = delay_seconds.unwrap_or(0);
@@ -199,8 +210,17 @@ pub async fn cancel_send(
     }
 }
 
+/// Build the draft's raw MIME.
+///
+/// `from` is the RESOLVED send-as address (`db::identities::resolve_send_as`),
+/// not the raw `email.from_email`: a draft's `From:` used to be hardcoded to
+/// the account's own address, so a draft saved while an alias was selected
+/// came back addressed from the primary — the send path honoured
+/// `from_email` and the draft path did not, and they disagreed silently.
+/// Resolving above this call is also what keeps a `From` the user never
+/// configured from reaching IMAP.
 fn build_draft_raw(
-    account_email: &str,
+    from: &db::identities::SendAsAddress,
     email: &smtp::OutgoingEmail,
     message_id_bare: &str,
     draft_id: &str,
@@ -214,10 +234,11 @@ fn build_draft_raw(
         draft_local::DRAFT_ID_HEADER,
         mail_builder::headers::raw::Raw::new(draft_id),
     );
-    if let Some(name) = &email.from_name {
-        message = message.from((name.as_str(), account_email));
-    } else {
-        message = message.from(account_email);
+    // The display name follows the address: an alias may carry its own, and
+    // falling back to the caller's keeps the account's name when it does not.
+    match from.display_name.as_deref().or(email.from_name.as_deref()) {
+        Some(name) => message = message.from((name, from.email.as_str())),
+        None => message = message.from(from.email.as_str()),
     }
     // One `.to()` / `.cc()` / `.bcc()` call per field — see `smtp::to_address_list`.
     if !email.to.is_empty() {
@@ -255,6 +276,30 @@ fn build_draft_raw(
         .map_err(|e| AppError::General(format!("Failed to build draft: {}", e)))
 }
 
+/// Which address this outgoing message may be sent / saved FROM.
+///
+/// `OutgoingEmail.from_email` arrives from the frontend, so it is validated
+/// here rather than trusted (architecture invariant #6). Blank means "the
+/// account's own address", which is what every caller sent before send-as
+/// existed; anything the account is not configured to send as is refused with
+/// a message naming the remedy. One matcher for the whole app
+/// (`db::identities::resolve_for_account`) — the MCP draft handlers call the
+/// same one.
+pub(crate) fn resolve_from(
+    state: &AppState,
+    account: &db::accounts::Account,
+    email: &smtp::OutgoingEmail,
+) -> Result<db::identities::SendAsAddress, AppError> {
+    let conn = state.db.safe_lock();
+    db::identities::resolve_for_account(
+        &conn,
+        &account.id,
+        &account.email,
+        account.display_name.as_deref(),
+        Some(email.from_email.as_str()),
+    )
+}
+
 fn resolve_drafts_folder(state: &AppState, account_id: &str, provider: &str) -> String {
     let conn = state.db.safe_lock();
     db::folders::folder_for_account(&conn, account_id, provider, "drafts")
@@ -272,12 +317,17 @@ pub async fn save_draft(
             .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?
     };
 
+    // Resolve the From before any IMAP work (#30's ordering): an address the
+    // account is not configured to send as is a caller error, and a caller
+    // error must not leave a draft on the server.
+    let from = resolve_from(&state, &account, &email)?;
+
     let drafts_folder = resolve_drafts_folder(&state, &account_id, &account.provider);
     let message_id_bare = format!("{}@cxmail.app", uuid::Uuid::new_v4());
     let message_id_header = format!("<{}>", message_id_bare);
     // First save mints the draft's identity (v60).
     let draft_id = uuid::Uuid::new_v4().to_string();
-    let raw = build_draft_raw(&account.email, &email, &message_id_bare, &draft_id)?;
+    let raw = build_draft_raw(&from, &email, &message_id_bare, &draft_id)?;
 
     let mut session = imap::connect_for_account(&account).await?;
     // The drafts row records the UIDVALIDITY the UID was issued under — a UID
@@ -365,6 +415,11 @@ pub async fn edit_draft(
             .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?
     };
 
+    // Above the claim and every IMAP call (#30/#57's ordering): a From the
+    // account cannot send as must not cost the draft its claim, let alone
+    // reach the server.
+    let from = resolve_from(&state, &account, &email)?;
+
     let drafts_folder = resolve_drafts_folder(&state, &account_id, &account.provider);
     // The folder the user saw is usually drafts_folder, but trust the caller's
     // value in case of non-standard mailbox layouts.
@@ -415,6 +470,7 @@ pub async fn edit_draft(
         &old_folder,
         uid,
         &email,
+        &from,
         &drafts_folder,
         &draft_id,
         &claim_token,
@@ -441,6 +497,7 @@ async fn replace_draft_revision(
     old_folder: &str,
     uid: u32,
     email: &smtp::OutgoingEmail,
+    from: &db::identities::SendAsAddress,
     drafts_folder: &str,
     draft_id: &str,
     claim_token: &str,
@@ -448,7 +505,7 @@ async fn replace_draft_revision(
 ) -> Result<SavedDraftRef, AppError> {
     let message_id_bare = format!("{}@cxmail.app", uuid::Uuid::new_v4());
     let message_id_header = format!("<{}>", message_id_bare);
-    let raw = build_draft_raw(&account.email, email, &message_id_bare, draft_id)?;
+    let raw = build_draft_raw(from, email, &message_id_bare, draft_id)?;
 
     let mut session = imap::connect_for_account(account).await?;
     let (uidvalidity, _) = imap::select_folder(&mut session, drafts_folder).await?;
@@ -680,4 +737,45 @@ pub async fn fetch_outgoing_attachments(
         blobs.len()
     );
     Ok(blobs.into_iter().map(to_outgoing).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The draft path used to hardcode the account's own address, so an alias
+    /// draft came back From the primary. The resolved send-as is what must
+    /// reach the header, whatever the frontend's `from_email` said.
+    #[test]
+    fn a_draft_is_built_from_the_resolved_send_as_address() {
+        let email: smtp::OutgoingEmail = serde_json::from_value(serde_json::json!({
+            "from_email": "sidalias@icloud.com",
+            "from_name": "Chris",
+            "to": [{ "name": null, "email": "friend@example.com" }],
+            "cc": [],
+            "bcc": [],
+            "subject": "Re: Hello",
+            "html_body": "<p>hi</p>",
+            "text_body": "hi",
+            "attachments": []
+        }))
+        .expect("OutgoingEmail fixture");
+        let alias = db::identities::SendAsAddress {
+            account_id: "acct".into(),
+            email: "rileyprime@icloud.com".into(),
+            display_name: None,
+            signature_html: None,
+            is_primary: false,
+            identity_id: Some(2),
+        };
+        let raw = build_draft_raw(&alias, &email, "x@cxmail.app", "draft-1").unwrap();
+        let text = raw.as_str();
+        let from_line = text
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("from:"))
+            .expect("a From header");
+        assert!(from_line.contains("rileyprime@icloud.com"), "{from_line}");
+        assert!(!from_line.contains("sidalias@"), "{from_line}");
+        assert!(from_line.contains("Chris"), "the caller's name survives: {from_line}");
+    }
 }

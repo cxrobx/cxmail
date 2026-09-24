@@ -6,7 +6,15 @@ import Image from "@tiptap/extension-image";
 import { api } from "@/lib/tauri";
 import { useAccountStore } from "@/stores/accountStore";
 import { useMailStore } from "@/stores/mailStore";
-import type { ContactResult, OutgoingEmail, OutgoingAttachment, EmailTemplate, SavedDraftRef, McpActivity } from "@/types/email";
+import type { ContactResult, OutgoingEmail, OutgoingAttachment, EmailTemplate, SavedDraftRef, McpActivity, SendAsAddress } from "@/types/email";
+import {
+  fromOptions,
+  primaryOnly,
+  resolveFrom,
+  sameAddress,
+  sendAsLabel,
+  shouldShowFromPicker,
+} from "@/lib/sendAs";
 import {
   X,
   Bold,
@@ -77,6 +85,12 @@ interface ComposeModalProps {
   inReplyTo?: string;
   referencesHeader?: string;
   accountId?: string;
+  /** Seeds the From ADDRESS (as opposed to `accountId`, the From account).
+   * Set when a compose is continued somewhere else — the inline→floating
+   * pop-out — so an alias the user picked survives the handoff. Ignored when
+   * the account cannot send as it, which is what makes it safe to pass a
+   * snapshot's `from_email` blindly. */
+  fromAddress?: string;
   replyContext?: { accountId: string; folder: string; uid: number };
   draftContext?: { accountId: string; folder: string; uid: number };
   /** Visual surface for the modal. "docked" = bottom-right card (default),
@@ -148,6 +162,7 @@ export default function ComposeModal({
   inReplyTo,
   referencesHeader,
   accountId: propAccountId,
+  fromAddress: propFromAddress,
   replyContext,
   draftContext,
   composeSurface = "docked",
@@ -171,6 +186,31 @@ export default function ComposeModal({
   const [fromOverrideId, setFromOverrideId] = useState<string | null>(null);
   const resolvedAccountId = fromOverrideId ?? defaultAccountId;
   const fromAccount = accounts.find((a) => a.id === resolvedAccountId);
+
+  // ── Send-as: the From picker selects an ADDRESS, not an account ─────────
+  // An account can own aliases, and a reply to mail that arrived at one should
+  // go out from that alias. `sendAsByAccount` is filled per account from
+  // `list_send_as` (primary first, aliases after); an account still loading
+  // contributes its own address, so the picker never briefly loses a row.
+  const [sendAsByAccount, setSendAsByAccount] = useState<Record<string, SendAsAddress[]>>({});
+  // The address the user picked. Separate from the reply default below so a
+  // late-arriving default can never overwrite a choice already made.
+  const [fromAddressOverride, setFromAddressOverride] = useState<string | null>(
+    propFromAddress ?? null,
+  );
+  // The address the message being replied to was addressed to, resolved in
+  // Rust (`reply_from_for_message`) so compose and the MCP cannot disagree.
+  const [replyDefaultFrom, setReplyDefaultFrom] = useState<string | null>(null);
+  const fromAddressOptions = useMemo(
+    () => fromOptions(accounts, sendAsByAccount),
+    [accounts, sendAsByAccount],
+  );
+  const fromAddress = resolveFrom(
+    fromAddressOptions,
+    resolvedAccountId,
+    fromAddressOverride,
+    replyDefaultFrom,
+  );
 
   const [to, setTo] = useState<Recipient[]>(() => {
     if (!defaultTo) return [];
@@ -259,6 +299,13 @@ export default function ComposeModal({
   draftContextStateRef.current = draftContextState;
   const resolvedAccountIdRef = useRef<string | undefined>(resolvedAccountId);
   resolvedAccountIdRef.current = resolvedAccountId;
+  // Read by the send-as load effect, which depends on the account id alone:
+  // `replyContext` is a fresh object on every parent render, and re-running
+  // that effect would re-resolve the reply default over a choice already made.
+  const replyContextRef = useRef(replyContext);
+  replyContextRef.current = replyContext;
+  const fromAddressOverrideRef = useRef<string | null>(fromAddressOverride);
+  fromAddressOverrideRef.current = fromAddressOverride;
   // Tell the host which draft this modal edits now. Read through a ref: the
   // window manager passes an inline callback whose identity changes on every
   // window-store render (each drag frame), and this must fire on ref changes
@@ -282,19 +329,95 @@ export default function ComposeModal({
     setTrackOpens(trackingServiceConfigured && !!fromAccount?.track_opens_enabled);
   }, [resolvedAccountId, trackingServiceConfigured, fromAccount?.track_opens_enabled]);
 
-  // Load signature from default identity
+  // Load the account's send-as addresses, the reply default, and the signature
+  // that belongs to the resulting From — in ONE effect, and all of it before
+  // `signatureLoaded` flips.
+  //
+  // The ordering is the point: the signature is inserted exactly once
+  // (`signatureInsertedRef`), so an alias's signature that arrives after that
+  // insertion never reaches the editor. Resolving the From first is what lets
+  // a reply to mail that came in on an alias open already signed as the alias.
   useEffect(() => {
     if (!resolvedAccountId) return;
-    api.identities.list(resolvedAccountId)
-      .then((identities) => {
-        const defaultIdentity = identities.find((i) => i.is_default) || identities[0];
-        if (defaultIdentity?.signature_html) {
-          setSignatureHtml(defaultIdentity.signature_html);
+    const accountId = resolvedAccountId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [sendAs, identities, replyFrom] = await Promise.all([
+          Promise.resolve(api.identities.listSendAs(accountId)).catch(() => [] as SendAsAddress[]),
+          api.identities.list(accountId).catch(() => []),
+          // Only for the account the original actually arrived on: another
+          // account's aliases say nothing about who this reply is from.
+          replyContextRef.current && replyContextRef.current.accountId === accountId
+            ? api.identities
+                .replyFrom(accountId, replyContextRef.current.folder, replyContextRef.current.uid)
+                .catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        if (cancelled) return;
+
+        const addresses = Array.isArray(sendAs) ? sendAs : [];
+        if (addresses.length > 0) {
+          setSendAsByAccount((m) => ({ ...m, [accountId]: addresses }));
         }
-      })
-      .catch((e) => console.error("Failed to load identity:", e))
-      .finally(() => { setSignatureLoaded(true); });
+        // Defensive shape check: an older backend (or a test double) can
+        // answer with something that is not an address, and a bad `from_email`
+        // is refused at the write boundary rather than silently corrected.
+        const replyEmail =
+          replyFrom && !Array.isArray(replyFrom) && typeof replyFrom.email === "string"
+            ? replyFrom.email
+            : null;
+        if (replyEmail) setReplyDefaultFrom(replyEmail);
+
+        const account = accounts.find((a) => a.id === accountId);
+        const pool = addresses.length > 0 ? addresses : account ? primaryOnly(account) : [];
+        const effective = resolveFrom(pool, accountId, fromAddressOverrideRef.current, replyEmail);
+        // An alias with no signature of its own inherits the account's rather
+        // than sending unsigned — mirrors `signature_for_send_as` in the MCP.
+        const accountDefault = Array.isArray(identities)
+          ? identities.find((i) => i.is_default) ?? identities[0]
+          : undefined;
+        const sig = effective?.signature_html?.trim()
+          ? effective.signature_html
+          : accountDefault?.signature_html;
+        if (sig) setSignatureHtml(sig);
+      } catch (e) {
+        console.error("Failed to load send-as addresses:", e);
+      } finally {
+        // Must flip even on failure: the insertion effect is gated on it, and
+        // a composer that never signs is worse than one signed as the primary.
+        if (!cancelled) setSignatureLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedAccountId]);
+
+  // Every OTHER account's send-as list, loaded once so the From menu can offer
+  // their aliases too. Separate from the effect above because that one gates
+  // the signature and must not wait on eight other accounts' round trips.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(
+      accounts.map(async (a) => {
+        const list = await Promise.resolve(api.identities.listSendAs(a.id)).catch(() => [] as SendAsAddress[]);
+        return [a.id, Array.isArray(list) ? list : []] as const;
+      }),
+    ).then((pairs) => {
+      if (cancelled) return;
+      const next: Record<string, SendAsAddress[]> = {};
+      for (const [id, list] of pairs) if (list.length > 0) next[id] = list;
+      if (Object.keys(next).length > 0) setSendAsByAccount((m) => ({ ...next, ...m }));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Account identity, not the array identity — the store hands back a new
+    // array on every sync tick and this would refetch nine lists each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts.map((a) => a.id).join(",")]);
 
   // The signature insertion effect handles new compose (insert fresh
   // signatureBlock) and edit-existing-draft (already contains marker — skip). A
@@ -340,8 +463,12 @@ export default function ComposeModal({
     // so getHTML() below already sees the edit.
     flushHtmlBlockEdits();
     return {
-      from_email: fromAccount?.email || "",
-      from_name: fromAccount?.display_name || null,
+      // The resolved send-as address, not the account's — an alias reply must
+      // put the alias on the wire. `resolve_from` in the backend validates it
+      // and refuses anything this account cannot send as, so a stale override
+      // is caught before SMTP, not after.
+      from_email: fromAddress?.email || fromAccount?.email || "",
+      from_name: fromAddress?.display_name ?? fromAccount?.display_name ?? null,
       to: to.map((r) => ({ name: r.name, email: r.email })),
       cc: cc.map((r) => ({ name: r.name, email: r.email })),
       bcc: bcc.map((r) => ({ name: r.name, email: r.email })),
@@ -456,7 +583,7 @@ export default function ComposeModal({
     editor.on("update", snapshot);
     return () => { editor.off("update", snapshot); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editor, to, cc, bcc, subject, attachments, trackOpens, inReplyTo, referencesHeader, fromAccount]);
+  }, [editor, to, cc, bcc, subject, attachments, trackOpens, inReplyTo, referencesHeader, fromAccount, fromAddress?.email]);
 
   // Rebase the saved-hash baseline after an MCP reload settles. Declared AFTER the
   // snapshot effect so React runs it later in the SAME commit — by which point
@@ -801,45 +928,82 @@ export default function ComposeModal({
     setShowTemplateMenu(false);
   };
 
+  // Swap the signature in place — a surgical DOM edit of the existing
+  // [data-cx-signature] node. Do NOT re-run the insertion effect: it appends
+  // quotedBlock unconditionally and would duplicate the quote on replies.
+  // Shared by both From handlers below (the account switch and the plain
+  // address switch), because both change which signature belongs to the draft.
+  const swapSignature = useCallback(
+    (newSig: string | null) => {
+      setSignatureHtml(newSig);
+      if (!editor) return;
+      const doc = new DOMParser().parseFromString(editor.getHTML(), "text/html");
+      const sigNode = doc.querySelector("[data-cx-signature]");
+      if (sigNode) {
+        if (newSig) sigNode.innerHTML = newSig;
+        else sigNode.remove();
+      } else if (newSig) {
+        const block = doc.createElement("div");
+        block.setAttribute("data-cx-signature", "1");
+        block.className = "email-signature";
+        block.innerHTML = newSig;
+        const quote = doc.querySelector("[data-cx-quote]");
+        if (quote) quote.before(block);
+        else doc.body.appendChild(block);
+      }
+      // Only touch the editor when the signature actually changed —
+      // setContent resets the caret.
+      if (sigNode || newSig) editor.commands.setContent(doc.body.innerHTML);
+    },
+    [editor],
+  );
+
+  /** The signature that belongs to one send-as address: its own, else the
+   * account's default identity signature. Mirrors the MCP's
+   * `signature_for_send_as` — an alias without one inherits rather than
+   * sending unsigned. */
+  const signatureForAddress = useCallback(
+    async (accountId: string, address: SendAsAddress | undefined): Promise<string | null> => {
+      if (address?.signature_html?.trim()) return address.signature_html;
+      const identities = await api.identities.list(accountId).catch(() => []);
+      const fallback = Array.isArray(identities)
+        ? identities.find((i) => i.is_default) ?? identities[0]
+        : undefined;
+      return fallback?.signature_html || null;
+    },
+    [],
+  );
+
   // Switch the From account: swap the signature in place and migrate any
   // autosaved draft to the new account's Drafts folder.
   const handleFromChange = useCallback(
-    async (newId: string) => {
+    async (newId: string, addressEmail?: string) => {
       setShowFromMenu(false);
       const oldAccountId = resolvedAccountId;
       if (!newId || newId === oldAccountId) return;
       setFromOverrideId(newId);
+      // The previous account's alias must not carry over. `resolveFrom` already
+      // ignores an address belonging to another account, but leaving it set
+      // would resurrect it if the user switched back.
+      setFromAddressOverride(addressEmail ?? null);
+      fromAddressOverrideRef.current = addressEmail ?? null;
+      // The reply default belongs to the account the original arrived on.
+      setReplyDefaultFrom(null);
       // Flip the ref synchronously so any already-queued autosave that executes
       // before the re-render targets the new account, not the old one.
       resolvedAccountIdRef.current = newId;
 
-      // Signature swap — surgical DOM edit of the existing [data-cx-signature]
-      // node. Do NOT re-run the insertion effect: it appends quotedBlock
-      // unconditionally and would duplicate the quote on replies.
       try {
-        const identities = await api.identities.list(newId);
-        const defaultIdentity = identities.find((i) => i.is_default) || identities[0];
-        const newSig = defaultIdentity?.signature_html || null;
-        setSignatureHtml(newSig);
-        if (editor) {
-          const doc = new DOMParser().parseFromString(editor.getHTML(), "text/html");
-          const sigNode = doc.querySelector("[data-cx-signature]");
-          if (sigNode) {
-            if (newSig) sigNode.innerHTML = newSig;
-            else sigNode.remove();
-          } else if (newSig) {
-            const block = doc.createElement("div");
-            block.setAttribute("data-cx-signature", "1");
-            block.className = "email-signature";
-            block.innerHTML = newSig;
-            const quote = doc.querySelector("[data-cx-quote]");
-            if (quote) quote.before(block);
-            else doc.body.appendChild(block);
-          }
-          // Only touch the editor when the signature actually changed —
-          // setContent resets the caret.
-          if (sigNode || newSig) editor.commands.setContent(doc.body.innerHTML);
+        const sendAs = await Promise.resolve(api.identities.listSendAs(newId))
+          .catch(() => [] as SendAsAddress[]);
+        const addresses = Array.isArray(sendAs) ? sendAs : [];
+        if (addresses.length > 0) {
+          setSendAsByAccount((m) => ({ ...m, [newId]: addresses }));
         }
+        const chosen = addressEmail
+          ? addresses.find((a) => sameAddress(a.email, addressEmail))
+          : addresses.find((a) => a.is_primary);
+        swapSignature(await signatureForAddress(newId, chosen));
       } catch (e) {
         console.error("Failed to swap signature for From change:", e);
       }
@@ -874,7 +1038,43 @@ export default function ComposeModal({
       // account has a signature), so the migrated draft reappears promptly.
       scheduleAutosave();
     },
-    [editor, resolvedAccountId, scheduleAutosave],
+    [resolvedAccountId, scheduleAutosave, signatureForAddress, swapSignature],
+  );
+
+  /**
+   * Pick a From ADDRESS from the menu.
+   *
+   * Same account — the ordinary alias switch — is cheap: the draft stays where
+   * it is and only the signature moves, so it deliberately does NOT go through
+   * `handleFromChange`, which deletes the autosaved draft and re-creates it in
+   * another account's Drafts folder. A different account still needs all of
+   * that, and carries the chosen address through it.
+   */
+  const handleFromAddressChange = useCallback(
+    async (address: SendAsAddress) => {
+      setShowFromMenu(false);
+      if (address.account_id !== resolvedAccountId) {
+        await handleFromChange(address.account_id, address.email);
+        return;
+      }
+      if (sameAddress(address.email, fromAddress?.email)) return;
+      setFromAddressOverride(address.email);
+      fromAddressOverrideRef.current = address.email;
+      try {
+        swapSignature(await signatureForAddress(address.account_id, address));
+      } catch (e) {
+        console.error("Failed to swap signature for From address change:", e);
+      }
+      scheduleAutosave();
+    },
+    [
+      fromAddress?.email,
+      handleFromChange,
+      resolvedAccountId,
+      scheduleAutosave,
+      signatureForAddress,
+      swapSignature,
+    ],
   );
 
   const handleSend = () => {
@@ -1091,6 +1291,7 @@ export default function ComposeModal({
     await saveOrEdit();
     finalizedRef.current = true;
     onPopOut(buildOutgoingEmail(), draftContextStateRef.current, resolvedAccountId);
+
   };
 
   if (isMinimized && !isFloating && !isInline) {
@@ -1193,13 +1394,16 @@ export default function ComposeModal({
 
       {/* Recipients */}
       <div className="border-b border-border-subtle">
-        {/* From selector — only shown with multiple accounts; single-account
-            users keep today's chrome. */}
-        {accounts.length > 1 && (
+        {/* From selector — an ADDRESS picker, not an account picker: an account
+            can own aliases and a reply to mail that came in on one goes out from
+            it. Hidden when there is exactly one address to choose from, which is
+            the single-account no-alias case and keeps today's chrome. */}
+        {shouldShowFromPicker(fromAddressOptions) && (
           <div className="relative flex items-center gap-2 px-4 py-1.5">
             <span className="shrink-0 text-xs text-content-muted">From:</span>
             <button
               onClick={() => setShowFromMenu((v) => !v)}
+              aria-label="From address"
               className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-sm text-content hover:bg-surface"
             >
               <span
@@ -1207,30 +1411,44 @@ export default function ComposeModal({
                 style={{ backgroundColor: fromAccount?.color || "#0a84ff" }}
               />
               <span className="truncate">
-                {fromAccount?.display_name
-                  ? `${fromAccount.display_name} <${fromAccount.email}>`
-                  : fromAccount?.email || "Select account"}
+                {sendAsLabel(fromAddress) || "Select address"}
               </span>
               <ChevronDown className="h-3.5 w-3.5 shrink-0 text-content-muted" />
             </button>
             {showFromMenu && (
-              <div className="absolute left-12 top-full z-50 mt-1 w-72 rounded-lg border border-border bg-base-solid p-1 shadow-xl">
-                {accounts.map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={() => handleFromChange(a.id)}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-content-secondary hover:bg-surface hover:text-content"
-                  >
-                    <span
-                      className="h-2 w-2 shrink-0 rounded-full"
-                      style={{ backgroundColor: a.color || "#0a84ff" }}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-left">{a.email}</span>
-                    {a.id === resolvedAccountId && (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-accent" />
-                    )}
-                  </button>
-                ))}
+              <div className="absolute left-12 top-full z-50 mt-1 w-80 rounded-lg border border-border bg-base-solid p-1 shadow-xl">
+                {fromAddressOptions.map((option) => {
+                  const optionAccount = accounts.find((a) => a.id === option.account_id);
+                  return (
+                    <button
+                      key={`${option.account_id}:${option.email}`}
+                      onClick={() => handleFromAddressChange(option)}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-content-secondary hover:bg-surface hover:text-content"
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: optionAccount?.color || "#0a84ff",
+                          // An alias is drawn as a hollow dot in its account's
+                          // colour: same mailbox, different address, and the
+                          // relationship has to be readable at a glance in a
+                          // flat list.
+                          opacity: option.is_primary ? 1 : 0.45,
+                        }}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-left">{option.email}</span>
+                      {!option.is_primary && (
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-content-faint">
+                          alias
+                        </span>
+                      )}
+                      {option.account_id === resolvedAccountId &&
+                        sameAddress(option.email, fromAddress?.email) && (
+                          <Check className="h-3.5 w-3.5 shrink-0 text-accent" />
+                        )}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>

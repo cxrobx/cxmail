@@ -798,6 +798,87 @@ pub fn store_raw_headers(
     Ok(())
 }
 
+/// Every address this message was addressed to, in the order a send-as match
+/// should consider them: `To`, then `Cc`, then the delivery headers
+/// (`Delivered-To` / `X-Original-To` / `Envelope-To`).
+///
+/// To/Cc come from the cached `messages` row and are always available. The
+/// delivery headers come from `message_headers`, which is populated only where
+/// a raw header block has already passed through (gotcha #37) — about 15% of
+/// the live mailbox — so this deliberately does NOT fetch: a reply's default
+/// From must not wait on an IMAP round trip. When the block is absent the
+/// To/Cc legs answer on their own, which is the common case; a forwarder that
+/// rewrote `To` simply falls back to the primary.
+pub fn recipients_for_send_as_match(
+    conn: &Connection,
+    account_id: &str,
+    folder_name: &str,
+    uid: u32,
+) -> Result<Vec<String>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT to_list, cc_list FROM messages
+         WHERE account_id = ?1 AND folder_name = ?2 AND uid = ?3",
+    )?;
+    let mut rows = stmt.query_map(params![account_id, folder_name, uid], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
+    let (to_json, cc_json) = match rows.next() {
+        Some(Ok(pair)) => pair,
+        Some(Err(e)) => return Err(AppError::Database(e)),
+        None => (None, None),
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    let push = |addr: String, out: &mut Vec<String>| {
+        let key = super::identities::normalize_addr(&addr);
+        if key.is_empty() {
+            return;
+        }
+        if !out
+            .iter()
+            .any(|e| super::identities::normalize_addr(e) == key)
+        {
+            out.push(addr);
+        }
+    };
+    for json in [to_json, cc_json].into_iter().flatten() {
+        for addr in addresses_from_json(&json) {
+            push(addr, &mut out);
+        }
+    }
+    if let Some(block) = get_raw_headers(conn, account_id, folder_name, uid)? {
+        for addr in super::identities::delivery_header_addresses(&block) {
+            push(addr, &mut out);
+        }
+    }
+    Ok(out)
+}
+
+/// `to_list` / `cc_list` hold `serde_json::to_string(&Vec<EmailAddress>)`.
+/// A row written before those columns existed, or by a path that stored a bare
+/// string, degrades to no addresses rather than an error — this feeds a
+/// default, never a correctness decision.
+pub(crate) fn addresses_from_json_pub(json: &str) -> Vec<String> {
+    addresses_from_json(json)
+}
+
+fn addresses_from_json(json: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|v| v.get("email").and_then(|e| e.as_str()))
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn get_raw_headers(
     conn: &Connection,
     account_id: &str,
@@ -3002,5 +3083,121 @@ mod thread_membership_tests {
         assert_eq!(rows[0].thread_count, 1);
         assert_eq!(rows[0].thread_draft_count, 0);
         assert_eq!(get_thread(&conn, ACCT, "<a@x>").unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod send_as_recipient_tests {
+    use super::*;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::initialize(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, email, display_name, provider, imap_host, smtp_host)
+             VALUES ('acct', 'sidalias@icloud.com', 'iCloud', 'icloud', 'imap.mail.me.com', 'smtp.mail.me.com')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_msg(conn: &Connection, uid: u32, to: &str, cc: &str) {
+        conn.execute(
+            "INSERT INTO messages
+               (account_id, folder_name, uid, message_id, subject, from_email, date, to_list, cc_list)
+             VALUES ('acct','INBOX',?1,'<m@x>','Hi','sender@x.com','2026-01-01T00:00:00Z',?2,?3)",
+            params![uid, to, cc],
+        )
+        .unwrap();
+    }
+
+    /// The end-to-end reply default, at the layer the UI and the MCP both go
+    /// through: mail that arrived at the alias resolves to the alias.
+    #[test]
+    fn a_message_addressed_to_the_alias_resolves_to_the_alias() {
+        let conn = setup();
+        insert_msg(
+            &conn,
+            1,
+            r#"[{"name":null,"email":"RileyPrime@icloud.com"}]"#,
+            "[]",
+        );
+        crate::db::identities::insert(
+            &conn,
+            &crate::db::identities::Identity {
+                id: None,
+                account_id: "acct".to_string(),
+                email: "rileyprime@icloud.com".to_string(),
+                display_name: None,
+                signature_html: None,
+                is_default: false,
+            },
+        )
+        .unwrap();
+
+        let recipients = recipients_for_send_as_match(&conn, "acct", "INBOX", 1).unwrap();
+        let addresses = crate::db::identities::send_as_addresses(
+            &conn,
+            "acct",
+            "sidalias@icloud.com",
+            Some("iCloud"),
+        )
+        .unwrap();
+        let hit = crate::db::identities::match_send_as(&addresses, &recipients).unwrap();
+        assert_eq!(hit.email, "rileyprime@icloud.com");
+        assert!(!hit.is_primary);
+    }
+
+    #[test]
+    fn to_comes_before_cc_and_both_are_read() {
+        let conn = setup();
+        insert_msg(
+            &conn,
+            2,
+            r#"[{"name":null,"email":"list@discuss.example"}]"#,
+            r#"[{"name":null,"email":"alias@icloud.com"}]"#,
+        );
+        let got = recipients_for_send_as_match(&conn, "acct", "INBOX", 2).unwrap();
+        assert_eq!(got, vec!["list@discuss.example", "alias@icloud.com"]);
+    }
+
+    /// `message_headers` is populated for only part of the mailbox (gotcha
+    /// #37) and this read must never fetch, so the delivery headers ride along
+    /// only when they are already cached.
+    #[test]
+    fn delivery_headers_are_appended_last_when_the_block_is_cached() {
+        let conn = setup();
+        insert_msg(
+            &conn,
+            3,
+            r#"[{"name":null,"email":"list@discuss.example"}]"#,
+            "[]",
+        );
+        store_raw_headers(
+            &conn,
+            "acct",
+            "INBOX",
+            3,
+            "Delivered-To: rileyprime@icloud.com\r\nSubject: Hi\r\n",
+        )
+        .unwrap();
+        let got = recipients_for_send_as_match(&conn, "acct", "INBOX", 3).unwrap();
+        assert_eq!(
+            got,
+            vec!["list@discuss.example", "rileyprime@icloud.com"]
+        );
+    }
+
+    #[test]
+    fn an_unknown_uid_and_malformed_json_both_degrade_to_nothing() {
+        let conn = setup();
+        assert!(recipients_for_send_as_match(&conn, "acct", "INBOX", 999)
+            .unwrap()
+            .is_empty());
+        insert_msg(&conn, 4, "not json at all", "");
+        assert!(recipients_for_send_as_match(&conn, "acct", "INBOX", 4)
+            .unwrap()
+            .is_empty());
     }
 }

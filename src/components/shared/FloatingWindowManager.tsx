@@ -47,6 +47,10 @@ export default function FloatingWindowManager() {
               inReplyTo={w.props.inReplyTo as string | undefined}
               referencesHeader={w.props.referencesHeader as string | undefined}
               accountId={w.props.accountId as string | undefined}
+              fromAddress={w.props.fromAddress as string | undefined}
+              replyContext={
+                w.props.replyContext as { accountId: string; folder: string; uid: number } | undefined
+              }
               draftContext={
                 (w.props.draftContext as
                   | (SavedDraftRef & { accountId: string })

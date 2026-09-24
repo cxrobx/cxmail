@@ -96,6 +96,8 @@ pub struct ListFoldersParams {
 pub struct ComposeDraftParams {
     #[schemars(description = "Account ID to send from")]
     pub account_id: String,
+    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's configured send-as addresses over the original's To, Cc and cached Delivered-To headers); otherwise the account's own address. Pass one only to override that — `list_accounts` prints each account's configured send-as addresses. An address the account is not configured to send as is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
+    pub from: Option<String>,
     #[schemars(description = "Recipient email addresses")]
     pub to: Vec<String>,
     #[schemars(description = "Optional CC (carbon-copy) recipient email addresses")]
@@ -152,6 +154,8 @@ pub struct ComposeDraftParams {
 pub struct EditDraftParams {
     #[schemars(description = "Account ID")]
     pub account_id: String,
+    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's configured send-as addresses over the original's To, Cc and cached Delivered-To headers); otherwise the account's own address. Pass one only to override that — `list_accounts` prints each account's configured send-as addresses. An address the account is not configured to send as is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
+    pub from: Option<String>,
     #[schemars(
         description = "PREFERRED: the draft's stable `draft_id`, as returned by compose_draft / edit_draft. It names the logical draft no matter how many times it has been re-saved since — every save (the compose window's autosave included) mints a new UID. Pass either this or `uid`, never both."
     )]
@@ -659,6 +663,141 @@ fn get_signature_html(conn: &rusqlite::Connection, account_id: &str) -> Option<S
         .and_then(|ids| ids.into_iter().find(|i| i.is_default))
         .and_then(|i| i.signature_html)
         .filter(|s| !s.is_empty())
+}
+
+/// The address a draft goes out FROM, and the signature that belongs to it.
+///
+/// Precedence: an explicit `from` param → the send-as the message being
+/// replied to was addressed to → the account's own address. The middle rung is
+/// the point of the feature: mail that arrived at an alias is answered from
+/// that alias without the agent having to notice.
+///
+/// One matcher with the app (gotcha #36) — `db::identities::match_send_as` is
+/// the same function `commands::settings::reply_from_for_message` calls, so
+/// the MCP and the compose window cannot pick different addresses for the same
+/// reply. Refusal of an unconfigured address is `invalid_params`: it is a
+/// caller error, and it lands before any IMAP work (#30's ordering).
+fn resolve_draft_from(
+    conn: &rusqlite::Connection,
+    account: &db::accounts::Account,
+    requested: Option<&str>,
+    target: Option<&ReplyTarget>,
+    current: Option<&str>,
+) -> Result<db::identities::SendAsAddress, McpError> {
+    let addresses = db::identities::send_as_addresses(
+        conn,
+        &account.id,
+        &account.email,
+        account.display_name.as_deref(),
+    )
+    .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+
+    if let Some(requested) = requested.map(str::trim).filter(|r| !r.is_empty()) {
+        return db::identities::resolve_send_as(&addresses, Some(requested))
+            .map_err(|e| McpError::invalid_params(format!("{e} Nothing was written."), None));
+    }
+
+    if let Some(target) = target {
+        if let Some((folder, uid)) = reply_target_coordinates(conn, &account.id, target) {
+            if let Ok(recipients) =
+                db::messages::recipients_for_send_as_match(conn, &account.id, &folder, uid)
+            {
+                if let Some(hit) = db::identities::match_send_as(&addresses, &recipients) {
+                    return Ok(hit.clone());
+                }
+            }
+        }
+    }
+
+    // The revision being replaced already had a From, and an edit that does
+    // not mention one is not a request to change it. Silently ignored when it
+    // is no longer a configured send-as (the user removed the alias between
+    // saves) — that is a fall back to the primary, not a refusal, because the
+    // caller asked for nothing.
+    if let Some(current) = current.map(str::trim).filter(|c| !c.is_empty()) {
+        if let Ok(hit) = db::identities::resolve_send_as(&addresses, Some(current)) {
+            return Ok(hit);
+        }
+    }
+
+    db::identities::resolve_send_as(&addresses, None)
+        .map_err(|e| McpError::internal_error(format!("{e}"), None))
+}
+
+/// The `(folder, uid)` a reply target names, when the local cache knows it.
+/// Read-only and best-effort: it feeds a DEFAULT, so an unknown target simply
+/// leaves the account's own address in place.
+fn reply_target_coordinates(
+    conn: &rusqlite::Connection,
+    account_id: &str,
+    target: &ReplyTarget,
+) -> Option<(String, u32)> {
+    match target {
+        ReplyTarget::Coordinates { folder, uid } => Some((folder.clone(), *uid)),
+        ReplyTarget::MessageId(mid) => db::messages::get_reply_source(conn, account_id, mid)
+            .ok()
+            .flatten()
+            .map(|src| (src.folder_name, src.uid)),
+    }
+}
+
+/// The `From:` the revision being replaced already carried, read from the local
+/// cache. Best-effort and read-only — it feeds a DEFAULT, so an uncached draft
+/// (or one another client wrote) simply leaves the account's own address in
+/// place. Resolved here rather than after the v60 claim so an explicit `from`
+/// can still be refused before anything is claimed or written (#30/#57).
+fn current_draft_from_address(
+    conn: &rusqlite::Connection,
+    account: &db::accounts::Account,
+    target: &EditTarget,
+) -> Option<String> {
+    let (folder, uid) = match target {
+        EditTarget::ById {
+            draft_id,
+            expected_uid,
+        } => {
+            let row = db::drafts::get(conn, draft_id).ok().flatten()?;
+            (row.folder_name.clone(), expected_uid.unwrap_or(row.current_uid))
+        }
+        EditTarget::ByUid(uid) => (
+            db::folders::folder_for_account(conn, &account.id, &account.provider, "drafts"),
+            *uid,
+        ),
+    };
+    db::messages::get_by_uid(conn, &account.id, &folder, uid)
+        .ok()
+        .flatten()
+        .and_then(|row| row.from_email)
+        .filter(|e| !e.trim().is_empty())
+}
+
+/// The signature to use for a draft sent from `from`: the alias's own when it
+/// has one, otherwise the account's default identity signature. An alias
+/// without a signature inherits rather than sending unsigned.
+fn signature_for_send_as(
+    conn: &rusqlite::Connection,
+    account_id: &str,
+    from: &db::identities::SendAsAddress,
+) -> Option<String> {
+    from.signature_html
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| get_signature_html(conn, account_id))
+}
+
+/// A one-line note naming the From, emitted only when it is NOT the account's
+/// own address — silence for the ordinary case, so the note means something
+/// when it appears (#34's reasoning).
+fn send_as_note(from: &db::identities::SendAsAddress, explicit: bool) -> String {
+    if from.is_primary {
+        return String::new();
+    }
+    let why = if explicit {
+        "as requested"
+    } else {
+        "the address the original was sent to"
+    };
+    format!("\n✉ From: {} ({why}).", from.email)
 }
 
 /// Append signature HTML to body, matching the frontend's pattern.
@@ -3271,14 +3410,36 @@ impl CxMailMcp {
         let text = accounts
             .iter()
             .map(|a| {
+                // The alias list is printed only when there IS one: every
+                // account would otherwise carry a `Send-as:` segment restating
+                // its own address, which trains the reader to skip the line
+                // (#34's reasoning). It is what makes `compose_draft`'s `from`
+                // discoverable — the param description points here.
+                let aliases = db::identities::send_as_addresses(
+                    &conn,
+                    &a.id,
+                    &a.email,
+                    a.display_name.as_deref(),
+                )
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| !s.is_primary)
+                .map(|s| s.email)
+                .collect::<Vec<_>>();
+                let send_as = if aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | Send-as: {}", aliases.join(", "))
+                };
                 format!(
-                    "ID: {} | {} | Provider: {} | Active: {} | Open tracking: {} | Hidden from aggregates: {}",
+                    "ID: {} | {} | Provider: {} | Active: {} | Open tracking: {} | Hidden from aggregates: {}{}",
                     a.id,
                     a.email,
                     a.provider,
                     a.is_active,
                     if a.track_opens_enabled { "on" } else { "off" },
-                    if a.hidden_from_aggregates { "yes" } else { "no" }
+                    if a.hidden_from_aggregates { "yes" } else { "no" },
+                    send_as
                 )
             })
             .collect::<Vec<_>>()
@@ -3844,6 +4005,20 @@ impl CxMailMcp {
         )?;
         validate_reply_threading(&params.subject, &target)?;
 
+        // The From, resolved before any IMAP work: an unconfigured address is
+        // a caller error and must not leave a draft behind, and a reply
+        // defaults to the address the original was addressed to.
+        let from_addr = resolve_draft_from(
+            &conn,
+            &account,
+            params.from.as_deref(),
+            target.as_ref(),
+            // A fresh draft has no previous revision to inherit a From from.
+            None,
+        )?;
+        let from_note = send_as_note(&from_addr, params.from.is_some());
+        let signature = signature_for_send_as(&conn, &params.account_id, &from_addr);
+
         // Threading + quoted history (ComposeModal order: body + signature +
         // quote). Errors here land before the APPEND below, so a failed quote
         // never leaves a stray draft.
@@ -3870,7 +4045,7 @@ impl CxMailMcp {
             // rejected by `validate_layout` at the top of this handler.
             _ => render_body(&body, params.is_html),
         };
-        if let Some(sig) = get_signature_html(&conn, &params.account_id) {
+        if let Some(sig) = signature {
             html_body = append_signature(&html_body, &sig);
         }
         if let Some((ref quote_html, _)) = quoted {
@@ -3893,8 +4068,8 @@ impl CxMailMcp {
         };
 
         let email = smtp::OutgoingEmail {
-            from_email: account.email.clone(),
-            from_name: account.display_name.clone(),
+            from_email: from_addr.email.clone(),
+            from_name: from_addr.display_name.clone(),
             to: to_recipients(&params.to),
             cc: to_recipients(&params.cc.unwrap_or_default()),
             bcc: to_recipients(&params.bcc.unwrap_or_default()),
@@ -3936,7 +4111,13 @@ impl CxMailMcp {
             crate::email::draft_local::DRAFT_ID_HEADER,
             mail_builder::headers::raw::Raw::new(draft_id.as_str()),
         );
-        message = message.from(email.from_email.as_str());
+        // The display name rides along when the address has one — the app's
+        // own draft path has always written it, and a draft whose From differs
+        // from the message that will be sent is its own small lie.
+        match email.from_name.as_deref() {
+            Some(name) => message = message.from((name, email.from_email.as_str())),
+            None => message = message.from(email.from_email.as_str()),
+        }
         // One `.to()` / `.cc()` / `.bcc()` call per field — see `smtp::to_address_list`.
         // mail-builder 0.3.2 pushes a fresh header per call, so a per-recipient
         // loop would emit multiple `To:` lines.
@@ -4042,9 +4223,9 @@ impl CxMailMcp {
             format!(" with {} attachments", attachments_count)
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}",
+            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}{}",
             drafts_folder, uid, account.email, suffix, draft_id, quote_note, layout_note,
-            dash_note, pinned_note, writer_note
+            dash_note, pinned_note, writer_note, from_note
         ))]))
     }
 
@@ -4160,6 +4341,20 @@ impl CxMailMcp {
         // Same rule as validate_layout above: reject before any IMAP write.
         validate_reply_threading(&params.subject, &target)?;
 
+        // The From, resolved before the v60 claim and every IMAP call: an
+        // address the account cannot send as is a caller error and must not
+        // cost the draft its claim, let alone reach the server. An edit that
+        // names no `from` keeps the revision's existing one — a rewrite is not
+        // a request to change the sender.
+        let from_addr = resolve_draft_from(
+            &conn,
+            &account,
+            params.from.as_deref(),
+            target.as_ref(),
+            current_draft_from_address(&conn, &account, &edit_target).as_deref(),
+        )?;
+        let from_note = send_as_note(&from_addr, params.from.is_some());
+
         // Threading + quoted history, built before the drafts-folder session
         // opens (the IMAP fallback runs its own short-lived connection).
         // ORDERING: this must stay above the APPEND below — a failure after
@@ -4273,7 +4468,7 @@ impl CxMailMcp {
                 .ok()
                 .flatten()
                 .is_some();
-        let signature = get_signature_html(&conn, &params.account_id);
+        let signature = signature_for_send_as(&conn, &params.account_id, &from_addr);
 
         // ── IMAP — releases the claim on any failure ────────────────────
         let imap_outcome: Result<(u32, u32, Result<(), String>, String), McpError> = async {
@@ -4357,7 +4552,13 @@ impl CxMailMcp {
                 crate::email::draft_local::DRAFT_ID_HEADER,
                 mail_builder::headers::raw::Raw::new(draft_id.as_str()),
             );
-            message = message.from(account.email.as_str());
+            // The display name rides along when the address has one, matching
+            // the app's own draft path — a draft whose From differs from what
+            // the send will put on the wire is its own small lie.
+            match from_addr.display_name.as_deref() {
+                Some(name) => message = message.from((name, from_addr.email.as_str())),
+                None => message = message.from(from_addr.email.as_str()),
+            }
             // One `.to()` / `.cc()` / `.bcc()` call per field — see `smtp::to_address_list`.
             if !to_rcpts.is_empty() {
                 message = message.to(smtp::to_address_list(&to_rcpts));
@@ -4536,7 +4737,7 @@ impl CxMailMcp {
             String::new()
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}",
+            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}",
             old_uid,
             new_uid,
             drafts_folder,
@@ -4549,7 +4750,8 @@ impl CxMailMcp {
             layout_note,
             dash_note,
             pinned_note,
-            writer_note
+            writer_note,
+            from_note
         ))]))
     }
 
@@ -6863,6 +7065,195 @@ mod tests {
         );
     }
 
+    // ── send-as (`from`) ────────────────────────────────────────────────
+
+    /// The From is resolved before the claim and before any IMAP call. An
+    /// address the account cannot send as is a caller error, and a caller
+    /// error must not cost the draft its claim or leave a revision behind
+    /// (#30/#57's ordering rule, applied to a third parameter).
+    #[test]
+    fn edit_draft_resolves_the_from_before_the_claim_and_before_imap() {
+        let body = edit_draft_source();
+        let resolve = body
+            .find("resolve_draft_from(")
+            .expect("edit_draft resolves its From");
+        let claim = body
+            .find("db::drafts::claim(")
+            .expect("the v60 claim is present");
+        let connect = body
+            .find("imap::connect_for_account(")
+            .expect("IMAP connect is present");
+        assert!(
+            resolve < claim && resolve < connect,
+            "an unconfigured From must be refused before anything is claimed or written"
+        );
+    }
+
+    /// The rebuilt revision must carry the resolved address, not the account's
+    /// own — that hardcode is exactly the bug this feature fixes, and it is
+    /// the one line that decides what lands on the server.
+    #[test]
+    fn edit_draft_writes_the_resolved_from_not_the_account_address() {
+        let body = edit_draft_source();
+        assert!(
+            !body.contains("message.from(account.email"),
+            "the From header must come from the resolved send-as address"
+        );
+        assert!(
+            body.contains("message.from(from_addr.email.as_str())"),
+            "the resolved address is what reaches the MIME builder"
+        );
+    }
+
+    /// Silence for the ordinary case, so the note means something when it
+    /// appears (#34's reasoning) — and when it does appear it says WHY, since
+    /// "CXMail picked a different From than you'd expect" is the whole
+    /// surprise this feature can cause.
+    #[test]
+    fn the_from_note_is_silent_on_the_primary_and_explains_itself_otherwise() {
+        let primary = db::identities::SendAsAddress {
+            account_id: "acct".into(),
+            email: "sidalias@icloud.com".into(),
+            display_name: None,
+            signature_html: None,
+            is_primary: true,
+            identity_id: None,
+        };
+        let alias = db::identities::SendAsAddress {
+            email: "rileyprime@icloud.com".into(),
+            is_primary: false,
+            ..primary.clone()
+        };
+        assert_eq!(send_as_note(&primary, false), "");
+        assert_eq!(send_as_note(&primary, true), "");
+
+        let defaulted = send_as_note(&alias, false);
+        assert!(defaulted.contains("rileyprime@icloud.com"), "{defaulted}");
+        assert!(
+            defaulted.contains("the original was sent to"),
+            "a From the caller did not ask for has to say where it came from: {defaulted}"
+        );
+        assert!(send_as_note(&alias, true).contains("as requested"));
+    }
+
+    /// An alias with no signature of its own inherits the account's rather
+    /// than sending unsigned — the pre-alias world had exactly one signature
+    /// and nobody configuring an alias is asking to lose it.
+    #[test]
+    fn an_alias_without_its_own_signature_inherits_the_accounts() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::schema::initialize(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host)
+             VALUES ('acct', 'sidalias@icloud.com', 'icloud', 'h', 'h')",
+            [],
+        )
+        .unwrap();
+        db::identities::insert(
+            &conn,
+            &db::identities::Identity {
+                id: None,
+                account_id: "acct".into(),
+                email: "sidalias@icloud.com".into(),
+                display_name: None,
+                signature_html: Some("<p>account sig</p>".into()),
+                is_default: true,
+            },
+        )
+        .unwrap();
+
+        let bare = db::identities::SendAsAddress {
+            account_id: "acct".into(),
+            email: "rileyprime@icloud.com".into(),
+            display_name: None,
+            signature_html: None,
+            is_primary: false,
+            identity_id: None,
+        };
+        assert_eq!(
+            signature_for_send_as(&conn, "acct", &bare).as_deref(),
+            Some("<p>account sig</p>")
+        );
+
+        let own = db::identities::SendAsAddress {
+            signature_html: Some("<p>alias sig</p>".into()),
+            ..bare.clone()
+        };
+        assert_eq!(
+            signature_for_send_as(&conn, "acct", &own).as_deref(),
+            Some("<p>alias sig</p>"),
+            "an alias that HAS a signature uses its own"
+        );
+
+        // Blank is not a signature — it must not shadow the account's.
+        let blank = db::identities::SendAsAddress {
+            signature_html: Some("   ".into()),
+            ..bare.clone()
+        };
+        assert_eq!(
+            signature_for_send_as(&conn, "acct", &blank).as_deref(),
+            Some("<p>account sig</p>")
+        );
+    }
+
+    /// T207's done-criterion, end to end through the MCP's own resolver: a
+    /// reply to a stored message that was addressed to the alias comes out
+    /// FROM the alias, with no `from` given — and an explicit `from` still
+    /// wins, and an address the account cannot send as is refused.
+    #[test]
+    fn a_reply_to_mail_sent_to_an_alias_drafts_from_the_alias() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::schema::initialize(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host)
+             VALUES ('acct', 'sidalias@icloud.com', 'icloud', 'h', 'h')",
+            [],
+        )
+        .unwrap();
+        db::identities::insert(
+            &conn,
+            &db::identities::Identity {
+                id: None,
+                account_id: "acct".into(),
+                email: "rileyprime@icloud.com".into(),
+                display_name: None,
+                signature_html: None,
+                is_default: false,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (account_id, folder_name, uid, subject, from_email, to_list, date)
+             VALUES ('acct', 'INBOX', 42, 'Hello', 'friend@example.com',
+                     '[{\"name\":null,\"email\":\"RileyPrime@icloud.com\"}]',
+                     '2026-09-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let account = db::accounts::get_by_id(&conn, "acct").unwrap().unwrap();
+        let target = ReplyTarget::Coordinates {
+            folder: "INBOX".into(),
+            uid: 42,
+        };
+
+        let hit = resolve_draft_from(&conn, &account, None, Some(&target), None).unwrap();
+        assert_eq!(hit.email, "rileyprime@icloud.com");
+        assert!(!hit.is_primary);
+
+        let explicit =
+            resolve_draft_from(&conn, &account, Some("sidalias@icloud.com"), Some(&target), None)
+                .unwrap();
+        assert!(explicit.is_primary, "an explicit from outranks the reply default");
+
+        assert!(
+            resolve_draft_from(&conn, &account, Some("nobody@example.com"), None, None).is_err(),
+            "an unconfigured From must be refused, not silently corrected"
+        );
+
+        let fresh = resolve_draft_from(&conn, &account, None, None, None).unwrap();
+        assert!(fresh.is_primary, "a new draft with no reply target stays on the primary");
+    }
+
     #[test]
     fn edit_draft_expunges_only_the_old_uid() {
         let body = edit_draft_source();
@@ -7613,7 +8004,6 @@ mod tests {
     // user opens the draft in compose. These pin the two guards that make the
     // mismatch visible at the call.
 
-    #[test]
     /// The exact shape of the three-month outage: a `Re:` draft with no parent.
     #[test]
     fn reply_shaped_subject_without_a_target_is_rejected() {

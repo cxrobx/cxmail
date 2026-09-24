@@ -22,6 +22,8 @@ import type {
   TrackingPixel,
   EmailTemplate,
   Identity,
+  SendAsAddress,
+  SendAsSuggestion,
   CalendarEvent,
   CalendarConnection,
   CalendarEventInput,
@@ -536,6 +538,18 @@ export const api = {
   identities: {
     list: (accountId: string) =>
       invoke<Identity[]>("list_identities", { accountId }),
+    /** Every address this account may send as, primary first. */
+    listSendAs: (accountId: string) =>
+      invoke<SendAsAddress[]>("list_send_as", { accountId }),
+    /** The address a reply to this message should go out FROM — the send-as
+     * the original was addressed to, or the account's own address. The match
+     * runs in Rust so compose and the MCP cannot disagree about it. */
+    replyFrom: (accountId: string, folder: string, uid: number) =>
+      invoke<SendAsAddress>("reply_from_for_message", { accountId, folder, uid }),
+    /** Same-domain addresses this account has received mail at and is not yet
+     * configured to send as. Offered, never applied. */
+    suggestSendAs: (accountId: string) =>
+      invoke<SendAsSuggestion[]>("suggest_send_as", { accountId }),
     create: (identity: Identity) =>
       invoke<number>("create_identity", { identity }),
     update: (identity: Identity) =>

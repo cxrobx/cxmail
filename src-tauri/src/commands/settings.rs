@@ -48,6 +48,86 @@ pub async fn delete_identity(state: State<'_, AppState>, id: i64) -> Result<(), 
     db::identities::delete(&conn, id)
 }
 
+// ─── Send-as addresses ────────────────────────────────────────────────
+//
+// `identities` rows are the account's ALIASES; the account's own address is
+// always implicitly available and is never a row you have to create. See
+// `db::identities` for why there is no discovery path (no IMAP extension, and
+// the provider APIs that know are outside CXMail's OAuth grant).
+
+/// One address the account may send from, with its display name and signature.
+/// Primary first. Drives the compose From picker and the aliases editor.
+#[tauri::command]
+pub async fn list_send_as(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Vec<db::identities::SendAsAddress>, AppError> {
+    let conn = state.db.safe_lock();
+    let account = db::accounts::get_by_id(&conn, &account_id)?
+        .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?;
+    db::identities::send_as_addresses(
+        &conn,
+        &account.id,
+        &account.email,
+        account.display_name.as_deref(),
+    )
+}
+
+/// The address a reply to this message should go out FROM: the send-as the
+/// original was addressed to, falling back to the account's own address.
+///
+/// The match runs in Rust so the compose window and the MCP cannot disagree
+/// about it (gotcha #36). Reads the local cache only — never an IMAP fetch, so
+/// a reply's default can't wait on the network.
+#[tauri::command]
+pub async fn reply_from_for_message(
+    state: State<'_, AppState>,
+    account_id: String,
+    folder: String,
+    uid: u32,
+) -> Result<db::identities::SendAsAddress, AppError> {
+    let conn = state.db.safe_lock();
+    let account = db::accounts::get_by_id(&conn, &account_id)?
+        .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?;
+    db::identities::reply_from_for_message(
+        &conn,
+        &account.id,
+        &account.email,
+        account.display_name.as_deref(),
+        &folder,
+        uid,
+    )
+}
+
+/// Same-domain addresses this account has received mail at that are not yet
+/// configured — candidates for the aliases editor, most-received first. Never
+/// added automatically: only the user knows which of these is an alias of this
+/// mailbox and which is a list they are on.
+#[tauri::command]
+pub async fn suggest_send_as(
+    state: State<'_, AppState>,
+    account_id: String,
+) -> Result<Vec<SendAsSuggestion>, AppError> {
+    let conn = state.db.safe_lock();
+    let account = db::accounts::get_by_id(&conn, &account_id)?
+        .ok_or_else(|| AppError::NotFound("Account not found".to_string()))?;
+    Ok(
+        db::identities::suggest_aliases(&conn, &account.id, &account.email, 8)?
+            .into_iter()
+            .map(|(email, message_count)| SendAsSuggestion {
+                email,
+                message_count,
+            })
+            .collect(),
+    )
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SendAsSuggestion {
+    pub email: String,
+    pub message_count: u32,
+}
+
 // ─── Background Sync ─────────────────────────────────────────────────
 
 #[tauri::command]
