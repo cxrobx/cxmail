@@ -237,6 +237,27 @@ pub fn classify_headers(
     }
 }
 
+/// Store each header's delivery-header addresses (v64). Best-effort: they feed
+/// send-as suggestions and the reply default, so a failure is logged, never
+/// allowed to fail the sync that carried them.
+pub fn record_delivered_to(
+    conn: &Connection,
+    account_id: &str,
+    folder: &str,
+    headers: &[imap::ImapMessageHeader],
+) {
+    let rows: Vec<(u32, &str)> = headers
+        .iter()
+        .filter_map(|h| h.delivered_to.as_deref().map(|d| (h.uid, d)))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    if let Err(e) = db::messages::set_delivered_to_batch(conn, account_id, folder, &rows) {
+        log::warn!("sync: recording delivered-to for {folder} failed: {e}");
+    }
+}
+
 pub fn apply_header_batch(
     conn: &Connection,
     account_id: &str,
@@ -251,6 +272,7 @@ pub fn apply_header_batch(
         // Inside the insert, deliberately: see `classify_headers`. Every caller
         // gets it, and a new caller cannot forget it.
         classify_headers(conn, account_id, folder, headers);
+        record_delivered_to(conn, account_id, folder, headers);
         // Re-link drafts this software saved (v60): the compose window's
         // autosave and any other CXMail instance mint a new UID per save, and
         // the header is how the logical draft follows it through a sync.
@@ -608,6 +630,7 @@ mod tests {
                 list_unsubscribe TEXT,
                 list_unsubscribe_post TEXT,
                 thread_root_id TEXT,
+                delivered_to TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(account_id, folder_name, uid)
             );
@@ -747,6 +770,7 @@ mod tests {
             list_unsubscribe_post: None,
             precedence: None,
             draft_id: None,
+            delivered_to: None,
         }
     }
 

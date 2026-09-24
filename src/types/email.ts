@@ -412,7 +412,6 @@ export interface Identity {
   is_default: boolean;
 }
 
-export interface InboxGroupRule {
 /**
  * One address an account may put in a `From:` header.
  *
@@ -430,6 +429,9 @@ export interface SendAsAddress {
   signature_html: string | null;
   is_primary: boolean;
   identity_id: number | null;
+  /** Found on this account's own Sent mail rather than configured — the
+   * provider already accepted it as a From. */
+  from_sent?: boolean;
 }
 
 /** An address this account has received mail at that is not yet configured. */
@@ -438,6 +440,7 @@ export interface SendAsSuggestion {
   message_count: number;
 }
 
+export interface InboxGroupRule {
   id: number;
   group_id: number;
   field: string;

@@ -1996,6 +1996,7 @@ async fn server_search_one_account(
         {
             let conn = state.db.safe_lock();
             db::messages::insert_batch(&conn, &account.id, folder, &rows)?;
+            sync::record_delivered_to(&conn, &account.id, folder, &headers);
         }
         total_ingested += headers.len() as u32;
     }

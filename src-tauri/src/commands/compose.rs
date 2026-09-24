@@ -767,6 +767,7 @@ mod tests {
             signature_html: None,
             is_primary: false,
             identity_id: Some(2),
+            from_sent: false,
         };
         let raw = build_draft_raw(&alias, &email, "x@cxmail.app", "draft-1").unwrap();
         let text = raw.as_str();

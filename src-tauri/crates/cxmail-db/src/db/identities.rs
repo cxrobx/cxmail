@@ -58,12 +58,23 @@ pub fn delete(conn: &Connection, id: i64) -> Result<(), AppError> {
 // Gmail both let a mailbox own alias addresses, and mail that arrived at an
 // alias should be answered FROM that alias. Neither IMAP nor SMTP can
 // enumerate them — IMAP is a mailbox-access protocol with no identity
-// extension, and the provider APIs that do know (Gmail's
-// `users.settings.sendAs.list`, scope `gmail.settings.basic`; iCloud's private
-// web API) are outside CXMail's grant, which is plain `https://mail.google.com/`
-// for IMAP/SMTP. So aliases are **user-entered**, one row per alias in
-// `identities`, and this module is where "which addresses may this account
-// send as" is answered.
+// extension. (Gmail's `users.settings.sendAs.list` does accept the plain
+// `https://mail.google.com/` grant CXMail holds, but it covers Gmail alone and
+// is not wired; iCloud has no public API at all.) So an alias comes from one of
+// two places, and this module is where "which addresses may this account send
+// as" is answered:
+//
+//  * **configured** — one `identities` row per alias, entered by the user;
+//  * **found in Sent** — any `From:` on the account's own Sent folder. That is
+//    proof, not a guess: the provider's submission server accepted it (Gmail
+//    even rewrites a From it will not send as), and nobody but the account can
+//    put mail there. Derived at read time so it never goes stale, and
+//    suppressed per address by a `send_as_hidden` tombstone (v64) when the user
+//    removes it.
+//
+// Incoming-mail evidence (`Delivered-To`, iCloud's `Original-recipient`) is
+// NOT proof — a sender can write any header — so it only ever SUGGESTS
+// (`suggest_aliases`); a person confirms.
 
 /// One address an account may put in a `From:` header.
 ///
@@ -86,6 +97,10 @@ pub struct SendAsAddress {
     pub is_primary: bool,
     /// `identities.id`, or `None` for an implicit primary with no row.
     pub identity_id: Option<i64>,
+    /// True when the address was found on this account's own Sent mail rather
+    /// than configured. `identity_id` is `None` for these.
+    #[serde(default)]
+    pub from_sent: bool,
 }
 
 /// Lowercase + trim — the comparison form for an email address, matching the
@@ -109,12 +124,113 @@ pub fn send_as_addresses(
     account_display_name: Option<&str>,
 ) -> Result<Vec<SendAsAddress>, AppError> {
     let rows = list_by_account(conn, account_id)?;
-    Ok(build_send_as(
-        account_id,
-        account_email,
-        account_display_name,
-        &rows,
-    ))
+    let mut out = build_send_as(account_id, account_email, account_display_name, &rows);
+    let hidden = hidden_send_as(conn, account_id);
+    let sent = sent_from_addresses(conn, account_id);
+    append_sent_detected(&mut out, &sent, &hidden);
+    Ok(out)
+}
+
+/// The pure half of the Sent-folder detection: append each address found on
+/// Sent mail that is neither already listed nor hidden. Configured rows win —
+/// they carry the user's display name and signature.
+pub fn append_sent_detected(out: &mut Vec<SendAsAddress>, sent: &[String], hidden: &[String]) {
+    let Some(account_id) = out.first().map(|a| a.account_id.clone()) else {
+        return;
+    };
+    for addr in sent {
+        let key = normalize_addr(addr);
+        if key.is_empty() || !key.contains('@') {
+            continue;
+        }
+        if hidden.contains(&key) || out.iter().any(|a| normalize_addr(&a.email) == key) {
+            continue;
+        }
+        out.push(SendAsAddress {
+            account_id: account_id.clone(),
+            email: addr.trim().to_string(),
+            display_name: None,
+            signature_html: None,
+            is_primary: false,
+            identity_id: None,
+            from_sent: true,
+        });
+    }
+}
+
+/// Distinct `From:` addresses on this account's Sent folder, most-used first,
+/// in the spelling first seen. Empty when the folder list has not synced — the
+/// account then simply lists what is configured.
+///
+/// The Sent folder and nothing else: a Drafts row was never submitted, and a
+/// Gmail All Mail row is a mirror that also holds everyone else's mail.
+pub fn sent_from_addresses(conn: &Connection, account_id: &str) -> Vec<String> {
+    let Some(sent) = crate::db::folders::sent_folder_for_account(conn, account_id) else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT MIN(trim(from_email)) FROM messages
+         WHERE account_id = ?1 AND folder_name = ?2
+           AND from_email IS NOT NULL AND trim(from_email) != ''
+         GROUP BY lower(trim(from_email))
+         ORDER BY COUNT(*) DESC, 1",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![account_id, sent], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Normalized addresses the user removed for this account. Tolerates a
+/// pre-v64 database (the MCP migrates non-fatally): no table, nothing hidden.
+pub fn hidden_send_as(conn: &Connection, account_id: &str) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare("SELECT email FROM send_as_hidden WHERE account_id = ?1")
+    else {
+        return Vec::new();
+    };
+    stmt.query_map(params![account_id], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Remove an alias from the account's send-as list: delete its configured row
+/// (if any) AND tombstone the address, so one that is also on Sent mail does
+/// not come straight back as "found in Sent". Removing the primary is refused.
+pub fn remove_send_as(
+    conn: &Connection,
+    account_id: &str,
+    account_email: &str,
+    email: &str,
+) -> Result<(), AppError> {
+    let key = normalize_addr(email);
+    if key.is_empty() {
+        return Err(AppError::General("No address given.".to_string()));
+    }
+    if key == normalize_addr(account_email) {
+        return Err(AppError::General(
+            "The account's own address cannot be removed.".to_string(),
+        ));
+    }
+    conn.execute(
+        "DELETE FROM identities WHERE account_id = ?1 AND lower(trim(email)) = ?2",
+        params![account_id, key],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO send_as_hidden (account_id, email) VALUES (?1, ?2)",
+        params![account_id, key],
+    )?;
+    Ok(())
+}
+
+/// Adding an address the user once removed brings it back: the tombstone only
+/// ever stood for "I don't want this one".
+pub fn unhide_send_as(conn: &Connection, account_id: &str, email: &str) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM send_as_hidden WHERE account_id = ?1 AND email = ?2",
+        params![account_id, normalize_addr(email)],
+    )?;
+    Ok(())
 }
 
 /// The pure half of [`send_as_addresses`] — no DB, so the folding and dedupe
@@ -133,6 +249,7 @@ pub fn build_send_as(
         signature_html: None,
         is_primary: true,
         identity_id: None,
+        from_sent: false,
     };
     let mut aliases: Vec<SendAsAddress> = Vec::new();
     let mut seen: Vec<String> = vec![primary_key.clone()];
@@ -165,6 +282,7 @@ pub fn build_send_as(
             signature_html: id.signature_html.clone(),
             is_primary: false,
             identity_id: id.id,
+            from_sent: false,
         });
     }
 
@@ -280,28 +398,59 @@ pub fn reply_from_for_message(
     }
 }
 
-/// Addresses this account has received mail at that are not already a
-/// configured send-as — candidate aliases, offered so the user picks from
-/// their own mailbox instead of typing an address from memory.
+/// Addresses this account's mail was DELIVERED to that it cannot yet send as —
+/// candidate aliases, most-delivered first.
 ///
-/// Counted over the account's own cached `to_list` / `cc_list`, most-received
-/// first. A suggestion is never applied on its own: the user still has to add
-/// it, because only they know which of these is an alias of THIS mailbox and
-/// which is a list they happen to be on.
+/// The evidence is the delivery headers the receiving server writes
+/// (`Delivered-To`, `X-Original-To`, iCloud's `Original-recipient`), from the
+/// `messages.delivered_to` column sync fills (v64) and from any full header
+/// block cached in `message_headers`. NOT the `To:`/`Cc:` lists: those name
+/// every co-recipient, and on a shared domain (`gmail.com`, `icloud.com`) a
+/// same-domain filter offered strangers as your aliases.
+///
+/// A suggestion is never applied on its own: a sender can write any header, so
+/// only a person may turn one into a send-as. Addresses the user removed are
+/// not offered again.
 pub fn suggest_aliases(
     conn: &Connection,
     account_id: &str,
     account_email: &str,
     limit: usize,
 ) -> Result<Vec<(String, u32)>, AppError> {
-    let existing: Vec<String> = send_as_addresses(conn, account_id, account_email, None)?
+    let mut skip: Vec<String> = send_as_addresses(conn, account_id, account_email, None)?
         .iter()
         .map(|a| normalize_addr(&a.email))
         .collect();
+    skip.extend(hidden_send_as(conn, account_id));
+
+    // (normalized key, first-seen spelling, count)
+    let mut tally: Vec<(String, String, u32)> = Vec::new();
+    let mut count = |addr: String| {
+        let key = normalize_addr(&addr);
+        if key.is_empty() || !key.contains('@') || skip.contains(&key) {
+            return;
+        }
+        // `me+tag@domain` is a sub-address of an address already listed, not
+        // a second one — on the live mailbox, dozens of `cxrobx+aa-e2e-…`
+        // test signups would otherwise crowd out the real candidates.
+        if skip.contains(&strip_plus_tag(&key)) {
+            return;
+        }
+        match tally.iter_mut().find(|(k, _, _)| *k == key) {
+            Some(entry) => entry.2 += 1,
+            None => tally.push((key, addr, 1)),
+        }
+    };
+
+    // One count per message: a message carries the same address in both the
+    // column and its cached header block, and must not vote twice.
     let mut stmt = conn.prepare(
-        "SELECT to_list, cc_list FROM messages
-         WHERE account_id = ?1 AND to_list IS NOT NULL AND to_list != ''
-         ORDER BY date DESC LIMIT 4000",
+        "SELECT m.delivered_to, h.raw_headers FROM messages m
+         LEFT JOIN message_headers h
+           ON h.account_id = m.account_id AND h.folder_name = m.folder_name AND h.uid = m.uid
+         WHERE m.account_id = ?1
+           AND (m.delivered_to IS NOT NULL OR h.raw_headers IS NOT NULL)
+         ORDER BY m.date DESC LIMIT 5000",
     )?;
     let rows = stmt.query_map(params![account_id], |row| {
         Ok((
@@ -309,30 +458,20 @@ pub fn suggest_aliases(
             row.get::<_, Option<String>>(1)?,
         ))
     })?;
-    // (normalized key, first-seen spelling, count) — the spelling is kept so
-    // the suggestion reads the way the sender wrote it.
-    let mut tally: Vec<(String, String, u32)> = Vec::new();
-    let domain = account_email.rsplit_once('@').map(|(_, d)| normalize_addr(d));
     for row in rows {
-        let (to_json, cc_json) = row?;
-        for json in [to_json, cc_json].into_iter().flatten() {
-            for addr in crate::db::messages::addresses_from_json_pub(&json) {
-                let key = normalize_addr(&addr);
-                if key.is_empty() || existing.contains(&key) {
-                    continue;
-                }
-                // Only same-domain addresses: an alias of this mailbox lives on
-                // the mailbox's own domain, and everything else is every
-                // correspondent the account has ever been cc'd with.
-                match (&domain, key.rsplit_once('@')) {
-                    (Some(d), Some((_, kd))) if kd == d => {}
-                    _ => continue,
-                }
-                match tally.iter_mut().find(|(k, _, _)| *k == key) {
-                    Some(entry) => entry.2 += 1,
-                    None => tally.push((key, addr, 1)),
-                }
+        let (column, block) = row?;
+        let mut seen: Vec<String> = Vec::new();
+        let mut per_message = column.as_deref().map(extract_addresses).unwrap_or_default();
+        if let Some(block) = block.as_deref() {
+            per_message.extend(delivery_header_addresses(block));
+        }
+        for addr in per_message {
+            let key = normalize_addr(&addr);
+            if seen.contains(&key) {
+                continue;
             }
+            seen.push(key);
+            count(addr);
         }
     }
     tally.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
@@ -341,6 +480,17 @@ pub fn suggest_aliases(
         .take(limit)
         .map(|(_, spelling, count)| (spelling, count))
         .collect())
+}
+
+/// `local+tag@domain` → `local@domain`; anything else unchanged.
+fn strip_plus_tag(addr: &str) -> String {
+    match addr.split_once('@') {
+        Some((local, domain)) => match local.split_once('+') {
+            Some((base, _)) if !base.is_empty() => format!("{base}@{domain}"),
+            _ => addr.to_string(),
+        },
+        None => addr.to_string(),
+    }
 }
 
 /// Addresses on the delivery headers of a raw header block, in the order the
@@ -352,7 +502,10 @@ pub fn suggest_aliases(
 /// Folding-aware, per gotcha #37: a continuation line belongs to the header
 /// above it.
 pub fn delivery_header_addresses(raw_headers: &str) -> Vec<String> {
-    const WANTED: [&str; 3] = ["delivered-to", "x-original-to", "envelope-to"];
+    // `original-recipient` is iCloud's (RFC 3798's `rfc822;addr` form): an
+    // iCloud message delivered on an alias carries the alias there even when
+    // its `To:` names a list or someone else entirely.
+    const WANTED: [&str; 4] = ["delivered-to", "x-original-to", "envelope-to", "original-recipient"];
     let mut out: Vec<String> = Vec::new();
     let mut keeping = false;
     let mut current = String::new();
@@ -395,7 +548,7 @@ pub fn delivery_header_addresses(raw_headers: &str) -> Vec<String> {
 
 /// Pull bare addresses out of a header value. Handles `a@b`, `<a@b>` and
 /// `Name <a@b>`, comma-separated.
-fn extract_addresses(value: &str) -> Vec<String> {
+pub(crate) fn extract_addresses(value: &str) -> Vec<String> {
     let mut out = Vec::new();
     for part in value.split(',') {
         let part = part.trim();
@@ -406,7 +559,8 @@ fn extract_addresses(value: &str) -> Vec<String> {
             (Some(lt), Some(gt)) if gt > lt => &part[lt + 1..gt],
             _ => part,
         };
-        let addr = addr.trim();
+        // `rfc822;addr` — the address-type prefix `Original-recipient` carries.
+        let addr = addr.rsplit(';').next().unwrap_or(addr).trim();
         if addr.contains('@') && !addr.contains(' ') {
             out.push(addr.to_string());
         }
@@ -619,5 +773,156 @@ mod send_as_tests {
             match_send_as(&list, &recipients).unwrap().email,
             "rileyprime@icloud.com"
         );
+    }
+}
+
+/// Detection from Sent mail, the `send_as_hidden` tombstone, and delivery-header
+/// suggestions — against a real schema, on the shapes seen in the live mailbox.
+#[cfg(test)]
+mod detection_tests {
+    use super::*;
+
+    const PRIMARY: &str = "sidalias@icloud.com";
+    const ALIAS: &str = "rileyprime@icloud.com";
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::initialize(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host)
+             VALUES ('acct', ?1, 'icloud', 'h', 'h')",
+            params![PRIMARY],
+        )
+        .unwrap();
+        for (name, kind) in [("Sent Messages", "sent"), ("Drafts", "drafts"), ("INBOX", "inbox")] {
+            conn.execute(
+                "INSERT INTO folders (account_id, name, folder_type) VALUES ('acct', ?1, ?2)",
+                params![name, kind],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn msg(conn: &Connection, folder: &str, uid: u32, from: &str, to: &str, delivered: Option<&str>) {
+        conn.execute(
+            "INSERT INTO messages (account_id, folder_name, uid, from_email, to_list, date, delivered_to)
+             VALUES ('acct', ?1, ?2, ?3, ?4, '2026-09-01T00:00:00Z', ?5)",
+            params![folder, uid, from, format!(r#"[{{"name":null,"email":"{to}"}}]"#), delivered],
+        )
+        .unwrap();
+    }
+
+    fn list(conn: &Connection) -> Vec<SendAsAddress> {
+        send_as_addresses(conn, "acct", PRIMARY, None).unwrap()
+    }
+
+    /// The live case: uids 78/79 in iCloud's Sent carry `From:` the alias. That
+    /// alone makes it a send-as — nothing typed, nothing confirmed.
+    #[test]
+    fn an_address_on_sent_mail_is_a_send_as_without_being_configured() {
+        let conn = db();
+        msg(&conn, "Sent Messages", 78, "rileyprime@icloud.com", "a@x.com", None);
+        msg(&conn, "Sent Messages", 79, "RileyPrime@iCloud.com", "a@x.com", None);
+        msg(&conn, "Sent Messages", 80, PRIMARY, "a@x.com", None);
+        let got = list(&conn);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].is_primary);
+        assert_eq!(normalize_addr(&got[1].email), ALIAS);
+        assert!(got[1].from_sent && got[1].identity_id.is_none());
+        // And it resolves as a From, which is what lets send/draft accept it.
+        assert!(resolve_send_as(&got, Some(ALIAS)).is_ok());
+    }
+
+    /// Only the Sent folder is proof. A draft was never submitted, and an
+    /// inbox message's From is somebody else.
+    #[test]
+    fn drafts_and_received_mail_prove_nothing() {
+        let conn = db();
+        msg(&conn, "Drafts", 1, "spoof@icloud.com", "a@x.com", None);
+        msg(&conn, "INBOX", 2, "friend@icloud.com", PRIMARY, None);
+        assert_eq!(list(&conn).len(), 1);
+    }
+
+    /// A configured row wins over the same address on Sent mail — it carries
+    /// the user's display name and signature.
+    #[test]
+    fn a_configured_alias_is_not_listed_twice() {
+        let conn = db();
+        msg(&conn, "Sent Messages", 78, ALIAS, "a@x.com", None);
+        insert(
+            &conn,
+            &Identity {
+                id: None,
+                account_id: "acct".into(),
+                email: ALIAS.into(),
+                display_name: Some("Christopher".into()),
+                signature_html: None,
+                is_default: false,
+            },
+        )
+        .unwrap();
+        let got = list(&conn);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(!got[1].from_sent);
+        assert_eq!(got[1].display_name.as_deref(), Some("Christopher"));
+    }
+
+    /// Removing a found-in-Sent alias must stick — without the tombstone it is
+    /// back on the next read — and re-adding it undoes the removal.
+    #[test]
+    fn removing_an_alias_keeps_it_removed_until_it_is_added_back() {
+        let conn = db();
+        msg(&conn, "Sent Messages", 78, ALIAS, "a@x.com", None);
+        remove_send_as(&conn, "acct", PRIMARY, "RileyPrime@icloud.com").unwrap();
+        assert_eq!(list(&conn).len(), 1);
+        assert!(resolve_send_as(&list(&conn), Some(ALIAS)).is_err());
+
+        unhide_send_as(&conn, "acct", ALIAS).unwrap();
+        assert_eq!(list(&conn).len(), 2);
+
+        assert!(
+            remove_send_as(&conn, "acct", PRIMARY, "SidAlias@icloud.com").is_err(),
+            "the primary is not removable"
+        );
+    }
+
+    /// iCloud's `Original-recipient: rfc822;addr`, verbatim from uid 1156.
+    #[test]
+    fn icloud_original_recipient_is_read_without_its_address_type() {
+        let block = "Return-path: <bounces@em.example>\r\n\
+                     Original-recipient: rfc822;rileyprime@icloud.com\r\n\
+                     To: Christopher Robinson <rileyprime@icloud.com>\r\n";
+        assert_eq!(delivery_header_addresses(block), vec![ALIAS.to_string()]);
+    }
+
+    /// The reply default reads sync's `delivered_to` column: a message whose
+    /// `To:` is a list still answers from the alias it was delivered on.
+    #[test]
+    fn the_reply_default_uses_the_delivered_to_column() {
+        let conn = db();
+        msg(&conn, "Sent Messages", 78, ALIAS, "a@x.com", None);
+        msg(&conn, "INBOX", 5, "list@lists.example", "members@lists.example", Some(ALIAS));
+        let hit = reply_from_for_message(&conn, "acct", PRIMARY, None, "INBOX", 5).unwrap();
+        assert_eq!(normalize_addr(&hit.email), ALIAS);
+    }
+
+    /// Suggestions come from delivery evidence only. The regression this
+    /// guards: a same-domain `To:` filter offered every other `@gmail.com`
+    /// co-recipient on `cxrobx@gmail.com` as an alias.
+    #[test]
+    fn suggestions_come_from_delivery_headers_not_from_co_recipients() {
+        let conn = db();
+        for uid in 10..15 {
+            msg(&conn, "INBOX", uid, "x@y.com", "stranger@icloud.com", Some(PRIMARY));
+        }
+        msg(&conn, "INBOX", 20, "x@y.com", "list@y.com", Some("other@icloud.com"));
+        msg(&conn, "INBOX", 21, "x@y.com", "list@y.com", Some("other@icloud.com, sidalias@icloud.com"));
+        msg(&conn, "INBOX", 22, "x@y.com", "list@y.com", Some("gone@icloud.com"));
+        msg(&conn, "INBOX", 23, "x@y.com", "list@y.com", Some("SidAlias+signup@icloud.com"));
+        remove_send_as(&conn, "acct", PRIMARY, "gone@icloud.com").unwrap();
+
+        let got = suggest_aliases(&conn, "acct", PRIMARY, 8).unwrap();
+        assert_eq!(got, vec![("other@icloud.com".to_string(), 2)], "{got:?}");
     }
 }

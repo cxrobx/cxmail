@@ -1,6 +1,6 @@
 # Known Gotchas
 
-Organized by category. 63 items, condensed format. Original numbering preserved (gaps intentional).
+Organized by category. 64 items, condensed format. Original numbering preserved (gaps intentional).
 
 > Pruned 2026-08-17: investigation narratives and measurements trimmed; the rules, invariants, and patterns are all still here. Full histories: git history of this file (pre-prune) and the Recent Learnings section of `CLAUDE.md`.
 
@@ -71,6 +71,7 @@ Organized by category. 63 items, condensed format. Original numbering preserved 
 | 60 | A per-area transparency cannot be a subtree `--alpha-*` override — `@theme` tokens resolve at `:root` — so the email body's dial is a solved veil, and its cap is the clamp at 0 | Frontend |
 | 61 | A thread's members come from EVERY folder — so your own replies printed twice and an unsent draft printed as sent, and the count had the same blind spot | Database |
 | 62 | A draft saved in Gmail's editor loses CXMail's `email-signature`/`cx-quote` classes — reopened in compose, the signature table flattened and a second signature landed below the quote | Frontend |
+| 63 | Send-as: an address on your own Sent mail is PROOF, a delivery header is only a SUGGESTION, and a same-domain `To:` filter offers strangers as aliases | Database |
 
 ---
 
@@ -1240,6 +1241,27 @@ Pattern: `db/folders.rs::{is_draft_sql, folder_rank_sql}`,
 **Test the stored artefact, not the editor**: `draftRecovery.test.ts` loops open → signature step → edit → save (with `data-*` stripped like ammonia) three times and counts signature text copies outside the quote — counting only `div.email-signature` missed a recovered table sitting beside an appended signature (mutation-found). Verified against the real 988 body + real identity signature: 1 signature, a table, directly above the quote, quote tables intact across 3 saves. Drafts already damaged before the fix (e.g. 991) are not repaired — the no-duplicate rule just stops them getting worse.
 
 Pattern: `src/lib/draftRecovery.ts`, `ComposeModal.tsx` (`initialContent`, signature effect), `src/lib/quoteToggle.ts::splitTrailingQuote`. Related: #34, #13, #55.
+
+---
+
+### 63. Send-as: Sent mail is proof, delivery headers are a suggestion, `To:` is neither (T207)
+
+**No API lists aliases over IMAP.** Gmail's `users.settings.sendAs.list` *does* accept the `https://mail.google.com/` grant CXMail already holds (an earlier note said it needed `gmail.settings.basic` — wrong), but it is Gmail-only and not wired; iCloud has no public API. So `db::identities::send_as_addresses` = the account's own address + configured `identities` rows + **every `From:` on the account's own Sent folder** (`sent_from_addresses`, derived at read time, flagged `from_sent`).
+
+**The trust split is the whole design:**
+- **Sent mail = proof.** The provider's submission server accepted that From (Gmail rewrites one it won't send as) and nobody else can put mail in your Sent folder. Sent folder ONLY — a Drafts row was never submitted, and Gmail's All Mail holds everyone's mail.
+- **Delivery headers = suggestion.** `Delivered-To` / `X-Original-To` / iCloud's `Original-recipient: rfc822;addr` are written by the receiving server, but a sender can forge any header, so `suggest_aliases` only offers; a person confirms.
+- **`To:`/`Cc:` = neither.** The first `suggest_aliases` filtered same-domain `To:` addresses, which on a shared domain offered ~20 other `@gmail.com` co-recipients as `cxrobx@gmail.com`'s aliases. Plus-tags of a listed address (`cxrobx+aa-e2e-…`) are sub-addresses, also skipped.
+
+**`Original-recipient` carries an address-type prefix** (`rfc822;`), so `extract_addresses` takes the text after the last `;` — without it the header parses to `rfc822;alias@…` and matches nothing (mutation-tested).
+
+**Removal needs a tombstone** (`send_as_hidden`, v64): a found-in-Sent alias has no row to delete and re-derives on the next read. `remove_send_as` deletes any row AND tombstones; `create_identity` clears it. The UI removes through `remove_send_as`, never `identities.delete`.
+
+**`messages.delivered_to` (v64) is a column, not a `message_headers` row** — that table means "the full block is cached" (#37). Sync fills it from its named header subset (`DELIVERED-TO X-ORIGINAL-TO ORIGINAL-RECIPIENT`, via `sync::record_delivered_to`, NULL-only); no backfill, so older mail relies on cached full blocks. The reply default reads To → Cc → `delivered_to` → cached block.
+
+Verify on a `.backup` copy: `cargo run -p cxmail-db --example send_as_probe -- <copy.db>`. On 2026-09-23 it found `rileyprime@icloud.com` from uids 78/79 in iCloud Sent with nothing configured, and suggested only `admin@artistadvisory.io` and `hello@cxventures.io`.
+
+Pattern: `db/identities.rs::{send_as_addresses, sent_from_addresses, append_sent_detected, remove_send_as, suggest_aliases, delivery_header_addresses}`, `db/schema.rs::migrate_v64_send_as_evidence`, `email/imap.rs::parse_fetch_to_header`, `email/sync.rs::record_delivered_to`, `commands/settings.rs::remove_send_as`, `SendAsSection.tsx`. Related: #36, #37, #30.
 
 ---
 

@@ -112,11 +112,14 @@ export default function SendAsSection() {
 
   const remove = useCallback(
     async (address: SendAsAddress) => {
-      if (address.identity_id == null) return;
+      if (address.is_primary) return;
       setBusy(true);
       setError(null);
       try {
-        await api.identities.delete(address.identity_id);
+        // Not `identities.delete`: an alias found on Sent mail has no row to
+        // delete, and a configured one that is ALSO on Sent mail would come
+        // straight back. The backend deletes the row and tombstones the address.
+        await api.identities.removeSendAs(accountId, address.email);
         await reload(accountId);
       } catch (e) {
         setError(String(e));
@@ -162,6 +165,14 @@ export default function SendAsSection() {
           >
             <AtSign className="h-3 w-3 shrink-0 text-content-faint" />
             <span className="min-w-0 flex-1 truncate text-content">{a.email}</span>
+            {a.from_sent && (
+              <span
+                className="shrink-0 text-[10px] uppercase tracking-wide text-content-faint"
+                title="You have sent mail from this address, so the provider accepts it."
+              >
+                found in Sent
+              </span>
+            )}
             {a.is_primary ? (
               // The account's own address is not a row anyone created and
               // cannot be removed — deleting the identity row that folds into
@@ -228,7 +239,7 @@ export default function SendAsSection() {
       {unconfigured.length > 0 && (
         <div className="mt-2">
           <p className="mb-1 text-[11px] text-content-faint">
-            Addresses on this domain that mail has arrived at:
+            Mail was delivered to these addresses — add one if it is yours:
           </p>
           <div className="flex flex-wrap gap-1">
             {unconfigured.map((s) => (
@@ -249,9 +260,10 @@ export default function SendAsSection() {
       )}
 
       <p className="mt-2.5 text-[11px] leading-snug text-content-faint">
-        Replies default to the address the original was sent to. Sending still signs in as the
-        account itself, so the provider has to recognise the alias too — adding it here does not
-        grant the right, it only lets CXMail ask.
+        Any address you have sent from shows up here on its own. Replies default to the address
+        the original was sent to. Sending still signs in as the account itself, so the provider
+        has to recognise an alias you add by hand — adding it here does not grant the right, it
+        only lets CXMail ask.
       </p>
     </section>
   );

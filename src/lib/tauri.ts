@@ -548,6 +548,10 @@ export const api = {
       invoke<SendAsAddress>("reply_from_for_message", { accountId, folder, uid }),
     /** Same-domain addresses this account has received mail at and is not yet
      * configured to send as. Offered, never applied. */
+    /** Remove a non-primary send-as (configured or found in Sent) and keep it
+     * removed; adding it back undoes that. */
+    removeSendAs: (accountId: string, email: string) =>
+      invoke<void>("remove_send_as", { accountId, email }),
     suggestSendAs: (accountId: string) =>
       invoke<SendAsSuggestion[]>("suggest_send_as", { accountId }),
     create: (identity: Identity) =>

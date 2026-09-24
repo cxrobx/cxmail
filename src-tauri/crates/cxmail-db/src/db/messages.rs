@@ -849,12 +849,50 @@ pub fn recipients_for_send_as_match(
             push(addr, &mut out);
         }
     }
+    // Delivery evidence after To/Cc: sync's `delivered_to` column (v64), then
+    // a cached full header block. Tolerates a pre-v64 table — this feeds a
+    // default, so a missing column is "no evidence", not an error.
+    let delivered: Option<String> = conn
+        .query_row(
+            "SELECT delivered_to FROM messages
+             WHERE account_id = ?1 AND folder_name = ?2 AND uid = ?3",
+            params![account_id, folder_name, uid],
+            |row| row.get(0),
+        )
+        .unwrap_or(None);
+    if let Some(list) = delivered {
+        for addr in super::identities::extract_addresses(&list) {
+            push(addr, &mut out);
+        }
+    }
     if let Some(block) = get_raw_headers(conn, account_id, folder_name, uid)? {
         for addr in super::identities::delivery_header_addresses(&block) {
             push(addr, &mut out);
         }
     }
     Ok(out)
+}
+
+/// Record the delivery-header addresses sync read for a batch of messages
+/// (v64). Only fills a NULL: the first sighting is as good as any, and a later
+/// partial fetch must not blank it.
+pub fn set_delivered_to_batch(
+    conn: &Connection,
+    account_id: &str,
+    folder_name: &str,
+    rows: &[(u32, &str)],
+) -> Result<(), AppError> {
+    let mut stmt = conn.prepare(
+        "UPDATE messages SET delivered_to = ?4
+         WHERE account_id = ?1 AND folder_name = ?2 AND uid = ?3 AND delivered_to IS NULL",
+    )?;
+    for (uid, value) in rows {
+        if value.trim().is_empty() {
+            continue;
+        }
+        stmt.execute(params![account_id, folder_name, uid, value])?;
+    }
+    Ok(())
 }
 
 /// `to_list` / `cc_list` hold `serde_json::to_string(&Vec<EmailAddress>)`.

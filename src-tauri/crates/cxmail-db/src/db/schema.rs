@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i32 = 63;
+const CURRENT_VERSION: i32 = 64;
 
 /// Initialize the database, creating tables if needed and running migrations.
 pub fn initialize(conn: &Connection) -> Result<()> {
@@ -212,6 +212,9 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     if version < 63 {
         migrate_v63_triage_withheld(conn)?;
     }
+    if version < 64 {
+        migrate_v64_send_as_evidence(conn)?;
+    }
 
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
@@ -295,6 +298,32 @@ pub(crate) fn migrate_v63_triage_withheld(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "triage_verdicts", "withheld_reason")? {
         conn.execute_batch("ALTER TABLE triage_verdicts ADD COLUMN withheld_reason TEXT;")?;
     }
+    Ok(())
+}
+
+/// v64: the two stores send-as detection needs (T207).
+///
+/// * `messages.delivered_to` — the addresses a message's delivery headers
+///   (`Delivered-To`, `X-Original-To`, iCloud's `Original-recipient`) name,
+///   written by sync from its named header subset. A column, not a
+///   `message_headers` row: that table means "the FULL block is cached"
+///   (gotcha #37), and a partial block there would make `read_email_source`
+///   report a cache hit it does not have. No backfill — unreconstructible from
+///   stored data, and only suggestions and the reply default read it.
+/// * `send_as_hidden` — per-account tombstones for addresses the user removed,
+///   so an alias found on Sent mail stays gone. Cascades with the account: a
+///   tombstone means nothing once the mailbox it hid an address from is gone.
+pub(crate) fn migrate_v64_send_as_evidence(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "messages", "delivered_to")? {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN delivered_to TEXT;")?;
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS send_as_hidden (
+             account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+             email      TEXT NOT NULL,
+             PRIMARY KEY (account_id, email)
+         );",
+    )?;
     Ok(())
 }
 

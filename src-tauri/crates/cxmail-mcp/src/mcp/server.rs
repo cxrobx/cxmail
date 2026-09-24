@@ -96,7 +96,7 @@ pub struct ListFoldersParams {
 pub struct ComposeDraftParams {
     #[schemars(description = "Account ID to send from")]
     pub account_id: String,
-    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's configured send-as addresses over the original's To, Cc and cached Delivered-To headers); otherwise the account's own address. Pass one only to override that — `list_accounts` prints each account's configured send-as addresses. An address the account is not configured to send as is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
+    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's send-as addresses over the original's To, Cc and delivery headers — Delivered-To, iCloud's Original-recipient); otherwise the account's own address. An account's send-as addresses are the ones configured in the app PLUS any address found on its own Sent mail. Pass one only to override that — `list_accounts` prints each account's send-as addresses. An address that is neither is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
     pub from: Option<String>,
     #[schemars(description = "Recipient email addresses")]
     pub to: Vec<String>,
@@ -154,7 +154,7 @@ pub struct ComposeDraftParams {
 pub struct EditDraftParams {
     #[schemars(description = "Account ID")]
     pub account_id: String,
-    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's configured send-as addresses over the original's To, Cc and cached Delivered-To headers); otherwise the account's own address. Pass one only to override that — `list_accounts` prints each account's configured send-as addresses. An address the account is not configured to send as is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
+    #[schemars(description = "Optional send-as address for the `From:` header. Omit and CXMail picks it: for a reply, the address the ORIGINAL was addressed to (matched against the account's send-as addresses over the original's To, Cc and delivery headers — Delivered-To, iCloud's Original-recipient); otherwise the account's own address. An account's send-as addresses are the ones configured in the app PLUS any address found on its own Sent mail. Pass one only to override that — `list_accounts` prints each account's send-as addresses. An address that is neither is REFUSED and nothing is written; add it in the app under the account's Send-as addresses first. SMTP still authenticates as the account, so the provider must also recognise the alias for a send to succeed.")]
     pub from: Option<String>,
     #[schemars(
         description = "PREFERRED: the draft's stable `draft_id`, as returned by compose_draft / edit_draft. It names the logical draft no matter how many times it has been re-saved since — every save (the compose window's autosave included) mints a new UID. Pass either this or `uid`, never both."
@@ -7118,6 +7118,7 @@ mod tests {
             signature_html: None,
             is_primary: true,
             identity_id: None,
+            from_sent: false,
         };
         let alias = db::identities::SendAsAddress {
             email: "rileyprime@icloud.com".into(),
@@ -7169,6 +7170,7 @@ mod tests {
             signature_html: None,
             is_primary: false,
             identity_id: None,
+            from_sent: false,
         };
         assert_eq!(
             signature_for_send_as(&conn, "acct", &bare).as_deref(),

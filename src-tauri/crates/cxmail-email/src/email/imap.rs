@@ -335,6 +335,11 @@ pub struct ImapMessageHeader {
     /// `X-CXMail-Draft-Id` — the logical draft this revision belongs to
     /// (`db::drafts`, v60). Only drafts this software saved carry it.
     pub draft_id: Option<String>,
+    /// The addresses the delivery headers name (`Delivered-To`,
+    /// `X-Original-To`, iCloud's `Original-recipient`), comma-joined; `None`
+    /// when there are none. Stored as `messages.delivered_to` (v64) — evidence
+    /// for send-as suggestions and the reply default, never proof.
+    pub delivered_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -806,7 +811,7 @@ pub async fn fetch_headers(
     let mut fetch_stream = session
         .uid_fetch(
             &range,
-            "(UID ENVELOPE FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST PRECEDENCE X-CXMAIL-DRAFT-ID)])",
+            "(UID ENVELOPE FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST PRECEDENCE X-CXMAIL-DRAFT-ID DELIVERED-TO X-ORIGINAL-TO ORIGINAL-RECIPIENT)])",
         )
         .await
         .map_err(|e| AppError::Imap(format!("FETCH headers failed: {}", e)))?;
@@ -955,7 +960,7 @@ pub async fn fetch_headers_for_uids(
         let mut fetch_stream = session
             .uid_fetch(
                 &sequence,
-                "(UID ENVELOPE FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST PRECEDENCE X-CXMAIL-DRAFT-ID)])",
+                "(UID ENVELOPE FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE LIST-UNSUBSCRIBE-POST PRECEDENCE X-CXMAIL-DRAFT-ID DELIVERED-TO X-ORIGINAL-TO ORIGINAL-RECIPIENT)])",
             )
             .await
             .map_err(|e| AppError::Imap(format!("FETCH headers for {} failed: {}", sequence, e)))?;
@@ -1414,6 +1419,8 @@ fn parse_fetch_to_header(uid: u32, fetch: &Fetch) -> ImapMessageHeader {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let precedence = extract_header_value(header_text, "Precedence");
+    let delivered = crate::db::identities::delivery_header_addresses(header_text);
+    let delivered_to = (!delivered.is_empty()).then(|| delivered.join(", "));
 
     let to_list = envelope_addresses_to_json(envelope.as_ref().and_then(|e| e.to.as_ref()));
     let cc_list = envelope_addresses_to_json(envelope.as_ref().and_then(|e| e.cc.as_ref()));
@@ -1437,6 +1444,7 @@ fn parse_fetch_to_header(uid: u32, fetch: &Fetch) -> ImapMessageHeader {
         list_unsubscribe_post,
         draft_id,
         precedence,
+        delivered_to,
     }
 }
 
