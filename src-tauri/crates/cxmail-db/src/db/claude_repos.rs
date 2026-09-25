@@ -399,6 +399,29 @@ pub fn resolve_for_message(
     }))
 }
 
+/// A mapping as a person reads it — "contact northwind.example", "group
+/// Northwind", "account me@example.com", "default". The same labels
+/// `resolve_for_message` puts in `ResolvedRepo::source`, so the chat's list of
+/// readable directories and a resolution's "chosen by" say the same thing.
+pub fn describe(conn: &Connection, mapping: &RepoMapping) -> String {
+    match mapping.scope {
+        RepoScope::Contact => format!("contact {}", mapping.contact.as_deref().unwrap_or("?")),
+        RepoScope::Group => format!(
+            "group {}",
+            mapping.group_id.map(|g| group_label(conn, g)).unwrap_or_default()
+        ),
+        RepoScope::Account => format!(
+            "account {}",
+            mapping
+                .account_id
+                .as_deref()
+                .map(|a| account_label(conn, a))
+                .unwrap_or_default()
+        ),
+        RepoScope::Default => "default".to_string(),
+    }
+}
+
 fn group_label(conn: &Connection, group_id: i64) -> String {
     conn.query_row(
         "SELECT name FROM inbox_groups WHERE id = ?1",

@@ -3,6 +3,7 @@ pub mod attachment_file;
 pub mod autoconfig;
 pub mod calendar;
 pub mod categorize;
+pub mod chat_agent;
 pub mod draft_local;
 pub mod event_input;
 pub mod external_writer;

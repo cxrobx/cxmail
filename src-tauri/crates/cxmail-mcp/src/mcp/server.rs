@@ -55,6 +55,16 @@ pub struct ReadEmailParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ResolveProjectRepoParams {
+    #[schemars(description = "Account ID of a message involving the person or project")]
+    pub account_id: String,
+    #[schemars(description = "Folder name (e.g. INBOX)")]
+    pub folder: String,
+    #[schemars(description = "Message UID")]
+    pub uid: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadEmailSourceParams {
     #[schemars(description = "Account ID")]
     pub account_id: String,
@@ -2625,6 +2635,47 @@ enum VoiceProfileSampleSource {
     Account,
 }
 
+/// The `resolve_project_repo` answer, in three states an agent must not
+/// confuse: a usable repo, a mapping whose directory is gone, and no mapping.
+///
+/// The second must never read as the first — a stale mapping handed out as a
+/// path sends the agent reading a directory that is not there — and the third
+/// must never be papered over with a guess, since the whole point is that the
+/// USER decided which project a correspondent belongs to.
+pub(crate) fn project_repo_payload(
+    resolved: Option<&db::claude_repos::ResolvedRepo>,
+    is_dir: bool,
+    has_claude_md: bool,
+) -> serde_json::Value {
+    match resolved {
+        Some(r) if is_dir => serde_json::json!({
+            "status": "mapped",
+            "repo_path": r.repo_path,
+            "chosen_by": format!("{} {}", r.scope.as_str(), r.source),
+            "claude_md": if has_claude_md {
+                serde_json::Value::String(format!("{}/CLAUDE.md", r.repo_path))
+            } else {
+                serde_json::Value::Null
+            },
+            "next_step": if has_claude_md {
+                "Read its CLAUDE.md first — it says what the project is and where things live."
+            } else {
+                "No CLAUDE.md there; start from its README or top-level listing."
+            },
+        }),
+        Some(r) => serde_json::json!({
+            "status": "missing",
+            "repo_path": r.repo_path,
+            "chosen_by": format!("{} {}", r.scope.as_str(), r.source),
+            "next_step": "This correspondent is mapped to that directory, but it is not there right now (moved, or on an unmounted volume). Tell the user; do not read elsewhere in its place.",
+        }),
+        None => serde_json::json!({
+            "status": "unmapped",
+            "next_step": "No project is linked to this correspondent. Ask the user which project it is — never guess a directory. They can link it in CXMail Settings → Claude repos.",
+        }),
+    }
+}
+
 // ─── MCP Server ───────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -3053,6 +3104,38 @@ impl CxMailMcp {
             results.join("\n")
         };
         Ok(CallToolResult::success(vec![Content::text(with_note(text))]))
+    }
+
+    #[tool(
+        name = "resolve_project_repo",
+        description = "Which project directory (code repo / client folder) a message belongs to, using the user's own mappings in CXMail Settings → Claude repos — the same resolver \"Open in Claude\" uses. Pass the coordinates of a message involving the person or project (from search_emails / read_email / read_thread). Returns the path, which mapping chose it, and whether it has a CLAUDE.md; read that CLAUDE.md before anything else in the repo. \"unmapped\" means the user has not linked this correspondent to any project: say so and ask which project it is — never guess a directory. Read-only."
+    )]
+    async fn resolve_project_repo(
+        &self,
+        Parameters(params): Parameters<ResolveProjectRepoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let conn = self.open_db()?;
+        let resolved = db::claude_repos::resolve_for_message(
+            &conn,
+            &params.account_id,
+            &params.folder,
+            params.uid,
+        )
+        .map_err(|e| McpError::internal_error(format!("{}", e), None))?;
+        drop(conn);
+        // Checked at use, like the handoff's `split_on_existence`: a repo on an
+        // unmounted volume comes back without anybody editing the row.
+        let (is_dir, has_claude_md) = match &resolved {
+            Some(r) => {
+                let dir = std::path::Path::new(&r.repo_path);
+                (dir.is_dir(), dir.join("CLAUDE.md").is_file())
+            }
+            None => (false, false),
+        };
+        let payload = project_repo_payload(resolved.as_ref(), is_dir, has_claude_md);
+        let text = serde_json::to_string_pretty(&payload)
+            .map_err(|e| McpError::internal_error(format!("serialize: {}", e), None))?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
@@ -6889,6 +6972,53 @@ impl ServerHandler for CxMailMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── resolve_project_repo: three states that must not blur together ──
+
+    fn a_resolved_repo() -> db::claude_repos::ResolvedRepo {
+        db::claude_repos::ResolvedRepo {
+            repo_path: "/Users/x/Projects/northwind".into(),
+            scope: db::claude_repos::RepoScope::Contact,
+            source: "northwind.example".into(),
+        }
+    }
+
+    #[test]
+    fn a_usable_repo_names_its_path_the_rule_and_the_claude_md() {
+        let v = project_repo_payload(Some(&a_resolved_repo()), true, true);
+        assert_eq!(v["status"], "mapped");
+        assert_eq!(v["repo_path"], "/Users/x/Projects/northwind");
+        assert_eq!(v["chosen_by"], "contact northwind.example");
+        assert_eq!(v["claude_md"], "/Users/x/Projects/northwind/CLAUDE.md");
+    }
+
+    /// A stale mapping must not hand the agent a path to go reading.
+    #[test]
+    fn a_missing_directory_is_not_reported_as_mapped() {
+        let v = project_repo_payload(Some(&a_resolved_repo()), false, false);
+        assert_eq!(v["status"], "missing");
+        assert!(v.get("claude_md").is_none(), "{v}");
+        assert!(v["next_step"].as_str().unwrap().contains("Tell the user"), "{v}");
+    }
+
+    /// The in-app chat reads a draft's folder and UID back out of these two
+    /// result lines (`email::chat_agent::extract_draft_ref`) to offer "Open
+    /// in compose". Rewording either silently removes that button — change
+    /// both sides together.
+    #[test]
+    fn draft_result_wording_the_chat_panel_parses_is_unchanged() {
+        let src = include_str!("server.rs");
+        assert!(src.contains("\"Draft saved to {} (UID {}) for {}{} — draft_id"));
+        assert!(src.contains("\"Draft UID {} replaced with UID {} in {} for {}{} — draft_id"));
+    }
+
+    #[test]
+    fn unmapped_says_ask_never_guess() {
+        let v = project_repo_payload(None, false, false);
+        assert_eq!(v["status"], "unmapped");
+        assert!(v.get("repo_path").is_none(), "{v}");
+        assert!(v["next_step"].as_str().unwrap().contains("never guess"), "{v}");
+    }
 
     // ── resolve_authored_source: body XOR instruction ──
     // Every refusal must say "nothing was written/changed" and name the
