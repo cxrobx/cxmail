@@ -46,11 +46,17 @@ export const TRANSPARENCY_DEFAULT = 0.3;
  * The floor each theme's pane alpha may reach at full transparency.
  *
  * Light needs a much higher floor than dark, and this is not a fudge factor.
- * Dark text on a bright wallpaper loses legibility far faster than light text
- * on a dark one, so the same slider position has to mean less transparency in
- * light or the top of the range is simply unusable there.
+ * Light glass over a DARK desktop does not read as airy, it reads as grey: at
+ * the old 0.55 the sidebar let half a near-black wallpaper through and
+ * composited to ~125, the same value as `--text-muted`, so every secondary
+ * label vanished (2026-09-25, measured off a real screenshot). WKWebView cannot
+ * use the brightening blend modes Apple's light materials rely on, so the only
+ * lever is how much backdrop gets through. 0.82 is what keeps muted text at 3:1
+ * over a black backdrop at the top of the slider — pinned by the legibility
+ * test in `windowTransparency.test.ts`, which is the thing to consult before
+ * lowering it.
  */
-const PANE_FLOOR: Record<Theme, number> = { dark: 0.25, light: 0.55 };
+const PANE_FLOOR: Record<Theme, number> = { dark: 0.25, light: 0.82 };
 
 /**
  * How far the sidebar's alpha LEADS the content's, as a fraction, at full
@@ -72,15 +78,17 @@ const PANE_FLOOR: Record<Theme, number> = { dark: 0.25, light: 0.55 };
  * the lead has to stay under 0.2, and 0.12 keeps a working margin at every
  * slider position. Light inverts the ordering (its bar is DARKER than its
  * content) and is far less constrained — 243 vs 248 needs only
- * `a_bar > 0.58·a_pane` — but a matching lead keeps the two themes feeling the
- * same, so it gets one too.
+ * `a_bar > 0.58·a_pane` — so its lead is set by legibility instead: the sidebar
+ * carries most of the muted text in the app, and in light every point of lead
+ * is more dark desktop behind that text. 0.05 keeps the bar visibly thinner
+ * without spending the contrast the floor above bought.
  *
  * Expressed as a fraction OF THE PANE ALPHA rather than as a scaled result, so
  * `t = 0` yields 1 for both and the opaque end of the slider is genuinely
  * opaque — cxtasks' warning that `pane * 0.5` leaves the sidebar half
  * transparent at rest applies just as much here.
  */
-const SIDEBAR_LEAD: Record<Theme, number> = { dark: 0.12, light: 0.1 };
+const SIDEBAR_LEAD: Record<Theme, number> = { dark: 0.12, light: 0.05 };
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 

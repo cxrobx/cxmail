@@ -1084,9 +1084,15 @@ captures over the same backdrop, `bands.py`-style mean/stddev):
 | RT deleted, relaunched | byte-identical to the 91% row | byte-identical |
 
 Behind the sidebar and reading pane the backdrop reads as shapes (text bands, a
-disc, a rectangle); the corners are clean. Chris's install is **light**, where the
-0.3 default lets only 13.5% of the desktop through (`PANE_FLOOR`) — the change is
-subtle there by design; raise the slider to see it.
+disc, a rectangle); the corners are clean. In **light** the 0.3 default lets only
+~5% of the desktop through (`PANE_FLOOR.light` = 0.82) and even 100% only 18% —
+deliberately. Light glass over a dark desktop composites GREY, not airy: at the old
+0.55 floor the sidebar hit ~125 over a near-black wallpaper, the same value as
+`--text-muted`, and every secondary label vanished (2026-09-25). The floor, the light
+sidebar lead (0.05) and the darker light `--text-muted`/`--text-faint` are held by the
+light legibility test in `windowTransparency.test.ts` (muted ≥ 3:1 over black at every
+position) — lower any of them only against that test. Dark has the mirror problem over
+a white wallpaper and is not yet tested for it.
 
 Pattern: `src-tauri/src/glass_macos.rs`, `commands/glass.rs`, `vibrancy_macos.rs`
 (fallback only), `lib.rs` `.setup()`,

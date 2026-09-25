@@ -129,6 +129,73 @@ describe("transparencyToAlphas", () => {
   });
 });
 
+/** WCAG relative luminance of a neutral-ish sRGB triplet. */
+function luminance([r, g, b]: number[]): number {
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function contrast(a: number[], b: number[]): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** A full `--token: r g b;` triplet out of a theme block. */
+function paletteTriplet(theme: Theme, token: string): number[] {
+  const block = CSS.split(`[data-theme="${theme}"]`)[1].split("}")[0];
+  const m = block.match(new RegExp(`--${token}:\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)`));
+  expect(m, `--${token} not found in ${theme}`).toBeTruthy();
+  return m!.slice(1, 4).map(Number);
+}
+
+/**
+ * Light glass over a dark desktop turns GREY, and grey is where light theme's
+ * secondary text lives.
+ *
+ * The 2026-09-25 screenshot: slider at 100%, a near-black wallpaper, and the
+ * sidebar composited to ~125 — the same value as the old `--text-muted` — so
+ * "BUSINESS", the status line and the chat's tool rows were simply gone. Every
+ * invariant above still held; none of them looks at text.
+ *
+ * Black is the backdrop because it is the worst one: a light pane can only lose
+ * lightness to a darker wallpaper, never gain it. The thresholds are what the
+ * tuned palette reaches, not an aspiration — muted text is the app's secondary
+ * reading layer (263 call sites) and must hold WCAG's 3:1 for UI text at every
+ * slider position; faint is hint/disabled text and is held to 2.5:1 up to the
+ * default, where nearly everyone lives, and to 1.75:1 at the extreme.
+ *
+ * Light only. Dark has the mirror problem over a WHITE wallpaper (its muted
+ * text is lighter than a pane washed out toward white) and is untested here —
+ * a separate decision, not an oversight.
+ */
+describe("light-theme text legibility over the glass", () => {
+  const BLACK = [0, 0, 0];
+  const composite = (colour: number[], alpha: number) => colour.map((c, i) => over(c, alpha, BLACK[i]));
+
+  it("keeps muted and faint text readable on the sidebar and the pane, over a black desktop", () => {
+    const muted = paletteTriplet("light", "text-muted");
+    const faint = paletteTriplet("light", "text-faint");
+    const surfaces = {
+      sidebar: paletteTriplet("light", "bg-sidebar"),
+      pane: paletteTriplet("light", "bg-primary"),
+    };
+
+    for (const t of POSITIONS) {
+      const alphas = transparencyToAlphas(t, "light");
+      for (const [name, colour] of Object.entries(surfaces)) {
+        const ground = composite(colour, alphas[name as keyof typeof surfaces]);
+        const where = `light ${name} at t=${t} (composites to ${ground[0].toFixed(0)})`;
+        expect(contrast(muted, ground), `muted text on ${where}`).toBeGreaterThanOrEqual(3);
+        const faintFloor = t <= TRANSPARENCY_DEFAULT ? 2.5 : 1.75;
+        expect(contrast(faint, ground), `faint text on ${where}`).toBeGreaterThanOrEqual(faintFloor);
+      }
+    }
+  });
+});
+
 describe("the pane / floating split", () => {
   const themeBlock = CSS.split("@theme")[1].split("\n}")[0];
   const decl = (name: string) =>

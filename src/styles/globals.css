@@ -117,8 +117,12 @@
 
   --text-primary: 30 25 15;
   --text-secondary: 75 70 60;
-  --text-muted: 130 125 115;
-  --text-faint: 170 165 155;
+  /* Darker than an opaque-only palette would need: over the glass these sit on
+     a pane that a dark desktop pulls toward grey, not on #F8F7F5. Also closes
+     most of the gap to dark mode's hierarchy (muted 6:1, faint 3.6:1 there).
+     Floor for both: the light legibility test in windowTransparency.test.ts. */
+  --text-muted: 100 96 88;
+  --text-faint: 140 135 126;
 
   --accent: 10 132 255;
   --accent-hover: 8 106 204;
