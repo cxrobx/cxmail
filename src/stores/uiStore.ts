@@ -37,7 +37,7 @@ export type ThemePreference = Theme | "system" | "vault";
  * last time (Onyx not answering), or nowhere. */
 export type VaultLookSource = "onyx" | "cache" | "none";
 
-/** Onyx's default address (`Config.port`, `ask-widget/src/onyx/config.py`). */
+/** Onyx's default address — its server's default port. */
 export const ONYX_URL_DEFAULT = "http://127.0.0.1:8899";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";

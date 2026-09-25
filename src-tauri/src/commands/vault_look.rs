@@ -298,7 +298,7 @@ mod tests {
             assert_eq!(url.path(), "/api/vault-look", "{ok}");
         }
         for bad in [
-            "http://192.168.4.22:8899",
+            "http://192.0.2.10:8899",
             "http://example.com",
             "http://127.0.0.1.example.com",
             "http://user:pw@127.0.0.1:8899",
