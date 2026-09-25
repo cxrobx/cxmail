@@ -5,6 +5,12 @@ All notable changes to CXMail are documented here.
 ## Unreleased
 
 ### Added
+- **Chat with Claude, inside CXMail.** Press `⌘L` (or click **Claude** in the title bar) and ask in plain words — *"write a follow-up to Nick"*, *"what needs a reply from me today?"*. It runs on your own Claude Code sign-in (`claude` CLI), so there is no API key to set up.
+  - **It reads what you would read.** It searches your mail, reads threads, and looks up which project folder a correspondent belongs to (the same links as *Open in Claude*, set in Settings → Claude repos), then reads that project's notes before writing.
+  - **It writes drafts, never sends.** A finished draft shows an **Open draft** button that puts it in the compose window for you to review and send.
+  - **Anything that changes your mail asks first.** Archiving, moving, deleting, flagging, rules, groups and calendar changes show a card in the chat — *"Archive this email?"* with the subject, sender and account — and wait for **Allow**, **Allow for this chat** or **Deny**. It cannot run commands or edit files at all.
+  - **Ask about one email:** right-click it → *Ask Claude in Chat*, or `⌘K` → *Ask Claude About This Email*. The chat starts in that email's project folder.
+  - **Continue in terminal** hands the conversation to a Claude Code session in Ghostty, picking up exactly where the chat left off.
 - **Hide an account from All Inboxes & groups.** Right-click an account → *Hide from All Inboxes & groups*. A hidden account's mail leaves every cross-account surface at once — All Inboxes, its account folder, rule-based inbox groups, Needs You, nudges, search run from anywhere but inside it, the category-tab counts and the dock badge — and comes back with *Show in All Inboxes & groups* (database schema v58). Built for a warm-up mailbox whose traffic is noise everywhere except in its own inbox.
   - **Clicking the account is the only way in.** Its inbox, folders and category tabs are untouched, and a search typed while inside it searches that account. Sync and IMAP IDLE continue as before, so the mail is already there when you look.
   - **Hidden wins over group membership.** An account added to an inbox group explicitly, or one whose mail a group's rules would match, contributes nothing to that group while hidden; the group editor labels such an account rather than offering a checkbox that does nothing. The sidebar row carries a small glyph whose tooltip lists what the account is hidden from.

@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from "react";
 import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
 import { useUIStore } from "@/stores/uiStore";
+import { useChatStore } from "@/stores/chatStore";
 import { api } from "@/lib/tauri";
 import { uidsForThreadAction } from "@/lib/threadActions";
 
@@ -67,6 +68,14 @@ export function useKeyboardShortcuts({ onCommandPalette, onShortcutSheet }: Shor
       if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
         e.preventDefault();
         toggleSidebar();
+        return;
+      }
+
+      // Cmd+L — toggle the Claude chat. Above the typing guard so it also
+      // closes the panel from inside its own input.
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "l") {
+        e.preventDefault();
+        useChatStore.getState().toggle();
         return;
       }
 

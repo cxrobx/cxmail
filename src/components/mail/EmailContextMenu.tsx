@@ -1,10 +1,11 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { useEffect, useRef, useState } from "react";
-import { User, Bell, Users, Tag, Check, MailMinus, UserMinus, Sparkles, Clipboard, Trash2, Inbox } from "lucide-react";
+import { User, Bell, Users, Tag, Check, MailMinus, UserMinus, Sparkles, Clipboard, Trash2, Inbox, MessageSquare } from "lucide-react";
 import { writeText as clipboardWriteText } from "@tauri-apps/plugin-clipboard-manager";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/tauri";
 import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
+import { useChatStore } from "@/stores/chatStore";
 import { useUnsubscribe } from "@/hooks/useUnsubscribe";
 import { uidsForThreadAction } from "@/lib/threadActions";
 import type { MessageSummary, EmailCategory } from "@/types/email";
@@ -319,6 +320,21 @@ export default function EmailContextMenu({ message, children, triggerClassName =
             <span className="flex-1">
               {altHeld ? "Copy Claude Prompt" : "Open in Claude"}
             </span>
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            onSelect={() => {
+              if (accountId) void useChatStore.getState().askAboutEmail({ account_id: accountId, folder, uid: message.uid });
+            }}
+            disabled={!accountId}
+            className={cn(
+              "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-2 text-left text-sm outline-none",
+              accountId
+                ? "text-content-secondary hover:bg-surface hover:text-content"
+                : "cursor-not-allowed text-content-muted opacity-50"
+            )}
+          >
+            <MessageSquare className="h-4 w-4 shrink-0" />
+            <span className="flex-1">Ask Claude in Chat</span>
           </ContextMenu.Item>
           <ContextMenu.Separator className="my-1 h-px bg-border" />
           <ContextMenu.Label className="px-2 py-1.5 text-xs font-medium text-content-muted">

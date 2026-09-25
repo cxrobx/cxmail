@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ChatSeed, ChatStarted } from "@/types/chat";
 import type {
   Account,
   ImapAccountSettings,
@@ -623,6 +624,16 @@ export const api = {
     setRepo: (key: ClaudeRepoKey, repoPath: string) =>
       invoke<ClaudeRepo>("set_claude_repo", { key, repoPath }),
     clearRepo: (key: ClaudeRepoKey) => invoke<void>("clear_claude_repo", { key }),
+  },
+  chat: {
+    start: (seed: ChatSeed | null, model: string | null) =>
+      invoke<ChatStarted>("chat_start", { seed, model }),
+    send: (text: string) => invoke<void>("chat_send", { text }),
+    answerPermission: (requestId: string, allow: boolean, remember: boolean) =>
+      invoke<void>("chat_answer_permission", { requestId, allow, remember }),
+    interrupt: () => invoke<void>("chat_interrupt"),
+    stop: () => invoke<void>("chat_stop"),
+    continueInTerminal: () => invoke<void>("chat_continue_in_terminal"),
   },
   inboxGroups: {
     list: () => invoke<InboxGroup[]>("list_inbox_groups"),

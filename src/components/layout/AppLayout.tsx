@@ -18,16 +18,18 @@ import UndoSendToast from "@/components/shared/UndoSendToast";
 import Toast from "@/components/shared/Toast";
 import { checkForAppUpdate } from "@/lib/updater";
 import FloatingWindowManager from "@/components/shared/FloatingWindowManager";
+import ChatPanel from "@/components/chat/ChatPanel";
 import AccountSetup from "@/components/accounts/AccountSetup";
 import { useUIStore, applyTheme } from "@/stores/uiStore";
 import { useWindowStore } from "@/stores/windowStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { useMailStore } from "@/stores/mailStore";
+import { useChatStore } from "@/stores/chatStore";
 import { api } from "@/lib/tauri";
 import { applySyncStatuses } from "@/lib/syncHealth";
 import type { McpActivity, OutgoingEmail, SavedDraftRef } from "@/types/email";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
-import { X, PenSquare, Settings } from "lucide-react";
+import { X, PenSquare, Settings, Sparkles } from "lucide-react";
 
 const SYNC_INTERVAL_MS = 300_000; // Poll every 5 minutes
 
@@ -481,6 +483,14 @@ export default function AppLayout() {
             <PenSquare className="h-3.5 w-3.5" />
             Compose
           </button>
+          <button
+            onClick={() => useChatStore.getState().toggle()}
+            className="flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs text-content-secondary transition-colors hover:bg-surface hover:text-content"
+            title="Chat with Claude (Cmd+L)"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            Claude
+          </button>
           {/* Needs no drag opt-out: `isDragRegion`'s clickable-element check
               already excludes BUTTON. See gotcha #51. */}
           <button
@@ -540,6 +550,10 @@ export default function AppLayout() {
             </div>
           </>
         )}
+
+        {/* Chat with Claude — a pane on the right edge; renders nothing while
+            closed but stays mounted so a running turn keeps its events. */}
+        <ChatPanel />
       </div>
 
       {/* Status bar */}

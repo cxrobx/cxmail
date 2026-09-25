@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useAccountStore } from "@/stores/accountStore";
 import { useMailStore } from "@/stores/mailStore";
 import { useUIStore } from "@/stores/uiStore";
+import { useChatStore } from "@/stores/chatStore";
 import {
   Search,
   Inbox,
@@ -269,6 +270,14 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
         action: () => { onClose(); api.claude.openEmail(acct, folder, uid).catch(console.error); },
         keywords: "claude ai assistant handoff",
       });
+      cmds.push({
+        id: "msg-ask-claude-chat",
+        label: "Ask Claude About This Email",
+        category: "Message",
+        icon: Sparkles,
+        action: () => { onClose(); void useChatStore.getState().askAboutEmail({ account_id: acct, folder, uid }); },
+        keywords: "claude chat ai assistant ask",
+      });
     }
 
     // Compose
@@ -398,6 +407,16 @@ export default function CommandPalette({ open, onClose }: CommandPaletteProps) {
     }
 
     // UI actions
+    cmds.push({
+      id: "chat-claude",
+      label: "Chat with Claude",
+      category: "Actions",
+      icon: Sparkles,
+      action: () => { onClose(); useChatStore.getState().setOpen(true); },
+      keywords: "claude chat ai assistant ask agent",
+      keys: ["⌘", "L"],
+    });
+
     cmds.push({
       id: "toggle-sidebar",
       label: "Toggle Sidebar",

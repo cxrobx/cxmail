@@ -39,7 +39,7 @@ cxmail/
 │   │   │                   #   + its own build.rs (embed_ispdb) and resources/ispdb/
 │   │   └── cxmail-mcp/     # mcp/server.rs — the MCP tool surface
 │   └── src/                # the `cxmail` app package
-│       ├── commands/       # Tauri IPC handlers (28 modules, 161 commands)
+│       ├── commands/       # Tauri IPC handlers (32 modules, 190 commands)
 │       ├── bin/            # ALL FOUR binaries live here — see below
 │       ├── idle.rs         # IMAP IDLE watchers (stayed for its notify coupling)
 │       ├── notify*.rs      # macOS notifications (objc2)

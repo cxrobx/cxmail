@@ -162,10 +162,37 @@ pub async fn open_email_in_claude(
     perms.set_mode(0o755);
     fs::set_permissions(&launch_path, perms)?;
 
-    let working_dir_arg = format!("--working-directory={}", landing_dir.display());
-    let ghostty_app_clone = ghostty_app.clone();
-    let launch_path_for_err = launch_path.clone();
-    let scratch_for_spawn = landing_dir.clone();
+    launch_in_ghostty(ghostty_app, landing_dir.clone(), launch_path).await?;
+
+    log::info!(
+        "claude_handoff: launched Ghostty session in {:?} ({})",
+        landing_dir,
+        match (&repo, &missing_repo_path) {
+            (Some(r), _) => format!("{} {}", r.scope.as_str(), r.source),
+            (None, Some(missing)) => format!("mapped repo missing: {missing}"),
+            (None, None) => "no repo mapped".to_string(),
+        }
+    );
+    Ok(ClaudeHandoff {
+        working_dir: landing_dir.to_string_lossy().to_string(),
+        repo,
+        missing_repo_path,
+    })
+}
+
+/// Open a Ghostty window in `working_dir` running `launch_path`.
+///
+/// Shared by the email handoff and the chat panel's "Continue in terminal",
+/// so both get the running-instance route and its fallback (gotchas #24, #35).
+pub(crate) async fn launch_in_ghostty(
+    ghostty_app: PathBuf,
+    working_dir: PathBuf,
+    launch_path: PathBuf,
+) -> Result<(), AppError> {
+    let working_dir_arg = format!("--working-directory={}", working_dir.display());
+    let ghostty_app_clone = ghostty_app;
+    let launch_path_for_err = launch_path;
+    let scratch_for_spawn = working_dir;
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         // Preferred: ask the Ghostty the user ALREADY has for a new window,
         // over AppleScript. Without it every "Open in Claude" leaves a second
@@ -214,22 +241,7 @@ pub async fn open_email_in_claude(
         Ok(())
     })
     .await
-    .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))??;
-
-    log::info!(
-        "claude_handoff: launched Ghostty session in {:?} ({})",
-        landing_dir,
-        match (&repo, &missing_repo_path) {
-            (Some(r), _) => format!("{} {}", r.scope.as_str(), r.source),
-            (None, Some(missing)) => format!("mapped repo missing: {missing}"),
-            (None, None) => "no repo mapped".to_string(),
-        }
-    );
-    Ok(ClaudeHandoff {
-        working_dir: landing_dir.to_string_lossy().to_string(),
-        repo,
-        missing_repo_path,
-    })
+    .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))?
 }
 
 /// Split a resolved mapping on whether its directory is actually there.
@@ -239,7 +251,7 @@ pub async fn open_email_in_claude(
 /// mapping that merely went stale into an error in the user's session. Checked
 /// at use rather than stored, because a repo on an unmounted volume comes back
 /// without anybody editing the row.
-fn split_on_existence(mapped: Option<ResolvedRepo>) -> (Option<ResolvedRepo>, Option<String>) {
+pub(crate) fn split_on_existence(mapped: Option<ResolvedRepo>) -> (Option<ResolvedRepo>, Option<String>) {
     match mapped {
         Some(r) if Path::new(&r.repo_path).is_dir() => (Some(r), None),
         Some(r) => {
@@ -399,7 +411,7 @@ fn open_in_running_ghostty(
     })
 }
 
-fn find_ghostty_app() -> Option<PathBuf> {
+pub(crate) fn find_ghostty_app() -> Option<PathBuf> {
     let p = PathBuf::from("/Applications/Ghostty.app");
     if p.exists() {
         return Some(p);
@@ -413,7 +425,7 @@ fn find_ghostty_app() -> Option<PathBuf> {
     None
 }
 
-fn find_claude_cli() -> Option<PathBuf> {
+pub(crate) fn find_claude_cli() -> Option<PathBuf> {
     // GUI apps on macOS don't inherit the shell's PATH, so `/usr/bin/which`
     // runs against a bare-bones PATH and usually misses user installs.
     // Ask a login shell to resolve it instead — that picks up whatever the
@@ -498,7 +510,7 @@ fn sanitize_filename(name: &str) -> String {
 
 /// Single-quote for a POSIX shell. Safe for any bytes: wraps in '...' and
 /// escapes embedded single quotes as '\''.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 

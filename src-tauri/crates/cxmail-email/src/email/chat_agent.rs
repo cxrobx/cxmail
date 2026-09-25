@@ -349,6 +349,46 @@ pub struct DraftRef {
     pub uid: u32,
 }
 
+/// The human side of a permission question's ids.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PermissionContext {
+    /// The account's address, when the input names one.
+    pub account: Option<String>,
+    /// The folder as the input names it.
+    pub folder: Option<String>,
+    /// The first few messages the call touches.
+    pub messages: Vec<MessageBrief>,
+    /// How many messages it touches in all.
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MessageBrief {
+    pub subject: String,
+    pub from: String,
+}
+
+/// How many messages a permission card lists by subject.
+pub const PERMISSION_MESSAGE_PREVIEW: usize = 5;
+
+/// The messages a tool call names, read off its input: `account_id`, then
+/// `folder` (or `move_email`'s `from_folder`), then `uid` or `uids`.
+pub fn message_refs(input: &Value) -> (Option<String>, Option<String>, Vec<u32>) {
+    let s = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
+    let account = s("account_id");
+    let folder = s("folder").or_else(|| s("from_folder"));
+    let mut uids: Vec<u32> = input
+        .get("uid")
+        .and_then(Value::as_u64)
+        .and_then(|u| u32::try_from(u).ok())
+        .into_iter()
+        .collect();
+    if let Some(list) = input.get("uids").and_then(Value::as_array) {
+        uids.extend(list.iter().filter_map(Value::as_u64).filter_map(|u| u32::try_from(u).ok()));
+    }
+    (account, folder, uids)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct McpServerStatus {
     pub name: String,
@@ -386,6 +426,9 @@ pub enum ChatEvent {
         tool_name: String,
         display_name: String,
         input: Value,
+        /// What the input's ids point at, looked up by the app — so the card
+        /// says "Archive “Re: scope” from Dana", not "uid 830".
+        context: Option<PermissionContext>,
     },
     TurnDone {
         is_error: bool,
@@ -909,6 +952,23 @@ mod tests {
                 input: json!({"uid": 9}),
             }]
         );
+    }
+
+    #[test]
+    fn message_refs_reads_single_bulk_and_move_shapes() {
+        assert_eq!(
+            message_refs(&json!({"account_id": "a", "folder": "INBOX", "uid": 830})),
+            (Some("a".into()), Some("INBOX".into()), vec![830])
+        );
+        assert_eq!(
+            message_refs(&json!({"account_id": "a", "folder": "INBOX", "uids": [1, 2, 3]})),
+            (Some("a".into()), Some("INBOX".into()), vec![1, 2, 3])
+        );
+        assert_eq!(
+            message_refs(&json!({"account_id": "a", "from_folder": "INBOX", "to_folder": "Archive", "uid": 5})),
+            (Some("a".into()), Some("INBOX".into()), vec![5])
+        );
+        assert_eq!(message_refs(&json!({"name": "rule"})), (None, None, vec![]));
     }
 
     #[test]

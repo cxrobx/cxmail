@@ -3,6 +3,7 @@ pub mod ai;
 pub mod auth;
 pub mod calendar;
 pub mod categories;
+pub mod chat;
 pub mod claude_handoff;
 pub mod claude_repos;
 pub mod compose;

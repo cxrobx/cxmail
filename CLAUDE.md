@@ -71,7 +71,7 @@ Full list with patterns in `.claude/rules/architecture.md`.
 | `src/components/` | React components (layout/, mail/, accounts/, shared/) |
 | `src/stores/` | Zustand state stores |
 | `src/lib/tauri.ts` | Typed IPC wrappers |
-| `src-tauri/src/commands/` | Tauri IPC command handlers (28 modules, 161 commands) — app package |
+| `src-tauri/src/commands/` | Tauri IPC command handlers (32 modules, 190 commands) — app package |
 | `src-tauri/crates/cxmail-core/` | AppError, LockExt, secrets, keychain/, EventSink/AppCtx, MCP bridge, and the pure mail helpers `db` and `email` share |
 | `src-tauri/crates/cxmail-db/` | SQLite schema, CRUD, FTS5 search (28 modules) |
 | `src-tauri/crates/cxmail-email/` | IMAP, SMTP, OAuth2, parser, autoconfig, AI, categorize (29 modules) |

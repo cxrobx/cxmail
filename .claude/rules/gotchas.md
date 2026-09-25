@@ -1,6 +1,6 @@
 # Known Gotchas
 
-Organized by category. 64 items, condensed format. Original numbering preserved (gaps intentional).
+Organized by category. 65 items, condensed format. Original numbering preserved (gaps intentional).
 
 > Pruned 2026-08-17: investigation narratives and measurements trimmed; the rules, invariants, and patterns are all still here. Full histories: git history of this file (pre-prune) and the Recent Learnings section of `CLAUDE.md`.
 
@@ -72,6 +72,7 @@ Organized by category. 64 items, condensed format. Original numbering preserved 
 | 61 | A thread's members come from EVERY folder — so your own replies printed twice and an unsent draft printed as sent, and the count had the same blind spot | Database |
 | 62 | A draft saved in Gmail's editor loses CXMail's `email-signature`/`cx-quote` classes — reopened in compose, the signature table flattened and a second signature landed below the quote | Frontend |
 | 63 | Send-as: an address on your own Sent mail is PROOF, a delivery header is only a SUGGESTION, and a same-domain `To:` filter offers strangers as aliases | Database |
+| 64 | The in-app chat is `claude -p` with CXMail as the permission host — three flags carry the security, and `--allowedTools` is ADDITIVE | Backend |
 
 ---
 
@@ -1262,6 +1263,35 @@ Pattern: `src/lib/draftRecovery.ts`, `ComposeModal.tsx` (`initialContent`, signa
 Verify on a `.backup` copy: `cargo run -p cxmail-db --example send_as_probe -- <copy.db>`. On 2026-09-23 it found `rileyprime@icloud.com` from uids 78/79 in iCloud Sent with nothing configured, and suggested only `admin@artistadvisory.io` and `hello@cxventures.io`.
 
 Pattern: `db/identities.rs::{send_as_addresses, sent_from_addresses, append_sent_detected, remove_send_as, suggest_aliases, delivery_header_addresses}`, `db/schema.rs::migrate_v64_send_as_evidence`, `email/imap.rs::parse_fetch_to_header`, `email/sync.rs::record_delivered_to`, `commands/settings.rs::remove_send_as`, `SendAsSection.tsx`. Related: #36, #37, #30.
+
+---
+
+### 64. The in-app chat is `claude -p` with CXMail as the permission host — three flags carry the security, and `--allowedTools` is additive
+
+**Shape.** One long-lived `claude -p --input-format stream-json --output-format stream-json` process per conversation (`commands::chat`), driven by the pure `email::chat_agent` (argv, tiers, MCP config, standing instructions, parser). `--permission-prompt-tool stdio` makes the CLI send a `can_use_tool` control request on stdout and wait; we answer `allow` (echoing the input as `updatedInput`) or `deny` (the message becomes the tool result). This is the protocol the Agent SDKs speak, not a published contract — so the parser is tested on CLI 2.1.282's exact shapes, and a 30 s watchdog stops a session whose `initialize` handshake never answers rather than let it run ungated.
+
+**The chat acts on mail only through `cxmail-mcp`**, so every guard there applies for free (send disabled, `confirmed=true`, dash rule, v60 draft claim). Do not add chat-only mail tools in the app.
+
+**Three flags, each load-bearing, all pinned in `chat_agent` tests:**
+1. `--tools Read,Grep,Glob,Skill` — *replaces* the built-in set. Bash/Write/Edit/WebFetch/subagents are not denied, they are absent; an email that says "run this" has nothing to run it with.
+2. `--permission-mode manual` — the user's `settings.json` defaults to `auto`, where a classifier, not the user, approves calls. Without the pin an unlisted tool may never reach the host.
+3. `--strict-mcp-config` — cxmail plus servers passed through **by name** from `~/.claude.json` (`vault`), so no machine path lands in the repo. ~10× faster spawn (cxtasks' measurement) and no browser/Drive control reachable from mail content.
+
+**`--allowedTools` is ADDITIVE over `~/.claude/settings.json`** (cxtasks measured a "read-only" run executing an approved `Bash(...)`). `--tools` contains that for built-ins; for MCP it means an `mcp__cxmail__*` allow rule in settings would silently skip the ask tier. None exists today. The auto tier is `AUTO_CXMAIL_TOOLS` — reads, `compose_draft`/`edit_draft` (a draft is never sent), `send_calendar_invites` (only *requests*; the approval card is its gate). Everything else asks, including tools added to the MCP later — the safe direction for that list to be stale in. Test-pinned: no mutating tool is ever in it.
+
+**Project context is lighter than it looks.** Every mapped repo that exists is passed as `--add-dir` (variadic — last, #49), which makes it readable without prompts but does NOT load its `CLAUDE.md`, rules or skills. The standing instructions make the model call `resolve_project_repo` (the MCP face of `claude_repos::resolve_for_message`, one matcher #36) and read that `CLAUDE.md` first. A chat opened *from an email* starts in that email's repo and gets the full load.
+
+**The permission card must be checkable by a person.** Raw input (`account_id` UUID, `uid 830`) is not; the app resolves ids to account address + subject + sender (`permission_context`, a read-only connection so a sync's mutex cannot stall the question, #11) and folds the exact call under *Details*. A failed lookup degrades to the raw card — it never blocks the question.
+
+**"Open draft" parses two MCP result strings** (`extract_draft_ref`); a reworded result yields no button, never a wrong draft. Tripwire on the MCP side: `draft_result_wording_the_chat_panel_parses_is_unchanged`.
+
+**Lifecycle.** The writer task owns stdin; dropping it is the EOF that ends the CLI — which also covers CXMail quitting. Measured: with a permission question pending, the CLI took ~10 s to exit after the app was killed, and its MCP children went with it (no ppid-1 orphans). Every event carries the session generation, so a late line from a stopped chat cannot land in the next one. *Continue in terminal* stops the process and waits for it to exit **before** `claude --resume` in Ghostty — two processes appending to one session file corrupt it — and resumes from the same cwd, because sessions are filed under the directory they started in.
+
+**Environment.** User hooks stay on (the secret-exposure guard among them) with `CLAUDE_HOOK_SOUND=0`/`CLAUDE_HOOK_BANNER=0`; the child gets the login shell's PATH (hooks need `jq`/`sqlite3`). The `cxmail` server is the binary bundled beside the app when running from a `.app` (Keychain-ACL-trusted, #31), else the registered loose `target/release/cxmail-mcp` — so in dev, an MCP tool change needs that binary rebuilt with the Google client and signed (ship.md steps 2/2b) before the chat can see it.
+
+**Verify headless** with `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow]` — the exact launch against the real CLI and MCP; every permission is denied unless `--allow`.
+
+Pattern: `email/chat_agent.rs`, `commands/chat.rs`, `mcp/server.rs::{resolve_project_repo, project_repo_payload}`, `src/stores/chatStore.ts`, `src/lib/chatEvents.ts`, `src/components/chat/ChatPanel.tsx`. Related: #31, #36, #47, #49, #11.
 
 ---
 

@@ -21,7 +21,7 @@ file is in before you edit it — `crate::` means something different in each.
 | `cxmail-db` | `crates/cxmail-db/` | `db/` — migrations (v58), message store, FTS5 | no |
 | `cxmail-email` | `crates/cxmail-email/` | `email/` — IMAP, SMTP, OAuth2, parser, autoconfig, AI. Owns `build.rs` + `resources/ispdb/` | no |
 | `cxmail-mcp` | `crates/cxmail-mcp/` | `mcp/server.rs` | no |
-| `cxmail` (app) | `src/` | `lib.rs`, `commands/` (161 IPC commands), `idle.rs`, `notify*`, `plugins/`, `tracker/`, **all four `bin/` targets** | yes |
+| `cxmail` (app) | `src/` | `lib.rs`, `commands/` (190 IPC commands), `idle.rs`, `notify*`, `plugins/`, `tracker/`, **all four `bin/` targets** | yes |
 
 Dependencies point one way: **`core <- db <- email <- mcp <- app`**. Every crate
 under `crates/` is lib-only.
@@ -55,6 +55,7 @@ IPC commands in `src-tauri/src/commands/` — app package, each file a domain:
 - `auth.rs` — OAuth2 flow initiation/completion
 - `calendar.rs` — Calendar event parsing, RSVP
 - `categories.rs` — Email category management
+- `chat.rs` — The in-app Claude chat: one `claude -p` process per conversation, CXMail answering its permission prompts (pure half: `email::chat_agent`; see gotcha #64)
 - `compose.rs` — Send (with undo delay), save draft, attachments
 - `folders.rs` — List, create, rename, delete
 - `followup.rs` — Follow-up reminder CRUD
