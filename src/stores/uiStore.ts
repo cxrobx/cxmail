@@ -2,93 +2,43 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { listen } from "@tauri-apps/api/event";
 import { api } from "@/lib/tauri";
+import {
+  clampTransparency,
+  transparencyToAlphas,
+  TRANSPARENCY_DEFAULT,
+  type Theme,
+} from "@/lib/windowAlpha";
+import {
+  deriveVaultTheme,
+  parseVaultPalette,
+  samePalette,
+  VAULT_VARS,
+  type VaultPalette,
+  type VaultTheme,
+} from "@/lib/vaultLook";
+
+export { TRANSPARENCY_DEFAULT, transparencyToAlphas, type Theme };
 
 export type DensityMode = "comfortable" | "compact" | "ultra-compact";
-
-/**
- * A theme that can actually be painted. Everything downstream of
- * `resolveTheme` — the palette floors, `data-theme`, the native pin — is keyed
- * by this, never by the preference.
- */
-export type Theme = "dark" | "light";
 
 /**
  * What the user *chose*. `system` is a deferral, not a third palette: it has no
  * floors, no CSS block and nothing to pin, and must be run through
  * `resolveTheme` before it reaches any of them.
+ *
+ * `vault` is a deferral too — to the Obsidian vault's palette as Onyx measures
+ * it (`vaultLook.ts`). It resolves to the palette's own mode, and to `system`'s
+ * answer while there is no palette yet, so choosing it can never paint
+ * something neither light nor dark.
  */
-export type ThemePreference = Theme | "system";
+export type ThemePreference = Theme | "system" | "vault";
 
-/**
- * How much of the desktop shows through the window, 0 → 1.
- *
- * A continuous amount rather than named presets. Presets were cxtasks' first
- * cut and were wrong for the same reason they would be wrong here: which value
- * is right depends entirely on the wallpaper behind the window, so the useful
- * range is a dial the user turns until it looks right, not three points
- * someone else picked.
- *
- * A separate axis from `Theme` rather than a fourth theme, because it composes
- * with both — "dark and nearly opaque" and "light and nearly glass" are equally
- * valid.
- *
- * 0 is a real destination, not a disabled state: transparency over a busy
- * wallpaper can make a mailbox genuinely hard to read, and the way back has to
- * be a drag away.
- *
- * The default sits below cxtasks' 0.38 on purpose. This is a reading app —
- * message bodies render in a `background: transparent` iframe (EmailFrame), so
- * body text lands directly on the glass rather than on a card over it.
- */
-export const TRANSPARENCY_DEFAULT = 0.3;
+/** Where the vault palette in use came from: Onyx just now, the copy kept from
+ * last time (Onyx not answering), or nowhere. */
+export type VaultLookSource = "onyx" | "cache" | "none";
 
-/**
- * The floor each theme's pane alpha may reach at full transparency.
- *
- * Light needs a much higher floor than dark, and this is not a fudge factor.
- * Light glass over a DARK desktop does not read as airy, it reads as grey: at
- * the old 0.55 the sidebar let half a near-black wallpaper through and
- * composited to ~125, the same value as `--text-muted`, so every secondary
- * label vanished (2026-09-25, measured off a real screenshot). WKWebView cannot
- * use the brightening blend modes Apple's light materials rely on, so the only
- * lever is how much backdrop gets through. 0.82 is what keeps muted text at 3:1
- * over a black backdrop at the top of the slider — pinned by the legibility
- * test in `windowTransparency.test.ts`, which is the thing to consult before
- * lowering it.
- */
-const PANE_FLOOR: Record<Theme, number> = { dark: 0.25, light: 0.82 };
-
-/**
- * How far the sidebar's alpha LEADS the content's, as a fraction, at full
- * transparency. The bar is always thinner than the work area — that thinness is
- * what makes chrome read as laid over the content rather than cut out of it.
- *
- * **This is where cxmail departs from cxtasks, and the palette is why.** cxtasks
- * boosts the slider before applying it to the sidebar (×1.9) and gives the bar
- * its own low floor, which its palette can carry because its bar is 42 against a
- * content of 24 — 1.75× lighter. cxmail's is 35 against 28, only 1.25×, and at
- * that ratio cxtasks' curve inverts the bar into a trench: at t=0.38 it would
- * composite to 12 against the content's 20 over a black wallpaper, i.e. darker
- * than the thing it sits on, which is the exact failure cxtasks' own note warns
- * about.
- *
- * The algebra behind the constant: over a black backdrop the bar stays lighter
- * only while `35·a_bar > 28·a_pane`, i.e. `a_bar > 0.8·a_pane`; a brighter
- * wallpaper only relaxes that, since the thinner surface gains more from it. So
- * the lead has to stay under 0.2, and 0.12 keeps a working margin at every
- * slider position. Light inverts the ordering (its bar is DARKER than its
- * content) and is far less constrained — 243 vs 248 needs only
- * `a_bar > 0.58·a_pane` — so its lead is set by legibility instead: the sidebar
- * carries most of the muted text in the app, and in light every point of lead
- * is more dark desktop behind that text. 0.05 keeps the bar visibly thinner
- * without spending the contrast the floor above bought.
- *
- * Expressed as a fraction OF THE PANE ALPHA rather than as a scaled result, so
- * `t = 0` yields 1 for both and the opaque end of the slider is genuinely
- * opaque — cxtasks' warning that `pane * 0.5` leaves the sidebar half
- * transparent at rest applies just as much here.
- */
-const SIDEBAR_LEAD: Record<Theme, number> = { dark: 0.12, light: 0.05 };
+/** Onyx's default address (`Config.port`, `ask-widget/src/onyx/config.py`). */
+export const ONYX_URL_DEFAULT = "http://127.0.0.1:8899";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
@@ -111,48 +61,41 @@ function systemTheme(): Theme {
 
 /** Collapse a preference to the theme that actually gets painted. */
 export function resolveTheme(preference: ThemePreference): Theme {
+  if (preference === "vault") return useUIStore.getState().vaultLook?.mode ?? systemTheme();
   return preference === "system" ? systemTheme() : preference;
 }
 
 /**
- * Normalize a transparency into `[0, 1]`, treating anything non-finite as
- * "unset" rather than passing it through.
- *
- * `Math.min(1, Math.max(0, NaN))` is `NaN`, and a NaN alpha paints a pane fully
- * TRANSPARENT — the window disappears and only the text is left floating over
- * the desktop. cxtasks guards this where it reads localStorage; CXMail's read
- * site is zustand's `persist` rehydration, which validates nothing, so a
- * corrupted or hand-edited `cxmail-ui` entry (`"transparency": null`, or a
- * string) would land straight in the store. Guarding here covers both that path
- * and `setTransparency`, which are the only two ways a value gets in.
- *
- * Falls back to the default rather than to 0, so corrupt storage behaves like
- * no storage instead of silently turning the feature off.
+ * The vault palette being worn right now, derived — or `null` for the built-in
+ * theme. Module state for the same reason `reduceTransparency` is: `applyWindow`
+ * and `applyGlass` run on every frame of a slider drag and need the floor and
+ * the window colour without re-deriving the palette each time. Only
+ * `applyTheme` writes it.
  */
-function clampTransparency(value: number): number {
-  if (!Number.isFinite(value)) return TRANSPARENCY_DEFAULT;
-  return Math.min(1, Math.max(0, value));
-}
+let activeVault: VaultTheme | null = null;
 
 /**
- * Turn one slider value into the three pane alphas.
+ * Put the vault's tokens on `<html>` as inline custom properties, or take every
+ * one of them off.
  *
- * Three relationships hold at every position, which is why this is a formula
- * and not three sliders. SIDEBAR always sits below the content — see above.
- * SURFACE always sits above it: it backs hover rows, the search field and the
- * pane divider, which lie *on* the content, so a surface has to stay denser
- * than the thing it lies on or the depth inverts. And at `t = 0` all three are
- * 1, so the opaque end of the slider is genuinely opaque everywhere.
+ * Inline on the root beats the `[data-theme]` blocks in `globals.css`, and every
+ * rule in the app reads those variables, so this repaints the whole UI with no
+ * other change. Always clears first: a palette whose accent is rejected must
+ * not inherit the previous palette's.
+ *
+ * ⚠ This works because `AppLayout`'s root carries `data-theme={preference}` —
+ * `"vault"`, which matches no block. Were it ever given the RESOLVED theme, its
+ * `[data-theme="light"]` block would re-declare the built-in tokens one level
+ * down and hide every vault colour below it.
  */
-export function transparencyToAlphas(transparency: number, theme: Theme) {
-  const t = clampTransparency(transparency);
-  const pane = 1 - t * (1 - PANE_FLOOR[theme]);
-  return {
-    pane,
-    sidebar: pane * (1 - t * SIDEBAR_LEAD[theme]),
-    surface: pane + (1 - pane) * 0.5,
-  };
+function paintVaultVars(vault: VaultTheme | null): void {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  for (const name of VAULT_VARS) root.style.removeProperty(name);
+  if (!vault) return;
+  for (const [name, value] of Object.entries(vault.vars)) root.style.setProperty(name, value);
 }
+
 
 /**
  * The message body's own dial, as a VEIL laid over the glass it sits on.
@@ -235,7 +178,11 @@ function solveVeil(under: number, target: number): number {
  */
 export function applyWindow(transparency: number, theme: Theme, emailTransparency: number): void {
   const windowT = effectiveTransparency(transparency);
-  const { pane, sidebar, surface } = transparencyToAlphas(windowT, theme);
+  // A vault palette may need a higher floor than the theme's to keep its text
+  // legible on the glass (`deriveVaultTheme`). The veils need no floor: the
+  // floor cancels out of `solveVeil` (the pane veil is 1 − t_email/t_window
+  // whatever the floor), which `vaultLook.test.ts` pins.
+  const { pane, sidebar, surface } = transparencyToAlphas(windowT, theme, activeVault?.paneFloor);
   // Reduce Transparency pins both dials to 0, so the veils are 0 there too —
   // everything they would sit on is already opaque.
   const veil = emailVeilAlphas(windowT, effectiveTransparency(emailTransparency), theme);
@@ -309,7 +256,7 @@ export const THEME_BASE_RGB: Record<Theme, readonly [number, number, number]> = 
  * the CSS operation it was designed as.
  */
 let glassReady = false;
-let lastSent: { enabled: boolean; radius: number; theme: Theme } | null = null;
+let lastSent: { enabled: boolean; radius: number; theme: Theme; base: string } | null = null;
 
 /**
  * macOS's **Accessibility → Display → Reduce transparency**, mirrored here.
@@ -349,22 +296,32 @@ export function applyGlass(transparency: number, theme: Theme): void {
   const t = clampTransparency(effectiveTransparency(transparency));
   const enabled = t > 0;
   const radius = transparencyToBlurRadius(t);
+  // The opaque window colour is the vault's ground while one is worn — the
+  // built-in base would paint the window a different colour from every pane
+  // the moment glass turns off. Part of the guard, so a palette change with the
+  // theme unchanged still reaches AppKit.
+  const rgb = activeVault?.base ?? THEME_BASE_RGB[theme];
+  const base = rgb.join(" ");
   if (
     lastSent !== null &&
     lastSent.enabled === enabled &&
     lastSent.radius === radius &&
-    lastSent.theme === theme
+    lastSent.theme === theme &&
+    lastSent.base === base
   ) {
     return;
   }
   // Radius-only when nothing else moved: the common case during a drag, and it
   // skips re-running the window setup (opacity, background, shadow).
-  const radiusOnly = lastSent !== null && lastSent.enabled && enabled && lastSent.theme === theme;
-  lastSent = { enabled, radius, theme };
+  const radiusOnly =
+    lastSent !== null &&
+    lastSent.enabled &&
+    enabled &&
+    lastSent.theme === theme &&
+    lastSent.base === base;
+  lastSent = { enabled, radius, theme, base };
   try {
-    const call = radiusOnly
-      ? api.glass.setRadius(radius)
-      : api.glass.set(enabled, radius, THEME_BASE_RGB[theme]);
+    const call = radiusOnly ? api.glass.setRadius(radius) : api.glass.set(enabled, radius, rgb);
     void call.catch(() => {
       // Not macOS, or the window is gone. The CSS half still applied.
     });
@@ -434,8 +391,16 @@ export function startGlass(): void {
  * glass moves too, through `applyWindow`: turning it off repaints the window
  * opaque in the theme's base colour, so that colour has to follow the theme.
  */
-export function applyTheme(preference: ThemePreference): void {
-  const theme = resolveTheme(preference);
+export function applyTheme(
+  preference: ThemePreference,
+  vaultLook: VaultPalette | null = useUIStore.getState().vaultLook,
+): void {
+  const palette = preference === "vault" ? vaultLook : null;
+  const theme = palette?.mode ?? resolveTheme(preference === "vault" ? "system" : preference);
+  // Palette, `data-theme` and alphas together, before anything paints: the
+  // floor and the window colour below both read `activeVault`.
+  activeVault = palette ? deriveVaultTheme(palette) : null;
+  paintVaultVars(activeVault);
   document.documentElement.setAttribute("data-theme", theme);
   const { transparency, emailTransparency } = useUIStore.getState();
   applyWindow(transparency, theme, emailTransparency);
@@ -449,7 +414,10 @@ export function applyTheme(preference: ThemePreference): void {
     // resolved value would look identical for one frame and then freeze —
     // `NSApp.appearance` is what the webview derives `prefers-color-scheme`
     // from, so a pin makes `watchSystemTheme` below permanently silent.
-    void api.appearance.setNative(preference === "system" ? null : theme === "dark").catch(() => {
+    // `vault` with no palette yet is following the system, so it clears the
+    // pin the same way; with a palette it pins the palette's mode.
+    const followsSystem = preference === "system" || (preference === "vault" && !palette);
+    void api.appearance.setNative(followsSystem ? null : theme === "dark").catch(() => {
       // Not macOS, or no window yet. The CSS half still applied.
     });
   } catch {
@@ -473,7 +441,8 @@ export function applyTheme(preference: ThemePreference): void {
 function watchSystemTheme(): void {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
   window.matchMedia(DARK_QUERY).addEventListener("change", () => {
-    if (useUIStore.getState().theme === "system") applyTheme("system");
+    const { theme, vaultLook } = useUIStore.getState();
+    if (theme === "system" || (theme === "vault" && !vaultLook)) applyTheme(theme);
   });
 }
 watchSystemTheme();
@@ -515,6 +484,18 @@ interface UIState {
   /** How see-through the MESSAGE BODY may be, on the same 0 → 1 scale as
    * `transparency` and never more see-through than it (`emailVeilAlphas`). */
   emailTransparency: number;
+  /**
+   * The last vault palette Onyx served, kept across launches. Persisted for two
+   * reasons: the first frame of a `vault` launch is painted from it before any
+   * IPC has run (`main.tsx` → `applyTheme`), and it keeps the app in the
+   * vault's colours while Onyx is not running. Re-validated on rehydrate —
+   * localStorage is hand-editable and these values become CSS.
+   */
+  vaultLook: VaultPalette | null;
+  /** Where `vaultLook` came from on the latest check. Not persisted. */
+  vaultLookSource: VaultLookSource;
+  /** Where to ask Onyx. Loopback only — the Rust side refuses anything else. */
+  onyxUrl: string;
   /** The settings dialog. Chrome state like the rest of this store. */
   settingsOpen: boolean;
   undoSendDelaySeconds: number;
@@ -539,6 +520,10 @@ interface UIState {
   setDensity: (density: DensityMode) => void;
   setTransparency: (value: number) => void;
   setEmailTransparency: (value: number) => void;
+  /** Record a vault-look check: a palette from Onyx, or `null` for "Onyx did
+   * not answer" — which keeps the palette already held and marks it cached. */
+  setVaultLook: (palette: VaultPalette | null) => void;
+  setOnyxUrl: (url: string) => void;
   setSettingsOpen: (open: boolean) => void;
   setUndoSendDelay: (seconds: number) => void;
   setActiveSend: (send: ActiveSend | null) => void;
@@ -560,6 +545,9 @@ export const useUIStore = create<UIState>()(
       density: "comfortable",
       transparency: TRANSPARENCY_DEFAULT,
       emailTransparency: TRANSPARENCY_DEFAULT,
+      vaultLook: null,
+      vaultLookSource: "none",
+      onyxUrl: ONYX_URL_DEFAULT,
       settingsOpen: false,
       undoSendDelaySeconds: 5,
       activeSend: null,
@@ -603,6 +591,20 @@ export const useUIStore = create<UIState>()(
         applyWindow(transparency, resolveTheme(theme), next);
         set({ emailTransparency: next });
       },
+      setVaultLook: (palette) => {
+        const { theme, vaultLook } = useUIStore.getState();
+        if (!palette) {
+          // Onyx is down or has no palette. Keep wearing the last good one —
+          // restarting Onyx or quitting Obsidian must not repaint the window.
+          set({ vaultLookSource: vaultLook ? "cache" : "none" });
+          return;
+        }
+        // Polled every minute: an unchanged palette must not repaint anything.
+        const same = vaultLook !== null && samePalette(vaultLook, palette);
+        if (!same && theme === "vault") applyTheme("vault", palette);
+        set(same ? { vaultLookSource: "onyx" } : { vaultLook: palette, vaultLookSource: "onyx" });
+      },
+      setOnyxUrl: (onyxUrl) => set({ onyxUrl: onyxUrl.trim() || ONYX_URL_DEFAULT }),
       setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
       setUndoSendDelay: (undoSendDelaySeconds) => set({ undoSendDelaySeconds }),
       setActiveSend: (activeSend) => set({ activeSend }),
@@ -647,8 +649,22 @@ export const useUIStore = create<UIState>()(
         return s as UIState;
       },
       partialize: (state) => {
-        const { toasts, activeSend, settingsOpen, ...persisted } = state;
+        const { toasts, activeSend, settingsOpen, vaultLookSource, ...persisted } = state;
         return persisted;
+      },
+      // The default merge is a blind spread. Two persisted values become CSS or
+      // a network address, so they are re-checked on the way in; anything that
+      // fails reads as never having been stored.
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<UIState>;
+        return {
+          ...current,
+          ...p,
+          vaultLook: parseVaultPalette(p.vaultLook),
+          onyxUrl: typeof p.onyxUrl === "string" && p.onyxUrl.trim() ? p.onyxUrl : ONYX_URL_DEFAULT,
+          // A palette read from storage is by definition not fresh from Onyx.
+          vaultLookSource: parseVaultPalette(p.vaultLook) ? "cache" : "none",
+        };
       },
     }
   )

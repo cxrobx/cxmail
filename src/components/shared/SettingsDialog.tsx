@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Mail, Monitor, Moon, Sun, X } from "lucide-react";
+import { Gem, Mail, Monitor, Moon, Sun, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore, type DensityMode, type ThemePreference } from "@/stores/uiStore";
+import { deriveVaultTheme } from "@/lib/vaultLook";
+import { PANE_FLOOR } from "@/lib/windowAlpha";
 import TriageSection from "./TriageSection";
 import SendAsSection from "./SendAsSection";
 
@@ -13,6 +15,11 @@ const THEMES: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
   { value: "light", label: "Light", icon: Sun },
   { value: "system", label: "System", icon: Monitor },
 ];
+
+// Offered only once a palette exists (live from Onyx, or kept from last time):
+// a choice that cannot do anything for someone without Onyx is noise, and
+// CXMail is used by people who have never heard of it.
+const VAULT_THEME = { value: "vault" as const, label: "Vault", icon: Gem };
 
 const DENSITIES: { value: DensityMode; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
@@ -49,6 +56,12 @@ export default function SettingsDialog() {
   const setTransparency = useUIStore((s) => s.setTransparency);
   const emailTransparency = useUIStore((s) => s.emailTransparency);
   const setEmailTransparency = useUIStore((s) => s.setEmailTransparency);
+  const vaultLook = useUIStore((s) => s.vaultLook);
+  const vaultLookSource = useUIStore((s) => s.vaultLookSource);
+  const onyxUrl = useUIStore((s) => s.onyxUrl);
+  const setOnyxUrl = useUIStore((s) => s.setOnyxUrl);
+  const [onyxDraft, setOnyxDraft] = useState(onyxUrl);
+  useEffect(() => setOnyxDraft(onyxUrl), [onyxUrl]);
 
   // Dragging is done in the PAGE, with a transform — deliberately not with
   // `data-tauri-drag-region`, which moves the OS window (gotcha #51). Grabbing
@@ -103,6 +116,18 @@ export default function SettingsDialog() {
   // slider that looks broken because dragging it past the window does nothing.
   const emailCapped = emailPct > pct;
 
+  const themes = vaultLook || theme === "vault" ? [...THEMES, VAULT_THEME] : THEMES;
+  const vault = vaultLook ? deriveVaultTheme(vaultLook) : null;
+  // Said out loud rather than done silently: a palette whose text cannot survive
+  // the theme's usual glass gets a more opaque window (`deriveVaultTheme`).
+  const vaultCapped = vault !== null && vault.paneFloor > PANE_FLOOR[vault.mode];
+  const vaultStatus =
+    vaultLookSource === "onyx" && vaultLook
+      ? `Using your vault's ${vaultLook.mode} palette from Onyx.`
+      : vaultLookSource === "cache" && vaultLook
+        ? `Onyx isn't answering at ${onyxUrl}, so the palette from last time is in use.`
+        : `No vault palette yet. Onyx shares one at ${onyxUrl} while it is running with "Match vault appearance" on.`;
+
   const segment = (active: boolean) =>
     cn(
       "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors",
@@ -143,7 +168,7 @@ export default function SettingsDialog() {
               Theme
             </h3>
             <div className="flex gap-1 rounded-lg bg-surface p-1">
-              {THEMES.map(({ value, label, icon: Icon }) => (
+              {themes.map(({ value, label, icon: Icon }) => (
                 <button
                   key={value}
                   onClick={() => setTheme(value)}
@@ -155,6 +180,39 @@ export default function SettingsDialog() {
                 </button>
               ))}
             </div>
+            <details className="mt-2 text-[11px] text-content-secondary">
+              <summary className="cursor-pointer select-none text-content-muted hover:text-content">
+                Obsidian vault colours (via Onyx)
+              </summary>
+              <div className="mt-2 space-y-2">
+                <p className="leading-snug">{vaultStatus}</p>
+                {theme === "vault" && vault && !vault.accentFromVault && (
+                  <p className="leading-snug text-content-muted">
+                    The vault's accent can't carry white text, so buttons keep CXMail's blue.
+                  </p>
+                )}
+                {theme === "vault" && vaultCapped && (
+                  <p className="leading-snug text-content-muted">
+                    This palette's text needs a more opaque window, so transparency is capped
+                    lower than usual to keep it readable.
+                  </p>
+                )}
+                <label className="flex items-center gap-2">
+                  <span className="shrink-0 text-content-muted">Onyx address</span>
+                  <input
+                    value={onyxDraft}
+                    onChange={(e) => setOnyxDraft(e.target.value)}
+                    onBlur={() => setOnyxUrl(onyxDraft)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") setOnyxUrl(onyxDraft);
+                    }}
+                    spellCheck={false}
+                    aria-label="Onyx address"
+                    className="min-w-0 flex-1 rounded-md border border-border bg-input px-2 py-1 font-mono text-[11px] text-content outline-none focus:border-accent"
+                  />
+                </label>
+              </div>
+            </details>
           </section>
 
           <section>

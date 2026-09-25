@@ -258,6 +258,46 @@ describe("arming and driving the glass", () => {
     expect(useUIStore.getState().transparency).toBe(0.8);
   });
 
+  /**
+   * Glass off paints the window opaque in the base colour. Under a vault
+   * palette that has to be the VAULT's ground — the built-in base would be a
+   * different colour from every pane — and a palette change with the theme
+   * unchanged must still reach AppKit, which is why the colour is in the
+   * `lastSent` guard.
+   */
+  it("paints the vault's ground when glass turns off under a vault palette", async () => {
+    const { startGlass, useUIStore } = await fresh();
+    const cream = {
+      mode: "light" as const,
+      revision: "",
+      bgPrimary: [253, 246, 227] as const,
+      bgSidebar: [253, 246, 227] as const,
+      bgSurface: [241, 234, 210] as const,
+      bgElevated: [253, 246, 227] as const,
+      bgInput: [244, 237, 214] as const,
+      ink: [0, 43, 54] as const,
+      secondary: [68, 98, 101] as const,
+      muted: [121, 140, 137] as const,
+      faint: [164, 175, 166] as const,
+      accent: [203, 75, 22] as const,
+      accentHover: [152, 67, 30] as const,
+    };
+    useUIStore.setState({ theme: "light", vaultLook: cream });
+    startGlass();
+    await flush();
+
+    useUIStore.getState().setTheme("vault");
+    useUIStore.getState().setTransparency(0);
+    expect(mocks.set).toHaveBeenLastCalledWith(false, expect.any(Number), [253, 246, 227]);
+
+    // Same theme (light), new ground: must be sent, not skipped by the guard.
+    useUIStore.getState().setVaultLook({ ...cream, bgPrimary: [250, 250, 250] });
+    expect(mocks.set).toHaveBeenLastCalledWith(false, expect.any(Number), [250, 250, 250]);
+
+    useUIStore.getState().setTheme("light");
+    expect(mocks.set).toHaveBeenLastCalledWith(false, expect.any(Number), THEME_BASE_RGB.light);
+  });
+
   it("arms anyway when the hydrate read fails, treating it as off", async () => {
     mocks.reduceTransparency.mockImplementation(() => Promise.reject(new Error("no bridge")));
     const { startGlass } = await fresh();

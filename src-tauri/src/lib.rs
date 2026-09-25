@@ -317,6 +317,7 @@ pub fn run() {
             commands::glass::set_window_glass,
             commands::glass::set_blur_radius,
             commands::glass::get_reduce_transparency,
+            commands::vault_look::fetch_vault_look,
         ])
         .setup(|app| {
             // Install logging in BOTH debug and release builds. Production

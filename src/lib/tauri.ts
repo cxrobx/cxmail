@@ -705,4 +705,12 @@ export const api = {
      * arrive as a `reduce-transparency-changed` event. */
     reduceTransparency: () => invoke<boolean>("get_reduce_transparency"),
   },
+  vaultLook: {
+    /** Ask Onyx for the Obsidian vault's palette (`commands::vault_look`).
+     * Resolves `null` whenever Onyx has none to give — not running, never
+     * synced, or its own "Match vault appearance" off. Rejects only for an
+     * address that is not this Mac. Typed `unknown` on purpose: the result is
+     * run through `parseVaultPalette` before anything uses it. */
+    fetch: (url: string) => invoke<unknown>("fetch_vault_look", { url }),
+  },
 } as const;

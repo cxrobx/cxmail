@@ -17,7 +17,26 @@ const reset = () =>
     density: "comfortable",
     transparency: TRANSPARENCY_DEFAULT,
     emailTransparency: TRANSPARENCY_DEFAULT,
+    vaultLook: null,
+    vaultLookSource: "none",
+    onyxUrl: "http://127.0.0.1:8899",
   });
+
+const CREAM = {
+  mode: "light" as const,
+  revision: "",
+  bgPrimary: [253, 246, 227] as const,
+  bgSidebar: [253, 246, 227] as const,
+  bgSurface: [241, 234, 210] as const,
+  bgElevated: [253, 246, 227] as const,
+  bgInput: [244, 237, 214] as const,
+  ink: [0, 43, 54] as const,
+  secondary: [68, 98, 101] as const,
+  muted: [121, 140, 137] as const,
+  faint: [164, 175, 166] as const,
+  accent: [203, 75, 22] as const,
+  accentHover: [152, 67, 30] as const,
+};
 
 describe("SettingsDialog", () => {
   beforeEach(reset);
@@ -111,6 +130,41 @@ describe("SettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Light" }));
     const inLight = Number(document.documentElement.style.getPropertyValue("--alpha-pane"));
     expect(inLight).toBeGreaterThan(inDark);
+  });
+
+  it("offers Vault only once a palette exists, and wears it when chosen", () => {
+    const { unmount } = render(<SettingsDialog />);
+    // Nobody without Onyx should see a choice that can do nothing for them.
+    expect(screen.queryByRole("button", { name: /vault/i })).toBeNull();
+    expect(screen.getByText(/No vault palette yet/)).toBeInTheDocument();
+    unmount();
+
+    useUIStore.setState({ vaultLook: CREAM, vaultLookSource: "onyx" });
+    render(<SettingsDialog />);
+    expect(screen.getByText(/Using your vault's light palette from Onyx/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /vault/i }));
+    expect(useUIStore.getState().theme).toBe("vault");
+    expect(screen.getByRole("button", { name: /vault/i })).toHaveAttribute("aria-pressed", "true");
+    expect(document.documentElement.style.getPropertyValue("--bg-primary")).toBe("253 246 227");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    // Back to an explicit theme: the vault's colours come off with it.
+    fireEvent.click(screen.getByRole("button", { name: /dark/i }));
+    expect(document.documentElement.style.getPropertyValue("--bg-primary")).toBe("");
+  });
+
+  it("says when the palette is the kept copy, and edits the Onyx address", () => {
+    useUIStore.setState({ vaultLook: CREAM, vaultLookSource: "cache" });
+    render(<SettingsDialog />);
+    expect(screen.getByText(/isn't answering at http:\/\/127\.0\.0\.1:8899/)).toBeInTheDocument();
+    const address = screen.getByLabelText("Onyx address");
+    fireEvent.change(address, { target: { value: "  http://localhost:9000 " } });
+    fireEvent.keyDown(address, { key: "Enter" });
+    expect(useUIStore.getState().onyxUrl).toBe("http://localhost:9000");
+    // Cleared → back to the default rather than an empty address.
+    fireEvent.change(address, { target: { value: "" } });
+    fireEvent.blur(address);
+    expect(useUIStore.getState().onyxUrl).toBe("http://127.0.0.1:8899");
   });
 
   it("closes on Escape and on the close button", () => {

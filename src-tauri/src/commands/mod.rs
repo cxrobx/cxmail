@@ -29,4 +29,5 @@ pub mod system;
 pub mod templates;
 pub mod tracking;
 pub mod triage;
+pub mod vault_look;
 pub mod zoom;

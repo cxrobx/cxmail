@@ -21,6 +21,7 @@ import FloatingWindowManager from "@/components/shared/FloatingWindowManager";
 import ChatPanel from "@/components/chat/ChatPanel";
 import AccountSetup from "@/components/accounts/AccountSetup";
 import { useUIStore, applyTheme } from "@/stores/uiStore";
+import { useVaultLookSync } from "@/hooks/useVaultLookSync";
 import { useWindowStore } from "@/stores/windowStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { useMailStore } from "@/stores/mailStore";
@@ -85,6 +86,11 @@ export default function AppLayout() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // The Obsidian vault's palette, via Onyx — asked only while the theme is
+  // `vault` or Settings is open. A palette change repaints through
+  // `setVaultLook`, not through the effect above.
+  useVaultLookSync();
 
   useEffect(() => {
     const timer = window.setTimeout(() => void checkForAppUpdate(), 8_000);

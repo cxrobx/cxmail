@@ -1,6 +1,6 @@
 # Known Gotchas
 
-Organized by category. 65 items, condensed format. Original numbering preserved (gaps intentional).
+Organized by category. 66 items, condensed format. Original numbering preserved (gaps intentional).
 
 > Pruned 2026-08-17: investigation narratives and measurements trimmed; the rules, invariants, and patterns are all still here. Full histories: git history of this file (pre-prune) and the Recent Learnings section of `CLAUDE.md`.
 
@@ -73,6 +73,7 @@ Organized by category. 65 items, condensed format. Original numbering preserved 
 | 62 | A draft saved in Gmail's editor loses CXMail's `email-signature`/`cx-quote` classes — reopened in compose, the signature table flattened and a second signature landed below the quote | Frontend |
 | 63 | Send-as: an address on your own Sent mail is PROOF, a delivery header is only a SUGGESTION, and a same-domain `To:` filter offers strangers as aliases | Database |
 | 64 | The in-app chat is `claude -p` with CXMail as the permission host — three flags carry the security, and `--allowedTools` is ADDITIVE | Backend |
+| 65 | The vault theme is Onyx's palette re-derived for GLASS — its light text shades are mixed for an opaque window, and the tokens only land because `AppLayout`'s root carries the PREFERENCE | Frontend |
 
 ---
 
@@ -1298,6 +1299,28 @@ Pattern: `db/identities.rs::{send_as_addresses, sent_from_addresses, append_sent
 **Verify headless** with `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow]` — the exact launch against the real CLI and MCP; every permission is denied unless `--allow`.
 
 Pattern: `email/chat_agent.rs`, `commands/chat.rs`, `mcp/server.rs::{resolve_project_repo, project_repo_payload}`, `src/stores/chatStore.ts`, `src/lib/chatEvents.ts`, `src/components/chat/ChatPanel.tsx`. Related: #31, #36, #47, #49, #11.
+
+---
+
+### 65. The vault theme is Onyx's palette re-derived for glass — and it lands only because `AppLayout`'s root carries the preference
+
+"Vault" in Settings → Theme wears the Obsidian vault's colours. CXMail never reads the vault: Onyx's plugin measures what Obsidian actually draws, Onyx serves a palette at `GET /api/vault-look`, and `commands::vault_look::fetch_vault_look` takes it — the same source Meeting Copilot uses, so the three apps cannot disagree about the vault.
+
+**The trust boundary is the Rust command, and the type is the guard.** The address is a user setting arriving over IPC, so only loopback is fetched (and redirects are off — the check only holds for the address given). Onyx returns a built stylesheet, not a token map, so the `:root.vault-look{…}` block is read back out and every colour must parse as exactly three integers 0–255 into `[u8; 3]`; one bad token means no palette at all, never a partial one. A theme can change colours; it cannot smuggle a rule or `url()` through a type that holds three bytes. The persisted copy is re-checked by `parseVaultPalette` in the store's `merge` — localStorage is hand-editable and these values become CSS.
+
+**Onyx's light text shades are wrong for CXMail, and taking them as-is reintroduces 2026-09-25's grey-on-grey.** Onyx mixes secondary/muted/faint for an OPAQUE window (muted 3.2:1 on the vault ground). On glass over a dark desktop that ground composites darker, so `deriveVaultTheme` re-mixes them from the vault's ink to hold `GLASS_TEXT_FLOORS` — the same floors `windowTransparency.test.ts` pins for the built-in palette — against the sidebar and pane over black at the top of the slider. When even the ink cannot hold muted's 3:1, the palette gets a higher `paneFloor` (the window goes more opaque, and Settings says so). Dark takes Onyx's shades untouched: its failure is the mirror image (white wallpaper) and the built-in dark palette has the same open question.
+
+**The accent is taken only if it can carry WHITE text** (and reads on the ground): CXMail fills with its accent under `text-white`; Onyx only ever uses it as text. Catppuccin's pastel blue passes Onyx and fails here.
+
+**Why the tokens land at all — and the one-line change that would hide them.** They are inline custom properties on `<html>`, which beat the `[data-theme]` blocks. `AppLayout`'s root `<div data-theme={theme}>` carries the PREFERENCE, i.e. `"vault"`, which matches no block. Give that div the resolved theme and its `[data-theme="light"]` block re-declares every built-in token one level down, and the vault colours vanish below it with nothing failing. `paintVaultVars` clears the whole `VAULT_VARS` list before painting, so an accent one palette set cannot outlive it into the next.
+
+**The window's opaque colour follows the palette** (`activeVault.base` in `applyGlass`), and it is part of the `lastSent` guard — a new ground with the theme unchanged must still reach AppKit. **The email veils take no floor, on purpose**: the floor cancels out of `solveVeil` (pane veil = 1 − t_email/t_window), pinned by a test, so a change to the alpha formula that breaks that fails loudly.
+
+**Polling**: only while the theme is `vault` or Settings is open, on focus and every 60 s; `setVaultLook(null)` (Onyx down) keeps the last palette and marks it cached, and an unchanged palette repaints nothing. Onyx's own "Match vault appearance" switch off makes it serve no palette, which CXMail reads as "not answering".
+
+Verify the live path with `cargo test --lib vault_look -- --include-ignored` (needs Onyx running). Mutation-tested: dropping the floor raise, the glass re-shading, the white-on-accent check, the clear, the rehydrate validation, the keep-on-failure rule, or the vault base colour each fails a named test.
+
+Pattern: `src-tauri/src/commands/vault_look.rs`, `src/lib/vaultLook.ts`, `src/lib/windowAlpha.ts`, `src/lib/contrast.ts`, `src/stores/uiStore.ts::{applyTheme, paintVaultVars, setVaultLook}`, `src/hooks/useVaultLookSync.ts`, `SettingsDialog.tsx`. Related: #59, #52, #60.
 
 ---
 

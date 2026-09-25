@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { transparencyToAlphas, TRANSPARENCY_DEFAULT, type Theme } from "@/stores/uiStore";
+// The same helpers `vaultLook.ts` picks its colours with, so what chooses a
+// shade and what checks it cannot disagree about contrast.
+import { contrast, over as overRGB, type RGB } from "@/lib/contrast";
 
 /**
  * The window-transparency curve, pinned against the palette it was derived from.
@@ -129,26 +132,12 @@ describe("transparencyToAlphas", () => {
   });
 });
 
-/** WCAG relative luminance of a neutral-ish sRGB triplet. */
-function luminance([r, g, b]: number[]): number {
-  const lin = (c: number) => {
-    const s = c / 255;
-    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  };
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-}
-
-function contrast(a: number[], b: number[]): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-
 /** A full `--token: r g b;` triplet out of a theme block. */
-function paletteTriplet(theme: Theme, token: string): number[] {
+function paletteTriplet(theme: Theme, token: string): RGB {
   const block = CSS.split(`[data-theme="${theme}"]`)[1].split("}")[0];
   const m = block.match(new RegExp(`--${token}:\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)`));
   expect(m, `--${token} not found in ${theme}`).toBeTruthy();
-  return m!.slice(1, 4).map(Number);
+  return m!.slice(1, 4).map(Number) as unknown as RGB;
 }
 
 /**
@@ -172,8 +161,8 @@ function paletteTriplet(theme: Theme, token: string): number[] {
  * a separate decision, not an oversight.
  */
 describe("light-theme text legibility over the glass", () => {
-  const BLACK = [0, 0, 0];
-  const composite = (colour: number[], alpha: number) => colour.map((c, i) => over(c, alpha, BLACK[i]));
+  const BLACK: RGB = [0, 0, 0];
+  const composite = (colour: RGB, alpha: number) => overRGB(colour, alpha, BLACK);
 
   it("keeps muted and faint text readable on the sidebar and the pane, over a black desktop", () => {
     const muted = paletteTriplet("light", "text-muted");

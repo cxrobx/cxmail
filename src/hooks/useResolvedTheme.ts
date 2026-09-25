@@ -25,6 +25,10 @@ function subscribe(onChange: () => void): () => void {
  */
 export function useResolvedTheme(): Theme {
   const preference = useUIStore((s) => s.theme);
+  // Under `vault` the answer is the palette's mode, which changes without the
+  // preference changing (Obsidian flipped, Onyx re-measured). Subscribing to it
+  // is what re-renders this hook then; the value is read inside resolveTheme.
+  useUIStore((s) => s.vaultLook?.mode);
   // The snapshot is the resolved theme itself, a string, so it is stable
   // between flips and useSyncExternalStore will not loop.
   return useSyncExternalStore(subscribe, () => resolveTheme(preference));
