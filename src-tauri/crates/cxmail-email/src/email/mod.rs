@@ -37,4 +37,4 @@ pub mod zoom_sync;
 // the DB layer legitimately needs them. Re-exported here because they are still
 // email concepts: `email::message_id::compute_thread_root_id` reads the same as
 // it always did, and every call site is unchanged.
-pub use cxmail_core::mail::{dashes, detect_events, message_id, needs_you};
+pub use cxmail_core::mail::{dashes, detect_events, message_id, needs_you, weekdays};

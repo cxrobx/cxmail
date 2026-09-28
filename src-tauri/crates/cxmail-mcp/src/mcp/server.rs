@@ -4069,6 +4069,9 @@ impl CxMailMcp {
         // signed, quoted, or appended anywhere — the external writer's output
         // included (#47: normalize at the boundary, whoever wrote the words).
         let dash_note = enforce_dash_rule(&mut params.subject, &mut body);
+        let weekday_note = crate::email::weekdays::check_body_today(&body)
+            .map_err(|message| McpError::invalid_params(message, None))?
+            .unwrap_or_default();
         let layout_note = layout_advisory(params.layout.as_deref(), &body);
 
         // `Connection` is `Send` (only `&Connection` isn't), so holding this
@@ -4306,9 +4309,9 @@ impl CxMailMcp {
             format!(" with {} attachments", attachments_count)
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}{}",
+            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}{}{}",
             drafts_folder, uid, account.email, suffix, draft_id, quote_note, layout_note,
-            dash_note, pinned_note, writer_note, from_note
+            dash_note, weekday_note, pinned_note, writer_note, from_note
         ))]))
     }
 
@@ -4406,6 +4409,9 @@ impl CxMailMcp {
         // Same rule: the authored text is normalized before any IMAP work —
         // the external writer's output included (#47).
         let dash_note = enforce_dash_rule(&mut params.subject, &mut body);
+        let weekday_note = crate::email::weekdays::check_body_today(&body)
+            .map_err(|message| McpError::invalid_params(message, None))?
+            .unwrap_or_default();
         let layout_note = layout_advisory(params.layout.as_deref(), &body);
 
         let conn = self.open_db()?;
@@ -4820,7 +4826,7 @@ impl CxMailMcp {
             String::new()
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}",
+            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}{}",
             old_uid,
             new_uid,
             drafts_folder,
@@ -4832,6 +4838,7 @@ impl CxMailMcp {
             quote_note,
             layout_note,
             dash_note,
+            weekday_note,
             pinned_note,
             writer_note,
             from_note

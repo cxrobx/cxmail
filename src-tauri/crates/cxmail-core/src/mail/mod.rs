@@ -18,3 +18,4 @@ pub mod message_id;
 pub mod needs_you;
 pub mod text;
 pub mod triage;
+pub mod weekdays;
