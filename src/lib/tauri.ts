@@ -628,7 +628,8 @@ export const api = {
   chat: {
     start: (seed: ChatSeed | null, model: string | null) =>
       invoke<ChatStarted>("chat_start", { seed, model }),
-    send: (text: string) => invoke<void>("chat_send", { text }),
+    /** `images` are data URLs; Rust re-checks type and size from the bytes. */
+    send: (text: string, images: string[] = []) => invoke<void>("chat_send", { text, images }),
     answerPermission: (requestId: string, allow: boolean, remember: boolean) =>
       invoke<void>("chat_answer_permission", { requestId, allow, remember }),
     interrupt: () => invoke<void>("chat_interrupt"),

@@ -80,6 +80,7 @@ export function applyChatEvent(t: ChatTranscript, ev: ChatEvent): ChatTranscript
             displayName: ev.display_name,
             input: ev.input,
             context: ev.context ?? null,
+            rememberable: ev.rememberable ?? true,
             state: "pending",
           },
         ],
@@ -182,6 +183,13 @@ export function describeTool(name: string, input: unknown): string {
     case "search_vault":
     case "related_notes":
       return `Searched notes${q(str(input, "query"))}`;
+    case "file_task":
+      return `Filed a task${q(str(input, "title"))}`;
+    case "get_task":
+    case "list_tasks":
+    case "search_tasks":
+    case "next_task":
+      return `Checked your tasks${q(str(input, "query") ?? str(input, "task_id"))}`;
     case "Read": {
       const p = str(input, "file_path");
       return p ? `Read ${basename(p)}` : "Read a file";
@@ -258,21 +266,54 @@ export function permissionTitle(toolName: string, input: unknown, ctx: Permissio
       return "Dismiss a nudge?";
     case "send_email":
       return "Send an email?";
+    case "file_task":
+      return `File the task “${str(input, "title") ?? "untitled"}”?`;
+    case "update_task":
+      return `Change ${taskName(input)}?`;
+    case "complete_task":
+      return `Mark ${taskName(input)} done?`;
+    case "comment_task":
+      return `Comment on ${taskName(input)}?`;
     default:
       return `Allow: ${describeTool(toolName, input)}?`;
   }
 }
 
+const taskName = (input: unknown) => {
+  const id = str(input, "task_id");
+  return id ? `task ${id}` : "a task";
+};
+
+/**
+ * What a person must notice before allowing a CXTasks write: anything that
+ * lets the task run on its own later. A task that only sits in the list needs
+ * no warning, so this is empty for the ordinary "file that" case.
+ */
+export function permissionWarnings(toolName: string, input: unknown): string[] {
+  if (!toolName.startsWith("mcp__cxtasks__") || !input || typeof input !== "object") return [];
+  const o = input as Record<string, unknown>;
+  const out: string[] = [];
+  if (o.bg_allowed === true || o.status === "queued") {
+    const can = o.bg_writes_allowed === true ? "edit files and run commands" : o.bg_shell_allowed === true ? "run commands" : "read files";
+    out.push(`An agent may run this unattended and ${can}.`);
+  }
+  if (typeof o.tripwire === "string" && o.tripwire.trim()) out.push("Sets a tripwire that is checked automatically.");
+  if (typeof o.bg_mcp_servers === "string" && o.bg_mcp_servers.trim()) {
+    out.push(`A background run could reach: ${o.bg_mcp_servers}.`);
+  }
+  return out;
+}
+
 /** Input keys the card already says in words (via the context), or that
  *  mean nothing to a person. They stay visible under "Details". */
-const HIDDEN_FIELDS = new Set(["account_id", "folder", "from_folder", "uid", "uids", "confirmed"]);
+const HIDDEN_FIELDS = new Set(["account_id", "folder", "from_folder", "uid", "uids", "confirmed", "why"]);
 
 /** The rest of the input as readable label/value lines. */
 export function permissionFields(input: unknown): [string, string][] {
   if (!input || typeof input !== "object") return [];
   return Object.entries(input as Record<string, unknown>)
     .filter(([k, v]) => !HIDDEN_FIELDS.has(k) && !/(^id$|_id$|_ids$)/.test(k) && v !== null && v !== undefined && v !== "")
-    .slice(0, 6)
+    .slice(0, 8)
     .map(([k, v]) => {
       const label = k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
       let value: string;

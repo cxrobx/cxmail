@@ -95,7 +95,7 @@ describe("ChatPanel", () => {
   it("starts a session before sending the first message", async () => {
     await openAndSend("follow up with Dana");
     expect(start).toHaveBeenCalledWith(null, null);
-    expect(send).toHaveBeenCalledWith("follow up with Dana");
+    expect(send).toHaveBeenCalledWith("follow up with Dana", []);
     expect(start.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[0]);
     expect(screen.getByText("follow up with Dana")).toBeTruthy();
   });
@@ -120,6 +120,7 @@ describe("ChatPanel", () => {
       tool_name: "mcp__cxmail__archive_email",
       display_name: "Archive Email",
       input: { account_id: "6ed99f49-d35e", folder: "INBOX", uid: 9 },
+      rememberable: true,
       context: {
         account: "me@example.com",
         folder: "INBOX",
@@ -142,12 +143,52 @@ describe("ChatPanel", () => {
 
   it("Deny sends deny, and 'Allow for this chat' remembers", async () => {
     const user = await openAndSend("clean up");
-    fire({ type: "permission_request", request_id: "r-deny", tool_name: "mcp__cxmail__delete_email", display_name: "Delete Email", input: {}, context: null });
+    fire({ type: "permission_request", request_id: "r-deny", tool_name: "mcp__cxmail__delete_email", display_name: "Delete Email", input: {}, rememberable: true, context: null });
     await user.click(screen.getByRole("button", { name: "Deny" }));
     expect(answerPermission).toHaveBeenLastCalledWith("r-deny", false, false);
-    fire({ type: "permission_request", request_id: "r-keep", tool_name: "mcp__cxmail__flag_email", display_name: "Flag Email", input: {}, context: null });
+    fire({ type: "permission_request", request_id: "r-keep", tool_name: "mcp__cxmail__flag_email", display_name: "Flag Email", input: {}, rememberable: true, context: null });
     await user.click(screen.getByRole("button", { name: "Allow for this chat" }));
     expect(answerPermission).toHaveBeenLastCalledWith("r-keep", true, true);
+  });
+
+  it("filing a task offers Allow and Deny but never 'Allow for this chat'", async () => {
+    const user = await openAndSend("file that");
+    fire({
+      type: "permission_request",
+      request_id: "r-task",
+      tool_name: "mcp__cxtasks__file_task",
+      display_name: "File Task",
+      input: { title: "Send Dana the scope", why: "chris-asked", bg_allowed: true },
+      rememberable: false,
+      context: null,
+    });
+    expect(screen.getByText("File the task “Send Dana the scope”?")).toBeTruthy();
+    expect(screen.getByText(/may run this unattended/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Allow for this chat" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Allow" }));
+    expect(answerPermission).toHaveBeenCalledWith("r-task", true, false);
+  });
+
+  it("a pasted picture is attached, shown, and sent with the message", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel />);
+    act(() => useChatStore.getState().setOpen(true));
+    const input = screen.getByPlaceholderText(/Ask Claude about your mail/);
+    await user.click(input);
+    await user.paste({
+      files: [new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "shot.png", { type: "image/png" })],
+    } as unknown as DataTransfer);
+    expect(await screen.findByAltText("Attached picture 1")).toBeTruthy();
+    // A picture alone is enough to send.
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(send).toHaveBeenCalledTimes(1);
+    const [text, images] = send.mock.calls[0];
+    expect(text).toBe("");
+    expect(images).toHaveLength(1);
+    expect(images[0]).toMatch(/^data:image\/png;base64,/);
+    // The chip is gone from the composer; the picture is in the transcript.
+    expect(screen.queryByRole("button", { name: "Remove picture 1" })).toBeNull();
+    expect(screen.getByAltText("Attached picture 1")).toBeTruthy();
   });
 
   it("a finished draft opens in compose on its own account", async () => {

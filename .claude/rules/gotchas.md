@@ -72,7 +72,7 @@ Organized by category. 66 items, condensed format. Original numbering preserved 
 | 61 | A thread's members come from EVERY folder — so your own replies printed twice and an unsent draft printed as sent, and the count had the same blind spot | Database |
 | 62 | A draft saved in Gmail's editor loses CXMail's `email-signature`/`cx-quote` classes — reopened in compose, the signature table flattened and a second signature landed below the quote | Frontend |
 | 63 | Send-as: an address on your own Sent mail is PROOF, a delivery header is only a SUGGESTION, and a same-domain `To:` filter offers strangers as aliases | Database |
-| 64 | The in-app chat is `claude -p` with CXMail as the permission host — three flags carry the security, and `--allowedTools` is ADDITIVE | Backend |
+| 64 | The in-app chat is `claude -p` with CXMail as the permission host — three flags carry the security, `--allowedTools` is ADDITIVE, and a CXTasks filing always asks | Backend |
 | 65 | The vault theme is Onyx's palette re-derived for GLASS — its light text shades are mixed for an opaque window, and the tokens only land because `AppLayout`'s root carries the PREFERENCE | Frontend |
 
 ---
@@ -1296,7 +1296,11 @@ Pattern: `db/identities.rs::{send_as_addresses, sent_from_addresses, append_sent
 
 **Environment.** User hooks stay on (the secret-exposure guard among them) with `CLAUDE_HOOK_SOUND=0`/`CLAUDE_HOOK_BANNER=0`; the child gets the login shell's PATH (hooks need `jq`/`sqlite3`). The `cxmail` server is the binary bundled beside the app when running from a `.app` (Keychain-ACL-trusted, #31), else the registered loose `target/release/cxmail-mcp` — so in dev, an MCP tool change needs that binary rebuilt with the Google client and signed (ship.md steps 2/2b) before the chat can see it.
 
-**Verify headless** with `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow]` — the exact launch against the real CLI and MCP; every permission is denied unless `--allow`.
+**CXTasks rides along by name, and filing ALWAYS asks (2026-09-30).** `cxtasks` is a second `PASSTHROUGH_SERVERS` entry: its reads run, its writes (`CXTASKS_WRITE_TOOLS`) ask. Stricter than the cxmail mutations, because a task can carry a seed prompt and `bg_*` grants and be run by an unattended agent with a shell — an unseen filing is the one road from an email's text to the tools the chat lacks. Two things make "always" true, both test-pinned: (a) **a `--settings` ask rule per write tool** — the additive-allow trap above is live for this server: `~/.claude/settings.local.json` allows `mcp__cxtasks__file_task`, and a mapped repo's own settings could too; ask outranks allow. (b) **`can_remember` is false for every CXTasks write**, checked in Rust at both the question and the answer, so "Allow for this chat" is neither offered nor honoured. The card warns when the input would let the task run on its own (`permissionWarnings`). Probed with an allow rule planted in the session's cwd: the filing still asked.
+
+**Pictures go in as content blocks.** `chat_send(text, images)`; with pictures the user message's `content` is `[{type:"image", source:{type:"base64",…}}, {type:"text"}]`, without it stays a bare string. Rust types each picture by its magic bytes (the data URL's claimed type is ignored — an SVG labelled `image/png` is refused), caps 5 MB × 4, and re-encodes. The CLI spools the picture to a temp file and the model `Read`s it, so a picture turn shows a "Read …" tool row. Composer: paste or the paperclip; drag-and-drop is not wired (Tauri owns window file drops).
+
+**Verify headless** with `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow] [--image pic.png]` — the exact launch against the real CLI and MCP; every permission is denied unless `--allow`.
 
 Pattern: `email/chat_agent.rs`, `commands/chat.rs`, `mcp/server.rs::{resolve_project_repo, project_repo_payload}`, `src/stores/chatStore.ts`, `src/lib/chatEvents.ts`, `src/components/chat/ChatPanel.tsx`. Related: #31, #36, #47, #49, #11.
 

@@ -50,6 +50,8 @@ export type ChatEvent =
       tool_name: string;
       display_name: string;
       input: unknown;
+      /** False when "Allow for this chat" must not be offered. */
+      rememberable: boolean;
       context: PermissionContext | null;
     }
   | { type: "turn_done"; is_error: boolean; subtype: string; cost_usd: number | null; duration_ms: number | null }
@@ -62,7 +64,7 @@ export interface ChatEnvelope {
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string }
+  | { kind: "user"; id: string; text: string; images: string[] }
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   | {
       kind: "tool";
@@ -80,6 +82,7 @@ export type ChatItem =
       displayName: string;
       input: unknown;
       context: PermissionContext | null;
+      rememberable: boolean;
       state: "pending" | "allowed" | "allowed_always" | "denied" | "expired";
     }
   | { kind: "notice"; id: string; text: string; tone: "info" | "error" };

@@ -227,6 +227,7 @@ pub async fn chat_start(
         seed_message.as_ref(),
         seed_repo.as_ref().map(|r| r.repo_path.as_str()),
         servers.iter().any(|s| s == "vault"),
+        servers.iter().any(|s| s == "cxtasks"),
     );
     let args = chat_agent::build_args(&chat_agent::ChatLaunch {
         mcp_config: &mcp_path,
@@ -403,11 +404,13 @@ async fn read_loop(
                     display_name,
                     input,
                 } => {
-                    let remembered = shared
-                        .always_allow
-                        .lock()
-                        .map(|s| s.contains(&tool_name))
-                        .unwrap_or(false);
+                    let rememberable = chat_agent::can_remember(&tool_name);
+                    let remembered = rememberable
+                        && shared
+                            .always_allow
+                            .lock()
+                            .map(|s| s.contains(&tool_name))
+                            .unwrap_or(false);
                     if remembered {
                         let _ = tx.send(chat_agent::allow_line(&request_id, &input));
                         continue;
@@ -424,6 +427,7 @@ async fn read_loop(
                             tool_name,
                             display_name,
                             input,
+                            rememberable,
                             context,
                         },
                     );
@@ -508,11 +512,23 @@ fn request_attention(app: &AppHandle) {
 /// Send one message. The first message of a session is sent the same way —
 /// the CLI queues it behind its own startup.
 #[tauri::command]
-pub async fn chat_send(text: String) -> Result<(), AppError> {
+pub async fn chat_send(text: String, images: Option<Vec<String>>) -> Result<(), AppError> {
     let text = text.trim();
-    if text.is_empty() {
+    let images = images.unwrap_or_default();
+    if text.is_empty() && images.is_empty() {
         return Err(AppError::General("Nothing to send.".into()));
     }
+    if images.len() > chat_agent::MAX_IMAGES_PER_MESSAGE {
+        return Err(AppError::General(format!(
+            "A message can carry at most {} pictures.",
+            chat_agent::MAX_IMAGES_PER_MESSAGE
+        )));
+    }
+    let images = images
+        .iter()
+        .map(|i| chat_agent::validate_image(i))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::General)?;
     if text.chars().count() > MAX_MESSAGE_CHARS {
         return Err(AppError::General(format!(
             "That message is over {MAX_MESSAGE_CHARS} characters."
@@ -524,7 +540,7 @@ pub async fn chat_send(text: String) -> Result<(), AppError> {
         .ok_or_else(|| AppError::General("No chat is running — start a new one.".into()))?;
     session
         .tx
-        .send(chat_agent::user_message_line(text))
+        .send(chat_agent::user_message_line(text, &images))
         .map_err(|_| AppError::General("The chat has ended — start a new one.".into()))
 }
 
@@ -548,7 +564,8 @@ pub async fn chat_answer_permission(
         .and_then(|mut p| p.remove(&request_id))
         .ok_or_else(|| AppError::NotFound("That request was already answered.".into()))?;
     let line = if allow {
-        if remember {
+        // A CXTasks write asks every time, whatever the webview sent.
+        if remember && chat_agent::can_remember(&tool) {
             if let Ok(mut set) = session.shared.always_allow.lock() {
                 set.insert(tool);
             }

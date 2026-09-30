@@ -28,7 +28,7 @@ interface ChatState {
   setModel: (model: string) => void;
   startNew: (seed?: ChatSeed) => Promise<boolean>;
   askAboutEmail: (seed: ChatSeed) => Promise<void>;
-  send: (text: string) => Promise<void>;
+  send: (text: string, images?: string[]) => Promise<void>;
   answer: (requestId: string, allow: boolean, remember: boolean) => Promise<void>;
   interrupt: () => Promise<void>;
   stop: () => Promise<void>;
@@ -85,19 +85,19 @@ export const useChatStore = create<ChatState>()(
         await get().startNew(seed);
       },
 
-      send: async (text) => {
+      send: async (text, images = []) => {
         const trimmed = text.trim();
-        if (!trimmed || get().busy || get().starting) return;
+        if ((!trimmed && images.length === 0) || get().busy || get().starting) return;
         if (!get().alive) {
           const ok = await get().startNew();
           if (!ok) return;
         }
         set((s) => ({
           busy: true,
-          items: [...s.items, { kind: "user", id: `u-${Date.now()}`, text: trimmed }],
+          items: [...s.items, { kind: "user", id: `u-${Date.now()}`, text: trimmed, images }],
         }));
         try {
-          await api.chat.send(trimmed);
+          await api.chat.send(trimmed, images);
         } catch (e) {
           set((s) => ({ busy: false, items: [...s.items, notice(errText(e))] }));
         }

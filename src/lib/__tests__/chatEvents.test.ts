@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyChatEvent, describeTool, draftAccountId, permissionFields, permissionTitle, type ChatTranscript } from "../chatEvents";
+import { applyChatEvent, describeTool, draftAccountId, permissionFields, permissionTitle, permissionWarnings, type ChatTranscript } from "../chatEvents";
+import { MAX_CHAT_IMAGE_BYTES, imageProblem } from "../chatImages";
 import type { ChatEvent } from "@/types/chat";
 
 const empty: ChatTranscript = { items: [], busy: true, alive: true };
@@ -60,7 +61,7 @@ describe("applyChatEvent", () => {
 
   it("exit expires unanswered permission questions so their buttons go away", () => {
     const t = run([
-      { type: "permission_request", request_id: "r1", tool_name: "mcp__cxmail__archive_email", display_name: "Archive Email", input: {}, context: null },
+      { type: "permission_request", request_id: "r1", tool_name: "mcp__cxmail__archive_email", display_name: "Archive Email", input: {}, rememberable: true, context: null },
       { type: "exited", code: 0, stderr_tail: "" },
     ]);
     expect(t.items[0]).toMatchObject({ kind: "permission", state: "expired" });
@@ -120,5 +121,44 @@ describe("permission card wording", () => {
       ["Permanent", "No"],
       ["To folder", "Clients"],
     ]);
+  });
+});
+
+describe("cxtasks and pictures", () => {
+  it("a filing question names the task and cannot be remembered", () => {
+    const t = run([
+      {
+        type: "permission_request",
+        request_id: "r1",
+        tool_name: "mcp__cxtasks__file_task",
+        display_name: "File Task",
+        input: { title: "Send Dana the scope", why: "chris-asked" },
+        rememberable: false,
+        context: null,
+      },
+    ]);
+    expect(t.items[0]).toMatchObject({ kind: "permission", rememberable: false, state: "pending" });
+    expect(permissionTitle("mcp__cxtasks__file_task", { title: "Send Dana the scope" }, null)).toBe(
+      "File the task “Send Dana the scope”?",
+    );
+    expect(permissionTitle("mcp__cxtasks__complete_task", { task_id: "T42" }, null)).toBe("Mark task T42 done?");
+    expect(permissionFields({ title: "x", why: "chris-asked" }).map(([k]) => k)).toEqual(["Title"]);
+  });
+
+  it("warns only when a task could run on its own", () => {
+    expect(permissionWarnings("mcp__cxtasks__file_task", { title: "x", prompt: "do it" })).toEqual([]);
+    expect(permissionWarnings("mcp__cxtasks__file_task", { title: "x", bg_allowed: true, bg_writes_allowed: true })).toEqual([
+      "An agent may run this unattended and edit files and run commands.",
+    ]);
+    expect(permissionWarnings("mcp__cxtasks__update_task", { task_id: "T42", status: "queued" })).toHaveLength(1);
+    expect(permissionWarnings("mcp__cxtasks__file_task", { title: "x", tripwire: "script:y" })).toHaveLength(1);
+    expect(permissionWarnings("mcp__cxmail__archive_email", { bg_allowed: true })).toEqual([]);
+  });
+
+  it("accepts the four picture formats under 5 MB and nothing else", () => {
+    expect(imageProblem({ type: "image/png", size: 10 })).toBeNull();
+    expect(imageProblem({ type: "image/svg+xml", size: 10 })).toMatch(/PNG/);
+    expect(imageProblem({ type: "application/pdf", size: 10 })).toMatch(/PNG/);
+    expect(imageProblem({ type: "image/jpeg", size: MAX_CHAT_IMAGE_BYTES + 1, name: "big.jpg" })).toBe("big.jpg is over 5 MB.");
   });
 });

@@ -1,7 +1,7 @@
 //! Drive the in-app chat's exact `claude -p` launch headless, and print what
 //! the panel would receive.
 //!
-//! `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow] [--model haiku]`
+//! `cargo run -p cxmail-email --example chat_probe -- <copy.db> "<message>" [--allow] [--model haiku] [--image pic.png]`
 //!
 //! The argv, tool tiers, MCP config and standing instructions come from
 //! `email::chat_agent` — the same functions `commands::chat` calls — so this
@@ -30,6 +30,19 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .cloned();
 
+    let images: Vec<chat_agent::ChatImage> = args
+        .iter()
+        .position(|a| a == "--image")
+        .and_then(|i| args.get(i + 1))
+        .map(|path| {
+            use base64::Engine;
+            let bytes = std::fs::read(path).expect("read --image");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+            chat_agent::validate_image(&b64).expect("a PNG, JPEG, GIF or WebP under 5 MB")
+        })
+        .into_iter()
+        .collect();
+
     let conn = rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open db");
     let mut repos: Vec<chat_agent::RepoLine> = Vec::new();
@@ -53,7 +66,7 @@ fn main() {
     let (config, servers) = chat_agent::build_mcp_config(claude_json.as_ref(), None);
     let mcp_path = home.join("mcp.json");
     std::fs::write(&mcp_path, config.to_string()).expect("write mcp.json");
-    let prompt = chat_agent::build_system_prompt(&repos, None, None, servers.iter().any(|s| s == "vault"));
+    let prompt = chat_agent::build_system_prompt(&repos, None, None, servers.iter().any(|s| s == "vault"), servers.iter().any(|s| s == "cxtasks"));
     let add_dirs: Vec<PathBuf> = repos.iter().map(|r| PathBuf::from(&r.path)).collect();
     let argv = chat_agent::build_args(&chat_agent::ChatLaunch {
         mcp_config: &mcp_path,
@@ -89,7 +102,7 @@ fn main() {
         }
     };
     send(&mut stdin, chat_agent::initialize_line("probe-init"));
-    send(&mut stdin, chat_agent::user_message_line(message));
+    send(&mut stdin, chat_agent::user_message_line(message, &images));
 
     let mut parser = chat_agent::StreamParser::default();
     let mut streaming = false;

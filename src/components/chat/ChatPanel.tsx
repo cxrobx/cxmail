@@ -19,6 +19,7 @@ import {
   FolderGit2,
   Loader2,
   Mail,
+  Paperclip,
   ShieldAlert,
   Sparkles,
   Square,
@@ -30,7 +31,14 @@ import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { useUIStore } from "@/stores/uiStore";
-import { describeTool, draftAccountId, permissionFields, permissionTitle } from "@/lib/chatEvents";
+import {
+  describeTool,
+  draftAccountId,
+  permissionFields,
+  permissionTitle,
+  permissionWarnings,
+} from "@/lib/chatEvents";
+import { CHAT_IMAGE_TYPES, MAX_CHAT_IMAGES, imageProblem, readAsDataUrl } from "@/lib/chatImages";
 import { openDraftForEdit } from "@/lib/draftCompose";
 import type { ChatEnvelope, ChatItem } from "@/types/chat";
 
@@ -69,6 +77,9 @@ function ChatPane() {
   const { items, busy, alive, starting, started, sessionModel, model } = useChatStore();
   const { setOpen, setModel, startNew, send, interrupt, continueInTerminal } = useChatStore();
   const [draft, setDraft] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const addToast = useUIStore((s) => s.addToast);
+  const fileRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stickToBottom = useRef(true);
@@ -95,12 +106,34 @@ function ChatPane() {
     el.style.overflowY = el.scrollHeight + border > INPUT_MAX_HEIGHT ? "auto" : "hidden";
   }, [draft]);
 
+  const addImages = async (files: File[]) => {
+    const room = MAX_CHAT_IMAGES - images.length;
+    if (files.length > room) {
+      addToast({ message: `A message can carry at most ${MAX_CHAT_IMAGES} pictures.`, type: "error" });
+    }
+    const added: string[] = [];
+    for (const file of files.slice(0, Math.max(room, 0))) {
+      const problem = imageProblem(file);
+      if (problem) {
+        addToast({ message: problem, type: "error" });
+        continue;
+      }
+      try {
+        added.push(await readAsDataUrl(file));
+      } catch {
+        addToast({ message: "That picture could not be read.", type: "error" });
+      }
+    }
+    if (added.length) setImages((cur) => [...cur, ...added].slice(0, MAX_CHAT_IMAGES));
+  };
+
   const submit = () => {
     const text = draft.trim();
-    if (!text || busy || starting) return;
+    if ((!text && images.length === 0) || busy || starting) return;
     setDraft("");
+    setImages([]);
     stickToBottom.current = true;
-    void send(text);
+    void send(text, images);
   };
 
   return (
@@ -203,7 +236,48 @@ function ChatPane() {
 
       {/* Composer */}
       <div className="shrink-0 border-t border-border-subtle p-2">
+        {images.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {images.map((src, i) => (
+              <div key={i} className="relative">
+                <img
+                  src={src}
+                  alt={`Attached picture ${i + 1}`}
+                  className="h-14 w-14 rounded-md border border-border-subtle object-cover"
+                />
+                <button
+                  onClick={() => setImages((cur) => cur.filter((_, j) => j !== i))}
+                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-elevated text-content-secondary shadow hover:text-content"
+                  title="Remove picture"
+                  aria-label={`Remove picture ${i + 1}`}
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept={CHAT_IMAGE_TYPES.join(",")}
+          multiple
+          hidden
+          onChange={(e) => {
+            void addImages(Array.from(e.target.files ?? []));
+            e.target.value = "";
+          }}
+        />
         <div className="flex items-end gap-[7px]">
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={images.length >= MAX_CHAT_IMAGES}
+            className="flex h-[34px] w-[28px] shrink-0 items-center justify-center rounded-[9px] text-content-secondary hover:text-content disabled:opacity-40"
+            title="Attach a picture (or paste one)"
+            aria-label="Attach a picture"
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+          </button>
           <textarea
             ref={inputRef}
             value={draft}
@@ -213,6 +287,12 @@ function ChatPane() {
                 e.preventDefault();
                 submit();
               }
+            }}
+            onPaste={(e) => {
+              const files = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+              if (files.length === 0) return;
+              e.preventDefault();
+              void addImages(files);
             }}
             rows={1}
             placeholder="Ask Claude about your mail…"
@@ -230,7 +310,7 @@ function ChatPane() {
           ) : (
             <button
               onClick={submit}
-              disabled={!draft.trim() || starting}
+              disabled={(!draft.trim() && images.length === 0) || starting}
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] bg-accent text-white disabled:opacity-40"
               title="Send (Enter)"
               aria-label="Send"
@@ -285,8 +365,9 @@ function EmptyState({ readable, onPick }: { readable: number | null; onPick: (s:
     <div className="space-y-3 pt-6 text-center">
       <Sparkles className="mx-auto h-6 w-6 text-ai" />
       <p className="text-sm text-content-secondary">
-        Claude can search your mail, read your project folders, and write drafts. Anything that
-        changes mail asks you first, and nothing is ever sent.
+        Claude can search your mail, read your project folders, look at pictures you attach, write
+        drafts and file tasks. Anything that changes mail or files a task asks you first, and
+        nothing is ever sent.
       </p>
       {readable !== null && (
         <p className="text-xs text-content-muted">
@@ -316,6 +397,18 @@ function ChatItemView({ item }: { item: ChatItem }) {
       return (
         <div className="flex justify-end">
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-surface px-2.5 py-1.5 text-sm text-content">
+            {item.images.length > 0 && (
+              <div className={cn("flex flex-wrap gap-1.5", item.text && "mb-1.5")}>
+                {item.images.map((src, i) => (
+                  <img
+                    key={i}
+                    src={src}
+                    alt={`Attached picture ${i + 1}`}
+                    className="max-h-40 max-w-full rounded-md object-contain"
+                  />
+                ))}
+              </div>
+            )}
             {item.text}
           </div>
         </div>
@@ -401,6 +494,7 @@ function PermissionCard({ item }: { item: Extract<ChatItem, { kind: "permission"
   const answer = useChatStore((s) => s.answer);
   const ctx = item.context;
   const fields = permissionFields(item.input);
+  const warnings = permissionWarnings(item.toolName, item.input);
   const more = ctx ? ctx.message_count - ctx.messages.length : 0;
   const where = [ctx?.account, ctx?.folder && folderLabel(ctx.folder)].filter(Boolean).join(" · ");
   const verdict: Record<Exclude<typeof item.state, "pending">, string> = {
@@ -449,6 +543,13 @@ function PermissionCard({ item }: { item: Extract<ChatItem, { kind: "permission"
         </dl>
       )}
 
+      {warnings.map((w) => (
+        <div key={w} className="mt-1.5 flex items-start gap-1.5 text-warning">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{w}</span>
+        </div>
+      ))}
+
       {item.state === "pending" ? (
         <div className="mt-2.5 flex gap-1.5">
           <button
@@ -457,13 +558,15 @@ function PermissionCard({ item }: { item: Extract<ChatItem, { kind: "permission"
           >
             Allow
           </button>
-          <button
-            onClick={() => void answer(item.id, true, true)}
-            className="rounded-md border border-border-subtle px-2.5 py-1 text-content-secondary hover:text-content"
-            title={`Don't ask again for ${item.displayName} in this chat`}
-          >
-            Allow for this chat
-          </button>
+          {item.rememberable && (
+            <button
+              onClick={() => void answer(item.id, true, true)}
+              className="rounded-md border border-border-subtle px-2.5 py-1 text-content-secondary hover:text-content"
+              title={`Don't ask again for ${item.displayName} in this chat`}
+            >
+              Allow for this chat
+            </button>
+          )}
           <button
             onClick={() => void answer(item.id, false, false)}
             className="ml-auto rounded-md px-2.5 py-1 text-content-secondary hover:text-content"
