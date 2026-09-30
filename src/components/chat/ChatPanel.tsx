@@ -9,7 +9,7 @@
  * but keeps its `chat-event` listener — so a turn still running when you close
  * the panel is all there when you reopen it.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
@@ -62,6 +62,9 @@ export default function ChatPanel() {
   return <ChatPane />;
 }
 
+/** Tallest the chat input grows before it scrolls (about eight lines). */
+const INPUT_MAX_HEIGHT = 160;
+
 function ChatPane() {
   const { items, busy, alive, starting, started, sessionModel, model } = useChatStore();
   const { setOpen, setModel, startNew, send, interrupt, continueInTerminal } = useChatStore();
@@ -79,6 +82,18 @@ function ChatPane() {
     const el = scrollRef.current;
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [items]);
+
+  // Size the input to its content. A `rows` count of the newlines misses every
+  // soft-wrapped line, so a long sentence stayed one row and scrolled.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const border = el.offsetHeight - el.clientHeight;
+    const height = Math.min(el.scrollHeight + border, INPUT_MAX_HEIGHT);
+    el.style.height = `${height}px`;
+    el.style.overflowY = el.scrollHeight + border > INPUT_MAX_HEIGHT ? "auto" : "hidden";
+  }, [draft]);
 
   const submit = () => {
     const text = draft.trim();
@@ -188,7 +203,7 @@ function ChatPane() {
 
       {/* Composer */}
       <div className="shrink-0 border-t border-border-subtle p-2">
-        <div className="flex items-end gap-2 rounded-lg border border-border-subtle bg-input px-2 py-1.5">
+        <div className="flex items-end gap-[7px]">
           <textarea
             ref={inputRef}
             value={draft}
@@ -199,14 +214,14 @@ function ChatPane() {
                 submit();
               }
             }}
-            rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+            rows={1}
             placeholder="Ask Claude about your mail…"
-            className="max-h-40 min-h-[22px] flex-1 resize-none overflow-y-auto bg-transparent text-sm text-content outline-none [scrollbar-width:none] placeholder:text-content-faint"
+            className="block min-h-[34px] min-w-0 flex-1 resize-none rounded-[9px] border border-border-subtle bg-input px-2.5 py-[7px] text-[13px] leading-[1.4] text-content outline-none [scrollbar-width:none] placeholder:text-content-faint focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
           {busy ? (
             <button
               onClick={() => void interrupt()}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-surface text-content-secondary hover:text-content"
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] bg-surface text-content-secondary hover:text-content"
               title="Stop this turn"
               aria-label="Stop"
             >
@@ -216,7 +231,7 @@ function ChatPane() {
             <button
               onClick={submit}
               disabled={!draft.trim() || starting}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent text-white disabled:opacity-40"
+              className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] bg-accent text-white disabled:opacity-40"
               title="Send (Enter)"
               aria-label="Send"
             >
