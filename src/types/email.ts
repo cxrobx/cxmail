@@ -185,6 +185,7 @@ export interface NeedsYouItem {
   /** Every message behind the row; dismissing the row dismisses all of them. */
   members: NeedsYouRef[];
   score: number;
+  urgency: number | null;
 }
 
 export type EmailCategory = "primary" | "updates" | "social" | "promotions" | "junk";

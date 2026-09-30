@@ -3,6 +3,8 @@ pub mod appearance_macos;
 // Stays in the app crate rather than moving with `email/`: its six `crate::notify`
 // calls are tauri/objc2-bound, and `lib.rs` is its only consumer.
 pub mod glass_macos;
+#[cfg(target_os = "macos")]
+pub mod dock_menu_macos;
 pub mod idle;
 pub mod launchd;
 pub mod notify;
@@ -194,9 +196,9 @@ pub fn run() {
             commands::settings::update_identity,
             commands::settings::delete_identity,
             commands::settings::list_send_as,
+            commands::settings::remove_send_as,
             commands::settings::reply_from_for_message,
             commands::settings::suggest_send_as,
-            commands::settings::remove_send_as,
             commands::plugins::list_plugins,
             commands::plugins::reload_plugins,
             commands::plugins::run_plugin,
@@ -394,6 +396,8 @@ pub fn run() {
             // That leaves at most a frame of native mismatch on a light-theme
             // launch, and only for chrome that is not on screen yet.
             appearance_macos::set_appearance(Some(true));
+            #[cfg(target_os = "macos")]
+            dock_menu_macos::install(app.handle());
 
             // Paint the window OPAQUE for launch, and let the frontend turn the
             // glass on once it has something to show (`startGlass` in

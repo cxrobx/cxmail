@@ -37,6 +37,8 @@ pub struct NeedsYouItem {
     /// otherwise a collapsed alert storm reappears on the next refresh.
     pub members: Vec<MessageRef>,
     pub score: f32,
+    /// Stored triage urgency (0–4), when triage is enabled for this queue.
+    pub urgency: Option<u8>,
 }
 
 pub(crate) struct Correspondence {
@@ -329,6 +331,7 @@ pub fn list(conn: &Connection, limit: u32, use_triage: bool) -> Result<Vec<Needs
                 if verdict.score > existing.score {
                     existing.score = verdict.score;
                 }
+                existing.urgency = existing.urgency.max(triage.as_ref().map(|v| v.urgency));
                 // An unread member keeps the whole group unread-looking.
                 if !row.is_read {
                     existing.is_read = false;
@@ -355,6 +358,7 @@ pub fn list(conn: &Connection, limit: u32, use_triage: bool) -> Result<Vec<Needs
                         duplicate_count: 1,
                         members: vec![member],
                         score: verdict.score,
+                        urgency: triage.as_ref().map(|v| v.urgency),
                     },
                 );
             }

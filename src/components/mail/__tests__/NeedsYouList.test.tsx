@@ -37,6 +37,7 @@ const alertRow: NeedsYouItem = {
     { account_id: 'acc-1', folder_name: 'INBOX', uid: 3 },
   ],
   score: 4,
+  urgency: null,
 };
 
 describe('NeedsYouList', () => {

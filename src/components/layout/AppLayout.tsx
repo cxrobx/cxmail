@@ -389,6 +389,19 @@ export default function AppLayout() {
           mailStore.setSelectedMessage(uid, account_id);
         }
       });
+      const u12 = await listen<{ account_id: string; folder_name: string; uid: number }>("dock-open-message", (event) => {
+        const { account_id, folder_name, uid } = event.payload;
+        if (!account_id || !folder_name || !Number.isSafeInteger(uid) || uid <= 0) return;
+        const mailStore = useMailStore.getState();
+        mailStore.setSpecialView("needs_you");
+        mailStore.setSelectedMessage(uid, account_id, folder_name);
+      });
+      const u13 = await listen("dock-open-needs-you", () => {
+        useMailStore.getState().setSpecialView("needs_you");
+      });
+      const u14 = await listen("dock-new-message", () => {
+        useMailStore.getState().setComposing(true);
+      });
       // Live updates from the standalone cxmail-mcp process (drafts/emails it
       // mutated). Re-emit as DOM events that drive existing refresh plumbing
       // (MessageList listens for cxmail:refresh-messages) plus the new modal
@@ -406,7 +419,7 @@ export default function AppLayout() {
           duration: 2500,
         });
       });
-      unlisteners.push(u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11);
+      unlisteners.push(u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14);
     };
     setup();
     return () => unlisteners.forEach((u) => u());
