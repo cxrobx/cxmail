@@ -27,7 +27,7 @@ version = "1.0.0"
 # Proprietary. Declared so a licence audit of the dependency tree reports no
 # UNKNOWN rows — the whole point of the audit is that anything unresolved is
 # visible. `publish = false` keeps this off crates.io regardless.
-license = "GPL-3.0-only"
+license = "BUSL-1.1"
 publish = false
 description = "macOS-first email client"
 authors = ["cx"]

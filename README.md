@@ -14,7 +14,8 @@ Two ways, same code:
 
 - **Buy the signed build** from [cxventures.io/products/cxmail](https://cxventures.io/products/cxmail):
   a notarized DMG, automatic updates, and Gmail sign-in that works out of the box.
-- **Build it yourself** from this repo, free, under the GPL-3.0 (see [License](#license)).
+- **Build it yourself** from this repo, free for your own use, under the Business Source
+  License 1.1 (see [License](#license)).
   You trade the notarized download and updates for a Rust toolchain and the notes below.
 
 ## Quick Start
@@ -83,7 +84,13 @@ build the binary with `cargo build --release --bin cxmail-mcp`, then register it
 
 ## License
 
-CXMail is free software under the [GNU GPL v3](LICENSE). You can build it, run it, change
-it and redistribute it under the same terms. The signed, notarized release sold on
+CXMail is source available under the [Business Source License 1.1](LICENSE),
+© 2026 CX Ventures LLC. You can build it, run it and change it for your own use or
+inside your own organisation. Selling it, hosting it for others or bundling it into a
+commercial product needs a commercial licence. Each version becomes Apache-2.0 on
+2030-09-30 or four years after its release, whichever comes first. Versions published
+before 2026-09-30 were released under the GNU GPL v3.
+
+The signed, notarized release sold on
 cxventures.io is built from this same source; buying it pays for the build, the updates
 and the Gmail sign-in, not for different code.

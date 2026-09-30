@@ -1,7 +1,7 @@
 [package]
 name = "cxmail-core"
 version = "1.0.0"
-license = "GPL-3.0-only"
+license = "BUSL-1.1"
 publish = false
 description = "Shared foundations for cxmail: errors, keychain, secrets, and the pure mail helpers"
 edition = "2021"

@@ -10,7 +10,7 @@
 // in 54c93ad and was independently re-verified as a dead end.
 //
 // The ID and secret are deliberately NOT in this file. The source is public
-// (GPL-3.0), and Google's per-project OAuth user cap — 100 users, lifetime,
+// (source available), and Google's per-project OAuth user cap — 100 users, lifetime,
 // unresettable — belongs to the signed release build's project. A source
 // build carrying the same client would spend a slot on every self-builder's
 // Gmail sign-in. So:
