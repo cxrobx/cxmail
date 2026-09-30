@@ -124,6 +124,28 @@ describe("TriageSection", () => {
     await waitFor(() => expect(setModel).toHaveBeenCalledWith("gpt-5.4-mini"));
   });
 
+  it("suggests gpt-6.1-sol, and a saved gpt-6-sol still shows and is left alone", async () => {
+    // The field is free text; the datalist is only suggestions. A setting saved
+    // before 6.1 shipped is still a valid id at OpenAI, so it must display as
+    // saved and must not be rewritten just because the suggestion moved on.
+    vi.spyOn(api.ai, "getTriageStatus").mockResolvedValue({ ...status("on"), model: "gpt-6-sol" });
+    vi.spyOn(api.accounts, "list").mockResolvedValue([]);
+    const setModel = vi.spyOn(api.ai, "setTriageModel").mockResolvedValue("gpt-6-sol");
+
+    const { container } = render(<TriageSection />);
+    const field = (await screen.findByLabelText("Triage model")) as HTMLInputElement;
+    expect(field.value).toBe("gpt-6-sol");
+    fireEvent.blur(field);
+    expect(setModel).not.toHaveBeenCalled();
+
+    const suggestions = Array.from(
+      container.querySelectorAll("#cx-triage-models option"),
+    ).map((o) => (o as HTMLOptionElement).value);
+    expect(suggestions).toContain("gpt-6.1-sol");
+    expect(suggestions).not.toContain("gpt-6-sol");
+    expect(suggestions).toContain("gpt-6-luna");
+  });
+
   it("does not put a reasoning-effort control in front of the user", async () => {
     // Removed deliberately. Nobody can choose between "high" and "medium"
     // without running an experiment and reading token counts, so a dropdown on

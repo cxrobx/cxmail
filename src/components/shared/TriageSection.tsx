@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 const MODEL_SUGGESTIONS = [
   "gpt-6-luna",
   "gpt-5.6-terra",
-  "gpt-6-sol",
+  "gpt-6.1-sol",
   "gpt-5.4-mini",
   "gpt-5.4-nano",
 ];
