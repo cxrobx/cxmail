@@ -666,6 +666,8 @@ export const api = {
       invoke<void>("copy_image_to_clipboard", { src }),
   },
   system: {
+    getShowInMenuBar: () => invoke<boolean>("get_show_in_menu_bar"),
+    setShowInMenuBar: (visible: boolean) => invoke<void>("set_show_in_menu_bar", { visible }),
     /** Request that CXMail become the default `mailto:` handler. Resolves to
      * whether Launch Services accepted — NOT a guarantee it silently applied
      * (macOS may show a confirmation prompt). */

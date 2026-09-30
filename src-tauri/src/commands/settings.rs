@@ -2,7 +2,67 @@ use crate::db;
 use crate::error::AppError;
 use crate::AppState;
 use crate::LockExt;
+use tauri::Manager;
 use tauri::State;
+
+// Stored outside localStorage so setup can restore the preference before the
+// frontend loads. Missing preferences preserve the existing visible default.
+pub(crate) fn read_show_in_menu_bar(app_dir: &std::path::Path) -> Result<bool, AppError> {
+    match std::fs::read(app_dir.join("menu-bar.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| AppError::Parse(format!("Invalid menu bar preference: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn write_show_in_menu_bar(app_dir: &std::path::Path, visible: bool) -> Result<(), AppError> {
+    let pending = app_dir.join("menu-bar.json.tmp");
+    std::fs::write(&pending, if visible { "true" } else { "false" })?;
+    std::fs::rename(pending, app_dir.join("menu-bar.json"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_show_in_menu_bar(app: tauri::AppHandle) -> Result<bool, AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    read_show_in_menu_bar(&app_dir)
+}
+
+#[tauri::command]
+pub async fn set_show_in_menu_bar(app: tauri::AppHandle, visible: bool) -> Result<(), AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    let handle = app.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Serialize native updates and file writes on the main thread. Wait for
+    // completion so the UI only reports success after both have succeeded.
+    app.run_on_main_thread(move || {
+        let result = (|| {
+            let previous = read_show_in_menu_bar(&app_dir)?;
+            let tray = handle
+                .tray_by_id("main-tray")
+                .ok_or_else(|| AppError::NotFound("Menu bar icon not found".into()))?;
+            tray.set_visible(visible)
+                .map_err(|e| AppError::General(e.to_string()))?;
+            if let Err(e) = write_show_in_menu_bar(&app_dir, visible) {
+                if let Err(rollback) = tray.set_visible(previous) {
+                    log::warn!("Could not restore menu bar icon after save failure: {rollback}");
+                }
+                return Err(e);
+            }
+            Ok(())
+        })();
+        let _ = tx.send(result);
+    })
+    .map_err(|e| AppError::General(e.to_string()))?;
+    rx.await.map_err(|e| AppError::General(e.to_string()))?
+}
 
 // ─── Mail Rules ───────────────────────────────────────────────────────
 //
@@ -159,4 +219,24 @@ pub async fn uninstall_background_sync() -> Result<(), AppError> {
 #[tauri::command]
 pub async fn is_background_sync_installed() -> Result<bool, AppError> {
     Ok(crate::launchd::is_installed())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_bar_preference_defaults_on_and_persists_both_values() {
+        let dir = std::env::temp_dir().join(format!("cxmail-menu-bar-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_show_in_menu_bar(&dir).unwrap());
+        write_show_in_menu_bar(&dir, false).unwrap();
+        assert!(!read_show_in_menu_bar(&dir).unwrap());
+        write_show_in_menu_bar(&dir, true).unwrap();
+        assert!(read_show_in_menu_bar(&dir).unwrap());
+        assert!(!dir.join("menu-bar.json.tmp").exists());
+        std::fs::write(dir.join("menu-bar.json"), "\"false\"").unwrap();
+        assert!(read_show_in_menu_bar(&dir).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

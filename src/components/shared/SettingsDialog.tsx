@@ -6,6 +6,7 @@ import { deriveVaultTheme } from "@/lib/vaultLook";
 import { PANE_FLOOR } from "@/lib/windowAlpha";
 import TriageSection from "./TriageSection";
 import SendAsSection from "./SendAsSection";
+import MenuBarSection from "./MenuBarSection";
 
 // "System" sits last rather than first: the two explicit choices are the ones
 // with muscle memory behind them, and moving them would retrain a click that
@@ -163,6 +164,7 @@ export default function SettingsDialog() {
         </div>
 
         <div className="flex-1 space-y-5 overflow-y-auto p-4">
+          <MenuBarSection />
           <section>
             <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-content-muted">
               Theme

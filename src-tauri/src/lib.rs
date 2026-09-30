@@ -299,6 +299,8 @@ pub fn run() {
             commands::settings::install_background_sync,
             commands::settings::uninstall_background_sync,
             commands::settings::is_background_sync_installed,
+            commands::settings::get_show_in_menu_bar,
+            commands::settings::set_show_in_menu_bar,
             commands::claude_handoff::open_email_in_claude,
             commands::claude_handoff::get_claude_prompt,
             commands::claude_repos::list_claude_repos,
@@ -649,7 +651,7 @@ pub fn run() {
                 .build()?;
 
             let icon_bytes = include_bytes!("../icons/tray-icon.png");
-            let _tray = TrayIconBuilder::with_id("main-tray")
+            let tray = TrayIconBuilder::with_id("main-tray")
                 .icon(Image::from_bytes(icon_bytes)?)
                 .icon_as_template(true)
                 .tooltip("CXMail")
@@ -691,6 +693,13 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            let show_in_menu_bar = commands::settings::read_show_in_menu_bar(&app_dir)
+                .unwrap_or_else(|e| {
+                    log::warn!("Could not load menu bar preference: {e}");
+                    true
+                });
+            tray.set_visible(show_in_menu_bar)?;
 
             // Auto-install background sync LaunchAgent on first production launch
             if !cfg!(debug_assertions) && !launchd::is_installed() {
