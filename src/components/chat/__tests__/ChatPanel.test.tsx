@@ -92,6 +92,16 @@ describe("ChatPanel", () => {
     expect(handlers["chat-event"]).toBeTypeOf("function");
   });
 
+  it("picks the model for the next chat from the in-app menu", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel />);
+    act(() => useChatStore.getState().setOpen(true));
+    await user.click(screen.getByRole("button", { name: "Model: Default model" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "Sonnet" }));
+    expect(useChatStore.getState().model).toBe("sonnet");
+    expect(screen.getByRole("button", { name: "Model: Sonnet" })).toBeTruthy();
+  });
+
   it("starts a session before sending the first message", async () => {
     await openAndSend("follow up with Dana");
     expect(start).toHaveBeenCalledWith(null, null);

@@ -11,10 +11,12 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { listen } from "@tauri-apps/api/event";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   AlertTriangle,
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
   FolderGit2,
   Loader2,
@@ -149,19 +151,7 @@ function ChatPane() {
           className={cn("h-1.5 w-1.5 rounded-full", alive ? "bg-success" : "bg-content-faint")}
           title={alive ? `Running${sessionModel ? ` · ${sessionModel}` : ""}` : "Not running"}
         />
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="ml-auto rounded-md border border-border-subtle bg-input px-1.5 py-0.5 text-xs text-content-secondary outline-none"
-          title="Model for the next new chat"
-          aria-label="Model"
-        >
-          {MODELS.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        <ModelMenu model={model} onChange={setModel} />
         <IconButton label="New chat" onClick={() => void startNew()} disabled={starting}>
           <SquarePen className="h-3.5 w-3.5" />
         </IconButton>
@@ -321,6 +311,54 @@ function ChatPane() {
         </div>
       </div>
     </aside>
+  );
+}
+
+/**
+ * The model picker, in the app's own menu style rather than a native
+ * `<select>` (whose macOS popup button looked out of place in the header).
+ * Portaled, so the menu backs onto `bg-base-solid` (gotcha #52).
+ */
+function ModelMenu({ model, onChange }: { model: string; onChange: (model: string) => void }) {
+  const current = MODELS.find((m) => m.value === model) ?? MODELS[0];
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          title="Model for the next new chat"
+          aria-label={`Model: ${current.label}`}
+          className="ml-auto flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-content-secondary outline-none transition-colors hover:bg-surface hover:text-content focus-visible:bg-surface data-[state=open]:bg-surface data-[state=open]:text-content"
+        >
+          {current.label}
+          <ChevronDown className="h-3 w-3 text-content-muted" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          className="z-50 min-w-[160px] rounded-lg border border-border bg-base-solid p-1 shadow-xl"
+          sideOffset={4}
+          align="end"
+        >
+          <DropdownMenu.Label className="px-2 py-1.5 text-xs font-medium text-content-muted">
+            Model for the next chat
+          </DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={model} onValueChange={onChange}>
+            {MODELS.map((m) => (
+              <DropdownMenu.RadioItem
+                key={m.value}
+                value={m.value}
+                className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm text-content-secondary outline-none data-[highlighted]:bg-surface data-[highlighted]:text-content data-[state=checked]:text-accent"
+              >
+                <span className="flex-1">{m.label}</span>
+                <DropdownMenu.ItemIndicator>
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                </DropdownMenu.ItemIndicator>
+              </DropdownMenu.RadioItem>
+            ))}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
