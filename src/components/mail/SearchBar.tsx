@@ -5,7 +5,7 @@ import { useAccountStore } from "@/stores/accountStore";
 import { useUIStore } from "@/stores/uiStore";
 import { filtersFromChips, runServerSearch } from "@/lib/searchFilters";
 import { searchScopeIds } from "@/lib/searchScope";
-import type { AppliedFilter, ContactResult, SearchResult } from "@/types/email";
+import type { AppliedFilter, ContactResult, SearchResult, MailAnswer } from "@/types/email";
 import { X, Loader2, Sparkles, Clock, User } from "lucide-react";
 
 /** Trailing `from:partial` / `to:partial` token, for contact autocomplete. */
@@ -39,6 +39,11 @@ export default function SearchBar() {
   const addRecentSearch = useUIStore((s) => s.addRecentSearch);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [answer, setAnswer] = useState<MailAnswer | null>(null);
+  const [answerBusy, setAnswerBusy] = useState(false);
+  const [answerError, setAnswerError] = useState("");
+  const [semanticWarning, setSemanticWarning] = useState("");
+  const generation = useRef(0);
 
   // Scope dropdown + committed searches: the selected account folder's
   // visible members, the hidden account on screen, or undefined (= every
@@ -55,6 +60,16 @@ export default function SearchBar() {
     [accounts, isUnifiedInbox, specialView, selectedGroupId, selectedAccountId, selectedAccountGroup],
   );
   const scoped = scopeIds !== undefined;
+  const contextKey = JSON.stringify([scopeIds, selectedAccountId, selectedGroupId, specialView, isUnifiedInbox]);
+  const latestContext = useRef(contextKey);
+  latestContext.current = contextKey;
+  useEffect(() => {
+    generation.current++;
+    setAnswer(null); setAnswerBusy(false); setAnswerError(""); setSemanticWarning("");
+    setShowDropdown(false); setDropdownResults([]); setContactSuggestions([]); setIsSearching(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, [contextKey]);
+  useEffect(() => () => { generation.current++; if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
 
   // Clear local input when store search is cleared (e.g. by sidebar navigation)
   useEffect(() => {
@@ -80,6 +95,9 @@ export default function SearchBar() {
   // Debounced LOCAL search for the dropdown preview — cheap FTS with prefix
   // matching; the AI parse only runs on Enter.
   const handleInputChange = (value: string) => {
+    const request = ++generation.current;
+    const context = contextKey;
+    setAnswer(null); setAnswerBusy(false); setAnswerError(""); setSemanticWarning("");
     setQuery(value);
     setActiveIndex(-1);
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -100,6 +118,7 @@ export default function SearchBar() {
           ? api.messages.searchContacts(token.partial).catch(() => [] as ContactResult[])
           : Promise.resolve([] as ContactResult[]),
       ]);
+      if (request !== generation.current || context !== latestContext.current) return;
       setDropdownResults(results);
       setContactSuggestions(contacts.slice(0, 4));
       if (token) setContactOp(token.op);
@@ -113,6 +132,8 @@ export default function SearchBar() {
   // server-side fallback in the background.
   const commitSearch = useCallback(
     async (q: string) => {
+      const request = ++generation.current;
+      const context = contextKey;
       if (debounceRef.current) clearTimeout(debounceRef.current);
       setShowDropdown(false);
       setActiveIndex(-1);
@@ -121,6 +142,8 @@ export default function SearchBar() {
       let committedFilters: AppliedFilter[] | null = null;
       try {
         const resp = await api.messages.aiSearch(q, scopeIds);
+        if (request !== generation.current || context !== latestContext.current) return;
+        setSemanticWarning(resp.semantic_warning ? "Meaning search is unavailable. Showing keyword and document matches." : "");
         committedFilters = resp.applied_filters;
         setSearchResults(q, resp.results, resp.applied_filters, {
           aiFallback: resp.ai_failed,
@@ -133,6 +156,7 @@ export default function SearchBar() {
       } catch {
         try {
           const res = await api.messages.search(q, { accountIds: scopeIds });
+          if (request !== generation.current || context !== latestContext.current) return;
           committedFilters = [{ kind: "keywords", value: q }];
           setSearchResults(q, res, committedFilters, {
             aiFallback: true,
@@ -143,13 +167,26 @@ export default function SearchBar() {
             void runServerSearch(q, filtersFromChips(committedFilters), scopeIds);
           }
         } catch {
-          setSearchResults(q, []);
+          if (request === generation.current && context === latestContext.current) setSearchResults(q, []);
         }
       }
-      setIsSearching(false);
+      if (request === generation.current && context === latestContext.current) setIsSearching(false);
     },
-    [addRecentSearch, scopeIds, scoped, setSearchResults],
+    [addRecentSearch, scopeIds, scoped, setSearchResults, contextKey],
   );
+
+  const ask = async () => {
+    if (!query.trim()) return;
+    const request = ++generation.current;
+    const context = contextKey;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setShowDropdown(false); setIsSearching(false); setAnswerBusy(true); setAnswerError(""); setAnswer(null);
+    try {
+      const result = await api.intelligence.answer(query, scopeIds);
+      if (request === generation.current && context === latestContext.current) setAnswer(result);
+    } catch (e) { if (request === generation.current && context === latestContext.current) setAnswerError(String(e)); }
+    finally { if (request === generation.current && context === latestContext.current) setAnswerBusy(false); }
+  };
 
   const openResult = (result: SearchResult) => {
     // Promote the dropdown preview to the full search-results view so the
@@ -214,6 +251,9 @@ export default function SearchBar() {
   };
 
   const handleClear = () => {
+    generation.current++;
+    setAnswer(null); setAnswerBusy(false); setAnswerError(""); setSemanticWarning(""); setIsSearching(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     setQuery("");
     setDropdownResults([]);
     setContactSuggestions([]);
@@ -244,15 +284,31 @@ export default function SearchBar() {
             else if (showRecent && !searchQuery) setShowDropdown(true);
           }}
           onBlur={() => setTimeout(() => setShowDropdown(false), 200)}
-          placeholder="Search emails... press Enter for full results"
-          className="flex-1 bg-transparent text-sm text-content placeholder-content-muted outline-none"
+          placeholder="Search emails or ask a question…"
+          title="Press Enter to search, or click Ask mail for a source-linked answer"
+          className="min-w-0 flex-1 bg-transparent text-sm text-content placeholder-content-muted outline-none"
         />
+        <button onClick={() => void ask()} disabled={!query.trim() || answerBusy} title="Answer a question using messages in this search scope" className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-accent hover:bg-elevated disabled:opacity-50">{answerBusy ? "Thinking…" : "Ask mail"}</button>
         {query && (
-          <button onClick={handleClear} className="text-content-muted hover:text-content">
+          <button aria-label="Clear search" onClick={handleClear} className="text-content-muted hover:text-content">
             <X className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
+      {semanticWarning && <p role="status" className="mt-2 text-[11px] text-content-muted" title="Check Mail intelligence in Settings">{semanticWarning}</p>}
+      {answerError && <p role="alert" className="mt-2 text-xs text-red-400">{answerError}</p>}
+      {answer && (
+        <div className="mt-2 max-h-80 overflow-auto rounded-lg border border-border-subtle bg-surface p-3">
+          <div className="mb-2 flex items-center justify-between text-xs font-medium text-content">Answer from your mail<button aria-label="Close mail answer" onClick={() => setAnswer(null)} className="text-content-muted"><X className="h-3.5 w-3.5" /></button></div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-content-secondary">{answer.text}</p>
+          {answer.uncited && <p className="mt-2 text-[11px] text-amber-400">This answer doesn't cite any of the messages below. Treat it as unverified.</p>}
+          {answer.warning && <p className="mt-2 text-[11px] text-content-muted">Meaning search was unavailable. This answer uses keyword and document matches; check Mail intelligence in Settings.</p>}
+          <div className="mt-2 space-y-1">
+            {answer.sources.map((source, index) => <button key={`${source.result.account_id}:${source.result.folder_name}:${source.result.uid}:${source.source}`} className="block w-full rounded px-1 py-1 text-left text-[11px] text-accent hover:bg-elevated" onClick={() => setSelectedMessage(source.result.uid, source.result.account_id, source.result.folder_name)}>[{index + 1}] {source.result.subject || "(no subject)"} · {source.source}</button>)}
+          </div>
+          {answer.sources.length > 0 && <p className="mt-2 text-[10px] text-content-muted">Based on indexed mail in this scope. Open the sources to verify.</p>}
+        </div>
+      )}
 
       {showDropdown && items.length > 0 && (
         <div className="absolute left-3 right-3 top-full z-50 mt-1 max-h-[300px] overflow-auto rounded-md border border-border bg-surface-solid py-1 shadow-lg">

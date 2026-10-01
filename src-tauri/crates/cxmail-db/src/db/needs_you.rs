@@ -8,6 +8,35 @@ use std::collections::{HashMap, HashSet};
 /// pitch must not brand that sender — or their whole domain — trusted forever.
 const CORRESPONDENCE_THRESHOLD: i64 = 2;
 
+/// A newer message in this account's Sent folder, on the same thread or replying
+/// to `m` directly, means the request was answered.
+///
+/// Two separate lookups, each on an index, with no function on a `sent` column.
+/// The first version joined the two with OR and compared
+/// `trim(sent.in_reply_to,'<>')`, which no index can serve: every candidate
+/// scanned its whole account, and Needs You took 39 s on the real mailbox
+/// against 0.02 s for this form (same rows). Bracket variants go on `m`'s side
+/// instead (gotcha #30). The unary `+` on the reply branch's `account_id` is
+/// load-bearing: without ANALYZE statistics (any fresh install) SQLite prefers
+/// `idx_messages_thread_root (account_id=?)` there, which is still a scan of the
+/// whole account. Pinned by `answered_check_never_scans_messages`.
+const NOT_ANSWERED_BY_LATER_SENT: &str = "NOT EXISTS (
+                SELECT 1 FROM messages sent
+                 WHERE m.thread_root_id IS NOT NULL
+                   AND sent.account_id = m.account_id
+                   AND sent.thread_root_id = m.thread_root_id
+                   AND datetime(sent.date) >= datetime(m.date)
+                   AND EXISTS (SELECT 1 FROM folders sf WHERE sf.account_id = sent.account_id
+                                  AND sf.name = sent.folder_name AND sf.folder_type = 'sent'))
+            AND NOT EXISTS (
+                SELECT 1 FROM messages sent
+                 WHERE m.message_id IS NOT NULL
+                   AND sent.in_reply_to IN ('<' || trim(m.message_id, '<>') || '>', trim(m.message_id, '<>'))
+                   AND +sent.account_id = m.account_id
+                   AND datetime(sent.date) >= datetime(m.date)
+                   AND EXISTS (SELECT 1 FROM folders sf WHERE sf.account_id = sent.account_id
+                                  AND sf.name = sent.folder_name AND sf.folder_type = 'sent'))";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageRef {
     pub account_id: String,
@@ -229,6 +258,7 @@ pub fn list(conn: &Connection, limit: u32, use_triage: bool) -> Result<Vec<Needs
             AND m.is_muted = 0
             AND {}
             AND datetime(m.date) >= datetime('now', '-21 days')
+            AND {}
             AND NOT EXISTS (
                  SELECT 1 FROM needs_you_dismissals d
                   WHERE d.account_id = m.account_id
@@ -241,7 +271,8 @@ pub fn list(conn: &Connection, limit: u32, use_triage: bool) -> Result<Vec<Needs
                     AND lower(u.sender_email) = lower(COALESCE(m.from_email, ''))
             )
           ORDER BY datetime(m.date) DESC, m.id DESC",
-        super::accounts::visible_in_aggregates_sql("m.account_id")
+        super::accounts::visible_in_aggregates_sql("m.account_id"),
+        NOT_ANSWERED_BY_LATER_SENT
     );
     let mut stmt = conn.prepare(&sql)?;
 
@@ -429,6 +460,32 @@ pub fn dismiss_group(conn: &mut Connection, members: &[MessageRef]) -> Result<us
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answered_check_never_scans_messages() {
+        let conn = setup();
+        let plan: Vec<String> = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT 1 FROM messages m WHERE {NOT_ANSWERED_BY_LATER_SENT}"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        // `SEARCH … (account_id=?)` reads as indexed and is still a whole-account
+        // scan, so each lookup must use its own key, not merely an index.
+        let sent: Vec<_> = plan.iter().filter(|l| l.contains(" sent")).collect();
+        assert_eq!(sent.len(), 2, "both lookups appear in the plan: {plan:?}");
+        assert!(
+            sent.iter().any(|l| l.starts_with("SEARCH sent") && l.contains("thread_root_id=?")),
+            "the thread lookup scans the account: {plan:?}"
+        );
+        assert!(
+            sent.iter().any(|l| l.starts_with("SEARCH sent") && l.contains("in_reply_to=?")),
+            "the reply lookup scans the account: {plan:?}"
+        );
+    }
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

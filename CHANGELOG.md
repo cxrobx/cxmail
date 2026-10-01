@@ -5,6 +5,9 @@ All notable changes to CXMail are documented here.
 ## Unreleased
 
 ### Added
+- **Mail intelligence (Settings).** Opt into prepared replies and meaning search per account. Replies use recipient writing context and calendar busy intervals, then open in the composer for review. Background work is bounded; suggestions refresh when a thread changes and never send automatically (schema v65).
+- **Search inside documents and ask your mail.** Text-based PDFs, DOCX and text attachments are indexed locally as MIME messages are parsed; older attachments have an **Index document text** button. Meaning search uses local Ollama or the configured OpenAI-compatible provider; turning it on starts indexing right away, newest mail first, with progress in Settings (local indexing has no daily limit). **Ask mail** answers from indexed passages with clickable message sources and respects the selected account scope; an answer that cites none of them is marked unverified. Scanned PDFs require OCR; extraction skips files over 5 MB.
+- **Needs You has two lanes:** **Needs my response** and **Waiting on them**, with explicit deadlines and prepared replies. Sent replies clear answered requests; new incoming replies move the conversation back to your queue.
 - **Chat with Claude, inside CXMail.** Press `⌘L` (or click **Claude** in the title bar) and ask in plain words — *"write a follow-up to Nick"*, *"what needs a reply from me today?"*. It runs on your own Claude Code sign-in (`claude` CLI), so there is no API key to set up.
   - **It reads what you would read.** It searches your mail, reads threads, and looks up which project folder a correspondent belongs to (the same links as *Open in Claude*, set in Settings → Claude repos), then reads that project's notes before writing.
   - **It writes drafts, never sends.** A finished draft shows an **Open draft** button that puts it in the compose window for you to review and send.

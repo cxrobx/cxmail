@@ -45,6 +45,12 @@ import type {
   NudgeKind,
   TriageStatus,
   TriagePassStats,
+  IntelligenceAccount,
+  EmbeddingSettings,
+  IntelligenceStatus,
+  IntelligencePassStats,
+  ReplySuggestion,
+  MailAnswer,
 } from "@/types/email";
 
 /**
@@ -464,6 +470,17 @@ export const api = {
       }),
     deleteArchetype: (accountId: string, archetypeId: string) =>
       invoke<void>("ai_delete_archetype", { accountId, archetypeId }),
+  },
+  intelligence: {
+    status: () => invoke<IntelligenceStatus>("get_intelligence_status"),
+    setAccount: (options: IntelligenceAccount) => invoke<void>("set_intelligence_account", { options }),
+    saveEmbeddings: (settings: EmbeddingSettings) => invoke<void>("save_embedding_settings", { settings }),
+    testEmbeddings: () => invoke<string>("test_embeddings"),
+    runPass: () => invoke<IntelligencePassStats>("run_intelligence_pass"),
+    suggestion: (accountId: string, folder: string, uid: number) => invoke<ReplySuggestion | null>("get_reply_suggestion", { accountId, folder, uid }),
+    dismissSuggestion: (accountId: string, folder: string, uid: number) => invoke<void>("dismiss_reply_suggestion", { accountId, folder, uid }),
+    answer: (query: string, accountIds?: string[]) => invoke<MailAnswer>("answer_mail_search", { query, accountIds: accountIds ?? null }),
+    indexDocuments: (accountId: string, folder: string, uid: number) => invoke<number>("index_message_documents", { accountId, folder, uid }),
   },
   needsYou: {
     list: () => invoke<NeedsYouItem[]>("list_needs_you"),

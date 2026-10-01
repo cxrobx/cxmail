@@ -166,6 +166,11 @@ export interface Nudge {
 }
 
 export interface NeedsYouItem {
+  lane?: "needs_response" | "waiting";
+  request?: string;
+  deadline?: string | null;
+  suggestion?: ReplySuggestion | null;
+  thread_key?: string | null;
   uid: number;
   account_id: string;
   folder_name: string;
@@ -255,6 +260,7 @@ export interface ContactResult {
 }
 
 export interface SearchResult {
+  semantic_match?: boolean;
   account_id: string;
   folder_name: string;
   uid: number;
@@ -297,11 +303,27 @@ export interface SearchFilters {
 }
 
 export interface AiSearchResponse {
+  semantic_warning?: string | null;
   results: SearchResult[];
   applied_filters: AppliedFilter[];
   used_ai: boolean;
   ai_failed: boolean;
 }
+
+export interface ReplySuggestion { body: string; created_at: string; model: string }
+export interface IntelligenceAccount { account_id: string; auto_draft: boolean; semantic_search: boolean }
+export interface EmbeddingSettings { source: "local" | "provider"; model: string }
+export interface IntelligenceStatus {
+  accounts: IntelligenceAccount[];
+  embeddings: EmbeddingSettings;
+  chunks: number;
+  embedded: number;
+  pending: number;
+  suggestions: number;
+}
+export interface IntelligencePassStats { drafted: number; embedded: number; skipped: number; failed: number; capped: boolean; busy: boolean }
+export interface KnowledgeHit { result: SearchResult; source: string; text: string; semantic: boolean }
+export interface MailAnswer { text: string; sources: KnowledgeHit[]; warning?: string | null; uncited?: boolean }
 
 export interface OutgoingAttachment {
   filename: string;

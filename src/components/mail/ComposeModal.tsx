@@ -92,6 +92,7 @@ interface ComposeModalProps {
    * snapshot's `from_email` blindly. */
   fromAddress?: string;
   replyContext?: { accountId: string; folder: string; uid: number };
+  suggestedReplyText?: string;
   draftContext?: { accountId: string; folder: string; uid: number };
   /** Visual surface for the modal. "docked" = bottom-right card (default),
    * "windowed" = body chrome only (FloatingWindow wraps it),
@@ -164,6 +165,7 @@ export default function ComposeModal({
   accountId: propAccountId,
   fromAddress: propFromAddress,
   replyContext,
+  suggestedReplyText,
   draftContext,
   composeSurface = "docked",
   onPopOut,
@@ -284,7 +286,7 @@ export default function ComposeModal({
   const signatureInsertedRef = useRef(false);
   const didInitRef = useRef(false);
   // Captures the original AI-generated reply so we can log (draft, sent) pairs for edit-learning.
-  const aiDraftRef = useRef<string | null>(null);
+  const aiDraftRef = useRef<string | null>(suggestedReplyText ?? null);
   // Autosave: serial promise queue. saveOrEdit() chains a new closure that uses
   // latestDraftRef at execution time. The queue serializes IMAP operations.
   const saveQueueRef = useRef<Promise<unknown>>(Promise.resolve());

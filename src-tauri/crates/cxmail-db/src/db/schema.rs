@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i32 = 64;
+const CURRENT_VERSION: i32 = 65;
 
 /// Initialize the database, creating tables if needed and running migrations.
 pub fn initialize(conn: &Connection) -> Result<()> {
@@ -214,6 +214,13 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     }
     if version < 64 {
         migrate_v64_send_as_evidence(conn)?;
+    }
+
+    if version < 65 {
+        let tx = conn.unchecked_transaction()?;
+        super::intelligence::create_tables(&tx)?;
+        super::knowledge::create_tables(&tx)?;
+        tx.commit()?;
     }
 
     set_schema_version(conn, CURRENT_VERSION)?;

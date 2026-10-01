@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SearchBar from '@/components/mail/SearchBar';
 import { useMailStore } from '@/stores/mailStore';
@@ -11,6 +11,7 @@ import type { Account, SearchResult } from '@/types/email';
 // Mock the tauri api module
 vi.mock('@/lib/tauri', () => ({
   api: {
+    intelligence: { answer: vi.fn() },
     messages: {
       aiSearch: vi.fn(),
       search: vi.fn(),
@@ -112,7 +113,7 @@ describe('SearchBar', () => {
     await user.type(input, 'test');
 
     // The X clear button should appear
-    const clearButton = screen.getByRole('button');
+    const clearButton = screen.getByRole('button', { name: 'Clear search' });
     expect(clearButton).toBeInTheDocument();
   });
 
@@ -124,7 +125,7 @@ describe('SearchBar', () => {
     await user.type(input, 'test');
     expect(input).toHaveValue('test');
 
-    const clearButton = screen.getByRole('button');
+    const clearButton = screen.getByRole('button', { name: 'Clear search' });
     await user.click(clearButton);
 
     expect(input).toHaveValue('');
@@ -314,5 +315,47 @@ describe('SearchBar — accounts hidden from aggregates', () => {
       expect(api.messages.aiSearch).toHaveBeenCalledWith('budget', undefined);
     });
     expect(useMailStore.getState().searchScopeIds).toBeNull();
+  });
+
+  it('answers within the chosen account and opens the actual cited message', async () => {
+    useMailStore.setState({ isUnifiedInbox: false, selectedAccountId: 'acc-hidden' });
+    vi.mocked(api.intelligence.answer).mockResolvedValue({ text: 'Give fourteen days notice [1].', sources: [{ result: { ...sampleResult, account_id: 'acc-hidden', folder_name: 'Archive' }, source: 'Attachment 1: policy.pdf', text: 'Fourteen days', semantic: true }] });
+    render(<SearchBar />);
+    await userEvent.type(screen.getByPlaceholderText(/search emails/i), 'How much notice?');
+    await userEvent.click(screen.getByRole('button', { name: 'Ask mail' }));
+    expect(api.intelligence.answer).toHaveBeenCalledWith('How much notice?', ['acc-hidden']);
+    await userEvent.click(await screen.findByRole('button', { name: /\[1\].*policy.pdf/ }));
+    expect(useMailStore.getState().selectedMessageAccountId).toBe('acc-hidden');
+    expect(useMailStore.getState().selectedMessageFolder).toBe('Archive');
+    expect(useMailStore.getState().selectedMessageUid).toBe(7);
+  });
+
+  it('shows an answer that cites nothing, flagged as unverified', async () => {
+    vi.mocked(api.intelligence.answer).mockResolvedValue({ text: 'None of these messages give a date.', sources: [{ result: sampleResult, source: 'Email', text: 'Kickoff soon', semantic: false }], uncited: true });
+    render(<SearchBar />);
+    await userEvent.type(screen.getByPlaceholderText(/search emails/i), 'When is kickoff?');
+    await userEvent.click(screen.getByRole('button', { name: 'Ask mail' }));
+    expect(await screen.findByText('None of these messages give a date.')).toBeInTheDocument();
+    expect(screen.getByText(/doesn't cite any of the messages/)).toBeInTheDocument();
+  });
+
+  it('does not flag a cited answer', async () => {
+    vi.mocked(api.intelligence.answer).mockResolvedValue({ text: 'Kickoff is Monday [1].', sources: [{ result: sampleResult, source: 'Email', text: 'Kickoff Monday', semantic: false }], uncited: false });
+    render(<SearchBar />);
+    await userEvent.type(screen.getByPlaceholderText(/search emails/i), 'When is kickoff?');
+    await userEvent.click(screen.getByRole('button', { name: 'Ask mail' }));
+    expect(await screen.findByText('Kickoff is Monday [1].')).toBeInTheDocument();
+    expect(screen.queryByText(/doesn't cite any of the messages/)).not.toBeInTheDocument();
+  });
+
+  it('drops a late answer after changing account scope', async () => {
+    let resolve!: (value: { text: string; sources: [] }) => void;
+    vi.mocked(api.intelligence.answer).mockReturnValue(new Promise((r) => { resolve = r; }));
+    render(<SearchBar />);
+    await userEvent.type(screen.getByPlaceholderText(/search emails/i), 'What is the policy?');
+    await userEvent.click(screen.getByRole('button', { name: 'Ask mail' }));
+    act(() => useMailStore.setState({ isUnifiedInbox: false, selectedAccountId: 'acc-hidden' }));
+    await act(async () => resolve({ text: 'Stale answer from another account', sources: [] }));
+    expect(screen.queryByText('Stale answer from another account')).not.toBeInTheDocument();
   });
 });

@@ -8,9 +8,9 @@ use tauri::State;
 #[tauri::command]
 pub async fn list_needs_you(
     state: State<'_, AppState>,
-) -> Result<Vec<db::needs_you::NeedsYouItem>, AppError> {
+) -> Result<Vec<db::action_queue::ActionItem>, AppError> {
     let conn = state.open_read_conn()?;
-    db::needs_you::list(
+    db::action_queue::list(
         &conn,
         100,
         // Only `on` lets a stored verdict reach the queue. This is a local

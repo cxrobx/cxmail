@@ -18,6 +18,10 @@ const DEFAULT_COMPATIBLE_MODEL: &str = "llama3.2";
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_COMPATIBLE_URL: &str = "http://127.0.0.1:11434/v1";
+/// Inputs per embeddings request. 32 is where local Ollama's throughput tops out
+/// on this Mac (16: ~18/s cold, 32: ~48/s, 64: ~46/s for 1,600-char passages);
+/// the 4 MB response cap leaves room for 32 × 8,192 dimensions.
+pub const MAX_EMBED_BATCH: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,6 +171,89 @@ impl InferenceClient {
         &self.model
     }
 
+    pub fn provider_kind(&self) -> ProviderKind {
+        self.provider
+    }
+    pub fn embedding_endpoint(&self) -> &str {
+        &self.base_url
+    }
+    pub fn embedding_is_local(&self) -> bool {
+        Url::parse(&self.base_url)
+            .ok()
+            .and_then(|u| {
+                u.host().map(|h| match h {
+                    Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+                    Host::Ipv4(ip) => ip.is_loopback(),
+                    Host::Ipv6(ip) => ip.is_loopback(),
+                })
+            })
+            .unwrap_or(false)
+    }
+    pub fn local_embeddings() -> Result<Self, AppError> {
+        Ok(Self {
+            provider: ProviderKind::Compatible,
+            model: String::new(),
+            base_url: DEFAULT_COMPATIBLE_URL.into(),
+            api_key: None,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map_err(|e| AppError::AiService(e.to_string()))?,
+        })
+    }
+    pub async fn embed(&self, model: &str, input: &[String]) -> Result<Vec<Vec<f32>>, AppError> {
+        use futures::StreamExt;
+        if input.is_empty()
+            || input.len() > MAX_EMBED_BATCH
+            || input
+                .iter()
+                .any(|s| s.trim().is_empty() || s.chars().count() > 2_000)
+        {
+            return Err(AppError::AiService("Invalid embedding input".into()));
+        }
+        if self.provider == ProviderKind::Anthropic {
+            return Err(AppError::AiService(
+                "This provider has no embeddings endpoint".into(),
+            ));
+        }
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| AppError::AiService(e.to_string()))?;
+        let mut req = http
+            .post(format!("{}/embeddings", self.base_url))
+            .json(&serde_json::json!({"model":model,"input":input,"encoding_format":"float"}));
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|e| AppError::AiService(format!("Embedding request failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(AppError::AiService(format!(
+                "Embedding provider returned {}",
+                response.status()
+            )));
+        }
+        let mut data = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(part) = stream.next().await {
+            let part = part.map_err(|e| AppError::AiService(e.to_string()))?;
+            if data.len() + part.len() > 4 * 1024 * 1024 {
+                return Err(AppError::AiService(
+                    "Embedding response is too large".into(),
+                ));
+            }
+            data.extend_from_slice(&part);
+        }
+        let value = serde_json::from_slice(&data)
+            .map_err(|e| AppError::AiService(format!("Invalid embedding JSON: {e}")))?;
+        crate::email::embeddings::parse_vectors(&value, input.len())
+    }
+
     /// A completion plus what it cost.
     ///
     /// `complete` throws the `usage` block away, which is how the first triage
@@ -192,7 +279,12 @@ impl InferenceClient {
                         opts.temperature.unwrap_or(0.7),
                     )
                     .await?;
-                Ok(Completion { text, input_tokens: 0, output_tokens: 0, model: model.to_string() })
+                Ok(Completion {
+                    text,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    model: model.to_string(),
+                })
             }
             ProviderKind::Openai | ProviderKind::Compatible => {
                 let body = openai_compatible_body_with(
@@ -228,7 +320,9 @@ impl InferenceClient {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .map(str::to_string)
-                    .ok_or_else(|| AppError::AiService("No text response from model".to_string()))?;
+                    .ok_or_else(|| {
+                        AppError::AiService("No text response from model".to_string())
+                    })?;
                 Ok(Completion {
                     text,
                     input_tokens: value["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
@@ -501,7 +595,7 @@ fn load_api_key(provider: ProviderKind) -> Result<Option<String>, AppError> {
         .map(|value| value.filter(|key| !key.trim().is_empty()))
 }
 
-fn validate_base_url(value: &str) -> Result<(), AppError> {
+pub fn validate_base_url(value: &str) -> Result<(), AppError> {
     let parsed = Url::parse(value)
         .map_err(|_| AppError::AiService("AI provider URL is invalid".to_string()))?;
     let is_https = parsed.scheme() == "https";
@@ -520,6 +614,9 @@ fn validate_base_url(value: &str) -> Result<(), AppError> {
         return Err(AppError::AiService(
             "AI provider URL cannot contain a query or fragment".to_string(),
         ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::AiService("AI provider URL cannot contain credentials; use the API key field".into()));
     }
     Ok(())
 }
@@ -567,6 +664,7 @@ mod tests {
     fn requires_https_for_remote_hosts() {
         assert!(validate_base_url("https://example.com/v1").is_ok());
         assert!(validate_base_url("http://example.com/v1").is_err());
+        assert!(validate_base_url("https://user:secret@example.com/v1").is_err());
     }
 
     #[test]

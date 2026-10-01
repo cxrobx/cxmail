@@ -402,6 +402,9 @@ export default function AppLayout() {
       const u14 = await listen("dock-new-message", () => {
         useMailStore.getState().setComposing(true);
       });
+      const u15 = await listen("intelligence-updated", () => {
+        window.dispatchEvent(new CustomEvent("cxmail:intelligence-updated"));
+      });
       // Live updates from the standalone cxmail-mcp process (drafts/emails it
       // mutated). Re-emit as DOM events that drive existing refresh plumbing
       // (MessageList listens for cxmail:refresh-messages) plus the new modal
@@ -419,7 +422,7 @@ export default function AppLayout() {
           duration: 2500,
         });
       });
-      unlisteners.push(u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14);
+      unlisteners.push(u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15);
     };
     setup();
     return () => unlisteners.forEach((u) => u());

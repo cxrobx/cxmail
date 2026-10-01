@@ -7,6 +7,7 @@ import { PANE_FLOOR } from "@/lib/windowAlpha";
 import TriageSection from "./TriageSection";
 import SendAsSection from "./SendAsSection";
 import MenuBarSection from "./MenuBarSection";
+import IntelligenceSection from "./IntelligenceSection";
 
 // "System" sits last rather than first: the two explicit choices are the ones
 // with muscle memory behind them, and moving them would retrain a click that
@@ -308,6 +309,7 @@ export default function SettingsDialog() {
           <SendAsSection />
 
           <TriageSection />
+          <IntelligenceSection />
         </div>
       </div>
     </div>

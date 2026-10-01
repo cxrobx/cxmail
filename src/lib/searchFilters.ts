@@ -104,17 +104,18 @@ export async function runServerSearch(
   accountIds?: string[],
 ): Promise<void> {
   const store = useMailStore.getState();
+  const requestedScope = JSON.stringify(accountIds ?? null);
   if (store.serverSearchStatus === "searching") return;
   store.setServerSearchStatus("searching");
   try {
     const results = await api.messages.serverSearch(filters, accountIds);
     const current = useMailStore.getState();
-    if (current.searchQuery !== query) return; // user moved on
+    if (current.searchQuery !== query || JSON.stringify(current.searchScopeIds) !== requestedScope) return;
     current.appendSearchResults(results, true);
     current.setServerSearchStatus("done");
   } catch (e) {
     console.error("Server search failed:", e);
     const current = useMailStore.getState();
-    if (current.searchQuery === query) current.setServerSearchStatus("error");
+    if (current.searchQuery === query && JSON.stringify(current.searchScopeIds) === requestedScope) current.setServerSearchStatus("error");
   }
 }

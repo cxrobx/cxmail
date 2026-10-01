@@ -1,10 +1,10 @@
-mod commands;
 pub mod appearance_macos;
+mod commands;
 // Stays in the app crate rather than moving with `email/`: its six `crate::notify`
 // calls are tauri/objc2-bound, and `lib.rs` is its only consumer.
-pub mod glass_macos;
 #[cfg(target_os = "macos")]
 pub mod dock_menu_macos;
+pub mod glass_macos;
 pub mod idle;
 pub mod launchd;
 pub mod notify;
@@ -145,6 +145,15 @@ pub fn run() {
             commands::accounts::set_account_notify_enabled,
             commands::accounts::set_account_hidden_from_aggregates,
             commands::triage::get_triage_status,
+            commands::intelligence::get_intelligence_status,
+            commands::intelligence::set_intelligence_account,
+            commands::intelligence::save_embedding_settings,
+            commands::intelligence::test_embeddings,
+            commands::intelligence::run_intelligence_pass,
+            commands::intelligence::get_reply_suggestion,
+            commands::intelligence::dismiss_reply_suggestion,
+            commands::intelligence::answer_mail_search,
+            commands::intelligence::index_message_documents,
             commands::triage::set_triage_mode,
             commands::triage::set_triage_model,
             commands::triage::set_triage_effort,
@@ -942,6 +951,7 @@ pub fn run() {
                     // batch and to write each verdict, never across the HTTP
                     // await (gotcha #11).
                     if tick_count % 4 == 0 {
+                        commands::intelligence::spawn_background_pass(app_handle.clone());
                         if let Err(e) = commands::triage::run_pass(&state).await {
                             log::warn!("triage pass failed: {e}");
                         }

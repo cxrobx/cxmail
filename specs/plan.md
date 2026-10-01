@@ -1,5 +1,12 @@
 # Implementation Plan
 
+## Mail Intelligence
+
+- [x] Opt-in proactive replies using recipient voice, recent thread context and account calendar busy intervals; review through the existing composer.
+- [x] Model-keyed semantic retrieval, searchable PDF/DOCX/text attachment passages, keyword fallback and source-linked answers.
+- [x] Needs You lanes for requests and waiting conversations, explicit deadlines, prepared replies and automatic resolution after a sent reply.
+- [x] Schema v65 migration, bounded background work, account isolation and stale-result regression coverage.
+
 ## Phase 1: Foundation (Single Gmail Account)
 
 - [x] Scaffold the Tauri 2 + React 19 + TypeScript project. Set up Cargo.toml with all Rust crates from specs/architecture.md. Set up package.json with all frontend deps. Configure Vite, Tailwind CSS 4, tsconfig with @ path alias. Verify `npm run tauri dev` launches an empty window.

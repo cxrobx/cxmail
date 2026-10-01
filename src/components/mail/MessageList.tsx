@@ -496,6 +496,11 @@ export default function MessageList() {
           })()
         : null);
 
+    const requestContext = JSON.stringify([searchQuery, searchFilters, scopeIds ?? null]);
+    const stillCurrent = () => {
+      const current = useMailStore.getState();
+      return JSON.stringify([current.searchQuery, current.searchFilters, current.searchScopeIds]) === requestContext;
+    };
     const removeChip = async (chip: AppliedFilter) => {
       if (!searchFilters) return;
       const remaining = searchFilters.filter(
@@ -509,6 +514,7 @@ export default function MessageList() {
       if (scopeIds) f.account_ids = scopeIds;
       try {
         const results = await api.messages.searchWithFilters(f);
+        if (!stillCurrent()) return;
         setSearchResults(searchQuery, results, remaining, {
           scopedToGroup: searchScopedToGroup,
           scopeIds,
@@ -522,6 +528,7 @@ export default function MessageList() {
       if (!searchFilters) return;
       try {
         const results = await api.messages.searchWithFilters(filtersFromChips(searchFilters));
+        if (!stillCurrent()) return;
         setSearchResults(searchQuery, results, searchFilters, { scopedToGroup: false });
       } catch (e) {
         console.error("Failed to widen search to all accounts:", e);
@@ -534,10 +541,12 @@ export default function MessageList() {
       try {
         const f = filtersFromChips(searchFilters);
         if (scopeIds) f.account_ids = scopeIds;
-        const offset = searchResults.filter((r) => !r.from_server).length;
+        const offset = searchResults.filter((r) => !r.from_server && !r.semantic_match).length;
         const more = await api.messages.searchWithFilters(f, { offset });
-        if (more.length < 50) setSearchExhausted(true);
-        appendSearchResults(more);
+        if (stillCurrent()) {
+          if (more.length < 50) setSearchExhausted(true);
+          appendSearchResults(more);
+        }
       } catch (e) {
         console.error("Failed to load more search results:", e);
       }

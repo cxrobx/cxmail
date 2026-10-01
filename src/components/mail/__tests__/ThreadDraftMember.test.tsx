@@ -22,6 +22,7 @@ vi.mock('@/hooks/useUnsubscribe', () => ({
 vi.mock('@/lib/draftCompose', () => ({ openDraftForEdit: vi.fn() }));
 vi.mock('@/lib/tauri', () => ({
   api: {
+    intelligence: { suggestion: vi.fn().mockResolvedValue(null) },
     messages: { fetchBody: vi.fn(), getThread: vi.fn(), markRead: vi.fn() },
     identities: { list: vi.fn() },
   },

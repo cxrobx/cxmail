@@ -15,10 +15,11 @@ import { Mail, Reply, ReplyAll, Forward, Clock, MailMinus, MailX, CheckSquare, T
 import SnoozePopover from "./SnoozePopover";
 import AISummary from "./AISummary";
 import SmartReplies from "./SmartReplies";
+import ReplySuggestionCard from "./ReplySuggestionCard";
 import CalendarEventCard from "./CalendarEventCard";
 import TrackingBadge from "./TrackingBadge";
 import { useUnsubscribe } from "@/hooks/useUnsubscribe";
-import { buildQuotedEmailHtml } from "@/lib/utils";
+import { buildQuotedEmailHtml, plainToHtmlParagraphs } from "@/lib/utils";
 import { uidsForThreadAction } from "@/lib/threadActions";
 import { isDraftFolder } from "@/lib/draftFolder";
 import { openDraftForEdit } from "@/lib/draftCompose";
@@ -471,7 +472,7 @@ export default function ReadingPane() {
 
       if (mode === "reply" || mode === "reply-all") {
         props.defaultTo = detail.from_email;
-        if (body) props.defaultBody = `<p>${body}</p>`;
+        if (body) props.defaultBody = plainToHtmlParagraphs(body);
         props.inReplyTo = detail.message_id || undefined;
         props.referencesHeader = detail.message_id
           ? [detail.references, detail.message_id].filter(Boolean).join(" ")
@@ -522,7 +523,7 @@ export default function ReadingPane() {
   );
 
   const openInlineCompose = useCallback(
-    (mode: "reply" | "reply-all" | "forward", body?: string | null) => {
+    (mode: "reply" | "reply-all" | "forward", body?: string | null, suggested = false) => {
       if (!resolvedAccountId || !resolvedFolder || !selectedMessageUid) return;
       const props = buildComposeProps(mode, body);
       if (!props) return;
@@ -542,6 +543,7 @@ export default function ReadingPane() {
             : undefined,
           defaultSubject: props.defaultSubject as string | undefined,
           defaultBody: props.defaultBody as string | undefined,
+          suggestedReplyText: suggested ? body ?? undefined : undefined,
           quotedHtml: props.quotedHtml as string | undefined,
           inReplyTo: props.inReplyTo as string | undefined,
           referencesHeader: props.referencesHeader as string | undefined,
@@ -785,6 +787,11 @@ export default function ReadingPane() {
 
       {/* Smart Replies */}
       {resolvedAccountId && resolvedFolder && (
+        <ReplySuggestionCard accountId={resolvedAccountId} folder={resolvedFolder} uid={selectedMessageUid}
+          disabled={!!inlineComposeTarget}
+          onUse={(body) => { if (!useMailStore.getState().inlineComposeTarget) openInlineCompose("reply", body, true); }} />
+      )}
+      {resolvedAccountId && resolvedFolder && (
         <SmartReplies
           accountId={resolvedAccountId}
           folder={resolvedFolder}
@@ -885,6 +892,7 @@ export default function ReadingPane() {
               inReplyTo={inlineComposeProps.inReplyTo}
               referencesHeader={inlineComposeProps.referencesHeader}
               replyContext={inlineComposeProps.replyContext}
+              suggestedReplyText={inlineComposeProps.suggestedReplyText}
             />
           </div>
         )}

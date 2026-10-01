@@ -20,6 +20,7 @@ vi.mock('@/hooks/useUnsubscribe', () => ({
 
 vi.mock('@/lib/tauri', () => ({
   api: {
+    intelligence: { suggestion: vi.fn().mockResolvedValue(null) },
     messages: {
       fetchBody: vi.fn(),
       getThread: vi.fn(),

@@ -126,6 +126,16 @@ fn import_single_message(
         true,
     )?;
     db::messages::insert_attachments(conn, account_id, folder_name, uid, &parsed.attachments)?;
+    let id = db::intelligence::message_id(conn, account_id, folder_name, uid)?;
+    db::knowledge::index_source(
+        conn,
+        id,
+        "Email",
+        parsed.plain_text.as_deref().unwrap_or(""),
+    )?;
+    for (source, text) in &parsed.attachment_text {
+        db::knowledge::index_source(conn, id, source, text)?;
+    }
 
     Ok(())
 }

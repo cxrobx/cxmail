@@ -42,6 +42,7 @@ export default function FloatingWindowManager() {
               defaultBcc={w.props.defaultBcc as string[] | undefined}
               defaultSubject={w.props.defaultSubject as string | undefined}
               defaultBody={w.props.defaultBody as string | undefined}
+              suggestedReplyText={w.props.suggestedReplyText as string | undefined}
               defaultAttachments={w.props.defaultAttachments as OutgoingAttachment[] | undefined}
               quotedHtml={w.props.quotedHtml as string | undefined}
               inReplyTo={w.props.inReplyTo as string | undefined}

@@ -442,6 +442,19 @@ fn persist_parsed_metadata(
         log::error!("Failed to insert attachments for message {uid}: {e}");
     }
 
+    if let Ok(id) = db::intelligence::message_id(tx, account_id, folder, uid) {
+        if let Err(e) =
+            db::knowledge::index_source(tx, id, "Email", parsed.plain_text.as_deref().unwrap_or(""))
+        {
+            log::warn!("Body indexing failed: {e}");
+        }
+        for (source, text) in &parsed.attachment_text {
+            if let Err(e) = db::knowledge::index_source(tx, id, source, text) {
+                log::warn!("Attachment indexing failed: {e}");
+            }
+        }
+    }
+
     for event in &parsed.calendar_events {
         if let Err(e) = db::calendar::insert(
             tx,
@@ -1624,13 +1637,37 @@ pub async fn search_messages(
     };
     // Read-only connection: searches never contend with the sync DB mutex.
     let conn = state.open_read_conn()?;
-    db::search::search(
-        &conn,
-        &filters,
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
-        prefix.unwrap_or(false),
-    )
+    db::knowledge::lexical_search(&conn,&filters,limit.unwrap_or(50).min(200),offset.unwrap_or(0),prefix.unwrap_or(false))
+}
+
+fn merge_knowledge_results(
+    mut results: Vec<db::search::SearchResult>,
+    hits: Vec<db::knowledge::KnowledgeHit>,
+    limit: usize,
+) -> Vec<db::search::SearchResult> {
+    for hit in hits {
+        if let Some(existing) = results.iter_mut().find(|r| {
+            r.account_id == hit.result.account_id
+                && r.folder_name == hit.result.folder_name
+                && r.uid == hit.result.uid
+        }) {
+            if hit.source != "Email" {
+                existing.snippet = hit.result.snippet;
+            }
+        } else {
+            results.push(hit.result);
+        }
+    }
+    let date_key = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .map(|d| d.timestamp()).ok()
+            .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                .ok().map(|d| d.and_utc().timestamp()))
+            .unwrap_or(i64::MIN)
+    };
+    results.sort_by(|a, b| date_key(&b.date).cmp(&date_key(&a.date)));
+    results.truncate(limit);
+    results
 }
 
 /// One chip of the applied-filter row shown above search results.
@@ -1648,6 +1685,7 @@ pub struct AiSearchResponse {
     pub used_ai: bool,
     /// True when the LLM path was attempted but failed (timeout/parse error).
     pub ai_failed: bool,
+    pub semantic_warning: Option<String>,
 }
 
 fn applied_filters_from(f: &db::search::SearchFilters) -> Vec<AppliedFilter> {
@@ -1709,7 +1747,7 @@ fn applied_filters_from(f: &db::search::SearchFilters) -> Vec<AppliedFilter> {
 /// operator fields win on conflict; the LLM fills gaps. Keywords are the one
 /// exception: when the LLM ran, its keywords replace the raw free text (it
 /// strips filler like "emails from sarah about the…" down to "budget").
-fn merge_llm_filters(
+pub(super) fn merge_llm_filters(
     det: &mut db::search::SearchFilters,
     llm: crate::email::ai::ParsedSearchQuery,
 ) {
@@ -1728,10 +1766,13 @@ fn merge_llm_filters(
     if det.date_before.is_none() {
         // LLM date_before is an inclusive YYYY-MM-DD — extend to end of day
         // (a bare date normalizes to midnight, i.e. exclusive).
-        det.date_before = llm
-            .date_before
-            .filter(|s| !s.trim().is_empty())
-            .map(|d| if d.len() == 10 { format!("{d}T23:59:59") } else { d });
+        det.date_before = llm.date_before.filter(|s| !s.trim().is_empty()).map(|d| {
+            if d.len() == 10 {
+                format!("{d}T23:59:59")
+            } else {
+                d
+            }
+        });
     }
     if det.folder.is_none() {
         det.folder = llm.folder.filter(|s| !s.trim().is_empty());
@@ -1752,8 +1793,8 @@ fn merge_llm_filters(
 }
 
 /// Natural-language search: deterministic operator/date parse first, then an
-/// optional LLM pass for free-form queries. Everything ANDs through the
-/// single FTS engine — no more union of keyword and metadata hits.
+/// optional LLM pass for free-form queries. Keyword/document and semantic
+/// retrieval share metadata/account constraints and chronological display.
 #[tauri::command]
 pub async fn ai_search_messages(
     state: State<'_, AppState>,
@@ -1773,16 +1814,16 @@ pub async fn ai_search_messages(
     let mut ai_failed = false;
     if !parsed.found_operators && word_count >= 3 {
         if let Ok(client) = email::inference::InferenceClient::load() {
-                match email::ai::parse_search_query(&client, &query).await {
-                    Ok(llm) => {
-                        merge_llm_filters(&mut filters, llm);
-                        used_ai = true;
-                    }
-                    Err(e) => {
-                        log::warn!("ai_search: LLM parse failed, deterministic only: {e}");
-                        ai_failed = true;
-                    }
+            match email::ai::parse_search_query(&client, &query).await {
+                Ok(llm) => {
+                    merge_llm_filters(&mut filters, llm);
+                    used_ai = true;
                 }
+                Err(e) => {
+                    log::warn!("ai_search: LLM parse failed, deterministic only: {e}");
+                    ai_failed = true;
+                }
+            }
         }
     }
 
@@ -1792,13 +1833,17 @@ pub async fn ai_search_messages(
 
     let results = {
         let conn = state.open_read_conn()?;
-        db::search::search(&conn, &filters, 50, 0, false)?
+        db::knowledge::lexical_search(&conn, &filters, 50, 0, false)?
     };
+    let (hits, semantic_warning) =
+        super::intelligence::hybrid_hits(&state, &filters, !parsed.found_operators).await?;
+    let results = merge_knowledge_results(results, hits, 50);
     Ok(AiSearchResponse {
         applied_filters: applied_filters_from(&filters),
         results,
         used_ai,
         ai_failed,
+        semantic_warning,
     })
 }
 
@@ -1812,13 +1857,7 @@ pub async fn search_with_filters(
     offset: Option<u32>,
 ) -> Result<Vec<db::search::SearchResult>, AppError> {
     let conn = state.open_read_conn()?;
-    db::search::search(
-        &conn,
-        &filters,
-        limit.unwrap_or(50),
-        offset.unwrap_or(0),
-        false,
-    )
+    db::knowledge::lexical_search(&conn,&filters,limit.unwrap_or(50).min(200),offset.unwrap_or(0),false)
 }
 
 /// Per-account cap on server-search hits ingested per query. The newest N
@@ -2544,4 +2583,3 @@ pub(crate) async fn reclassify_impl(
         skipped_user_override,
     })
 }
-

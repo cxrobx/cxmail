@@ -19,6 +19,7 @@ macOS-first email client. Rust (Tauri 2) backend, React 19 + TypeScript frontend
 | Sync Engine | specs/sync.md | sync, incremental, uidnext, uidvalidity, background, offline, cache, polling, idle, push |
 | MCP Send-Approval Bridge | specs/mcp-send-approval-bridge.md | mcp, send_email, approval, bridge, hook, recipient, standalone, approve tier, disabled by design, socket |
 | Scheduled-Send Reliability | specs/scheduled-send-reliability.md | scheduled, send, schedule, launchd, helper, daemon, sleep, wake, datetime, claim, double-send, retry, gotcha 23 |
+| Mail Intelligence | specs/mail-intelligence.md | proactive drafts, suggestions, embeddings, meaning search, attachment text, cited answers, needs you, action queue, waiting, deadlines |
 
 ## Conventions
 

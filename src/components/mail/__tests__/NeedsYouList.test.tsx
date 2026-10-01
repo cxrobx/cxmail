@@ -78,4 +78,18 @@ describe('NeedsYouList', () => {
     expect(state.selectedMessageAccountId).toBe('acc-1');
     expect(state.selectedMessageFolder).toBe('INBOX');
   });
+
+  it('separates waiting conversations and shows explicit deadlines and ready replies', async () => {
+    vi.mocked(api.needsYou.list).mockResolvedValue([
+      { ...alertRow, lane: 'needs_response', deadline: '2020-01-01', suggestion: { body: 'Please confirm', model: 'test', created_at: '' } },
+      { ...alertRow, uid: 4, lane: 'waiting', subject: 'Waiting for Sam', request: 'You wrote 3 days ago' },
+    ]);
+    render(<NeedsYouList />);
+    await screen.findByText('Overdue · 2020-01-01');
+    expect(screen.getByRole('button', { name: 'Review suggested reply' })).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for Sam')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('tab', { name: /Waiting on them 1/ }));
+    expect(screen.getByText('You wrote 3 days ago')).toBeInTheDocument();
+    expect(screen.queryByText('Overdue · 2020-01-01')).not.toBeInTheDocument();
+  });
 });

@@ -15,6 +15,7 @@ pub mod images;
 pub mod import;
 pub mod inference;
 pub mod inbox_groups;
+pub mod intelligence;
 pub mod messages;
 pub mod license;
 pub mod needs_you;

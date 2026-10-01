@@ -66,6 +66,8 @@ impl SearchFilters {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
+    #[serde(default)]
+    pub semantic_match: bool,
     pub account_id: String,
     pub folder_name: String,
     pub uid: u32,
@@ -189,9 +191,10 @@ pub fn search(
         .as_deref()
         .and_then(|k| build_match_expr(k, prefix));
     let match_expr: Option<String> = {
-        let fname = f.filename.as_ref().map(|x| {
-            format!("{{attachment_names}}: \"{}\"*", x.replace('"', "\"\""))
-        });
+        let fname = f
+            .filename
+            .as_ref()
+            .map(|x| format!("{{attachment_names}}: \"{}\"*", x.replace('"', "\"\"")));
         match (fname, keywords_expr) {
             (Some(a), Some(b)) => Some(format!("{} AND ({})", a, b)),
             (Some(a), None) => Some(a),
@@ -213,6 +216,86 @@ pub fn search(
         params.push(Box::new(expr.clone()));
         idx += 1;
     }
+    let (metadata, values, next_idx) = metadata_predicates(f, idx);
+    conditions.extend(metadata);
+    params.extend(values);
+    idx = next_idx;
+
+    // Some(false) flag filters add no condition — keep the WHERE valid.
+    let where_clause = if conditions.is_empty() {
+        "1=1".to_string()
+    } else {
+        conditions.join(" AND ")
+    };
+    let sql = if match_expr.is_some() {
+        // julianday('') is NULL → coalesce to the 1970 epoch julian day so
+        // garbage dates rank as very old instead of NULL-sorting to the top.
+        format!(
+            "SELECT m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email,
+                    m.date, m.is_read, m.has_attachments,
+                    snippet(messages_fts, -1, '{hs}', '{he}', ' … ', 12) AS snip,
+                    (bm25(messages_fts, 8.0, 4.0, 2.0, 1.0, 3.0)
+                      + (julianday('now') - coalesce(julianday(m.date), 2440587.5)) * 0.02) AS rank
+             FROM messages_fts
+             JOIN messages m ON m.id = messages_fts.rowid
+             WHERE {where_clause}
+             ORDER BY datetime(m.date) DESC, rank ASC
+             LIMIT ?{idx} OFFSET ?{off}",
+            hs = HIGHLIGHT_START,
+            he = HIGHLIGHT_END,
+            off = idx + 1,
+        )
+    } else {
+        format!(
+            "SELECT m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email,
+                    m.date, m.is_read, m.has_attachments,
+                    coalesce(m.snippet, '') AS snip,
+                    0.0 AS rank
+             FROM messages m
+             WHERE {where_clause}
+             ORDER BY datetime(m.date) DESC
+             LIMIT ?{idx} OFFSET ?{off}",
+            off = idx + 1,
+        )
+    };
+    params.push(Box::new(limit));
+    params.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let bound: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt
+        .query_map(bound.as_slice(), |row| {
+            Ok(SearchResult {
+                semantic_match: false,
+                account_id: row.get(0)?,
+                folder_name: row.get(1)?,
+                uid: row.get::<_, i64>(2)? as u32,
+                subject: row.get(3)?,
+                from_name: row.get(4)?,
+                from_email: row.get(5)?,
+                date: row.get(6)?,
+                is_read: row.get::<_, i32>(7)? != 0,
+                has_attachments: row.get::<_, i32>(8)? != 0,
+                snippet: clean_snippet_display(
+                    &row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                ),
+                score: row.get::<_, f64>(10)? as f32,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(rows)
+}
+
+/// Shared by keyword, attachment and semantic search. Explicit empty scopes
+/// must be handled before calling; absent scope skips hidden accounts.
+pub(crate) fn metadata_predicates(
+    f: &SearchFilters,
+    start: usize,
+) -> (Vec<String>, Vec<Box<dyn rusqlite::types::ToSql>>, usize) {
+    let mut conditions = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut idx = start;
     if let Some(ref from) = f.from {
         conditions.push(format!(
             "(m.from_email LIKE ?{idx} OR m.from_name LIKE ?{idx})"
@@ -221,9 +304,7 @@ pub fn search(
         idx += 1;
     }
     if let Some(ref to) = f.to {
-        conditions.push(format!(
-            "(m.to_list LIKE ?{idx} OR m.cc_list LIKE ?{idx})"
-        ));
+        conditions.push(format!("(m.to_list LIKE ?{idx} OR m.cc_list LIKE ?{idx})"));
         params.push(Box::new(format!("%{to}%")));
         idx += 1;
     }
@@ -282,9 +363,8 @@ pub fn search(
     }
     match f.account_ids {
         Some(ref ids) => {
-            let placeholders: Vec<String> = (0..ids.len())
-                .map(|i| format!("?{}", idx + i))
-                .collect();
+            let placeholders: Vec<String> =
+                (0..ids.len()).map(|i| format!("?{}", idx + i)).collect();
             conditions.push(format!("m.account_id IN ({})", placeholders.join(", ")));
             for id in ids {
                 params.push(Box::new(id.clone()));
@@ -299,69 +379,12 @@ pub fn search(
         None => conditions.push(super::accounts::visible_in_aggregates_sql("m.account_id")),
     }
 
-    // Some(false) flag filters add no condition — keep the WHERE valid.
-    let where_clause = if conditions.is_empty() {
-        "1=1".to_string()
-    } else {
-        conditions.join(" AND ")
-    };
-    let sql = if match_expr.is_some() {
-        // julianday('') is NULL → coalesce to the 1970 epoch julian day so
-        // garbage dates rank as very old instead of NULL-sorting to the top.
-        format!(
-            "SELECT m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email,
-                    m.date, m.is_read, m.has_attachments,
-                    snippet(messages_fts, -1, '{hs}', '{he}', ' … ', 12) AS snip,
-                    (bm25(messages_fts, 8.0, 4.0, 2.0, 1.0, 3.0)
-                      + (julianday('now') - coalesce(julianday(m.date), 2440587.5)) * 0.02) AS rank
-             FROM messages_fts
-             JOIN messages m ON m.id = messages_fts.rowid
-             WHERE {where_clause}
-             ORDER BY datetime(m.date) DESC, rank ASC
-             LIMIT ?{idx} OFFSET ?{off}",
-            hs = HIGHLIGHT_START,
-            he = HIGHLIGHT_END,
-            off = idx + 1,
-        )
-    } else {
-        format!(
-            "SELECT m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email,
-                    m.date, m.is_read, m.has_attachments,
-                    coalesce(m.snippet, '') AS snip,
-                    0.0 AS rank
-             FROM messages m
-             WHERE {where_clause}
-             ORDER BY datetime(m.date) DESC
-             LIMIT ?{idx} OFFSET ?{off}",
-            off = idx + 1,
-        )
-    };
-    params.push(Box::new(limit));
-    params.push(Box::new(offset));
-
-    let mut stmt = conn.prepare(&sql)?;
-    let bound: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let rows = stmt
-        .query_map(bound.as_slice(), |row| {
-            Ok(SearchResult {
-                account_id: row.get(0)?,
-                folder_name: row.get(1)?,
-                uid: row.get::<_, i64>(2)? as u32,
-                subject: row.get(3)?,
-                from_name: row.get(4)?,
-                from_email: row.get(5)?,
-                date: row.get(6)?,
-                is_read: row.get::<_, i32>(7)? != 0,
-                has_attachments: row.get::<_, i32>(8)? != 0,
-                snippet: clean_snippet_display(
-                    &row.get::<_, Option<String>>(9)?.unwrap_or_default(),
-                ),
-                score: row.get::<_, f64>(10)? as f32,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(rows)
+    if let Some(filename) = &f.filename {
+        conditions.push(format!("EXISTS(SELECT 1 FROM attachments a WHERE a.account_id=m.account_id AND a.folder_name=m.folder_name AND a.message_uid=m.uid AND a.filename LIKE ?{idx})"));
+        params.push(Box::new(format!("%{filename}%")));
+        idx += 1;
+    }
+    (conditions, params, idx)
 }
 
 /// Post-process a snippet for display. Marketing ESPs generate the text/plain
@@ -373,7 +396,7 @@ pub fn search(
 /// `m.snippet`), and collapse the whitespace runs they leave behind. The
 /// U+E000/U+E001 highlight markers are private-use, non-whitespace, and never
 /// produced by entity decoding of sane input, so they pass through intact.
-fn clean_snippet_display(raw: &str) -> String {
+pub(crate) fn clean_snippet_display(raw: &str) -> String {
     // FTS5's snippet() window ends at a TOKEN boundary, and the tokenizer
     // sees `847` as the token inside `&#847;` — so the window can cut the
     // trailing `;` off the last entity, leaving `&#847` that a strict

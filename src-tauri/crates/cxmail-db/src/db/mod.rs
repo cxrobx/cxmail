@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod action_queue;
 pub mod calendar;
 pub mod categories;
 pub mod claude_repos;
@@ -8,6 +9,10 @@ pub mod folders;
 pub mod followup;
 pub mod gcal;
 pub mod identities;
+pub mod intelligence;
+pub mod knowledge;
+#[cfg(test)]
+mod intelligence_tests;
 pub mod inbox_groups;
 pub mod invite_notifications;
 pub mod messages;

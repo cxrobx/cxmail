@@ -19,6 +19,7 @@ export interface InlineComposeProps {
   inReplyTo?: string;
   referencesHeader?: string;
   replyContext?: { accountId: string; folder: string; uid: number };
+  suggestedReplyText?: string;
 }
 
 /** Prefill for the legacy docked ComposeModal, used by the `mailto:` deep-link

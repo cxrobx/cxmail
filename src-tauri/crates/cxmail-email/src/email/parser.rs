@@ -107,6 +107,9 @@ pub struct ParsedMessage {
     pub sanitized_html: Option<String>,
     pub snippet: Option<String>,
     pub attachments: Vec<AttachmentMeta>,
+    /// Extracted attachment text is stored locally, never returned as HTML.
+    #[serde(skip)]
+    pub attachment_text: Vec<(String, String)>,
     pub calendar_events: Vec<ical_util::CalendarEvent>,
     pub size_bytes: u64,
     /// The verbatim RFC 5322 header block (everything before the first empty
@@ -146,6 +149,7 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
                 sanitized_html: None,
                 snippet: None,
                 attachments: vec![],
+                attachment_text: vec![],
                 calendar_events: vec![],
                 size_bytes: raw.len() as u64,
                 // Still worth keeping when mail-parser gives up entirely —
@@ -376,6 +380,16 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         }
     }
 
+    let attachment_text = (0..attachment_count.min(10))
+        .filter_map(|i| {
+            let part = message.attachment(i)?;
+            let meta = attachments.get(i)?;
+            let name = meta.filename.as_deref().unwrap_or("attachment");
+            let text =
+                crate::email::document_text::extract(name, &meta.content_type, part.contents())?;
+            Some((format!("Attachment {}: {}", i + 1, name), text))
+        })
+        .collect();
     ParsedMessage {
         subject,
         from_name,
@@ -392,6 +406,7 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         sanitized_html,
         snippet,
         attachments,
+        attachment_text,
         calendar_events,
         size_bytes: raw.len() as u64,
         raw_headers: extract_raw_headers(raw),
