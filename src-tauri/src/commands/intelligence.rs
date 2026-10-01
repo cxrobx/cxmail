@@ -384,9 +384,16 @@ async fn embed_backlog(
             texts.push(text);
         }
         if !pending.is_empty() {
-            let permit = {
-                let c = state.db.safe_lock();
-                let current = db::knowledge::pending(&c, &key, batch_size)?;
+            // Remote only: before paying, drop chunks that changed or lost their
+            // opt-in while the gate ran. It reads on its own connection, never
+            // under the app's mutex: `pending()` sorts the whole backlog (~90 ms,
+            // 5.7 s measured under build load, once per batch). Local skips it;
+            // `save_embedding` is a compare-and-set, so a stale vector never lands.
+            if !local {
+                let current = {
+                    let c = state.open_read_conn()?;
+                    db::knowledge::pending(&c, &key, batch_size)?
+                };
                 let mut kept = Vec::new();
                 let mut kept_texts = Vec::new();
                 for (chunk, text) in pending.into_iter().zip(texts) {
@@ -400,15 +407,17 @@ async fn embed_backlog(
                 }
                 pending = kept;
                 texts = kept_texts;
-                !pending.is_empty()
-                    && (local
-                        || db::intelligence::reserve_usage(
-                            &c,
-                            "embedding",
-                            pending.len() as i64,
-                            REMOTE_EMBEDDING_DAILY_CAP,
-                        )?)
-            };
+            }
+            let permit = !pending.is_empty()
+                && (local || {
+                    let c = state.db.safe_lock();
+                    db::intelligence::reserve_usage(
+                        &c,
+                        "embedding",
+                        pending.len() as i64,
+                        REMOTE_EMBEDDING_DAILY_CAP,
+                    )?
+                });
             if !permit {
                 if !pending.is_empty() {
                     stats.capped = true;
