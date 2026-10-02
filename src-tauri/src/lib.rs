@@ -80,6 +80,8 @@ impl AppState {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         conn.busy_timeout(Duration::from_secs(5))?;
+        // Same reason as schema::initialize: keep sort spills off the SSD.
+        conn.execute_batch("PRAGMA temp_store = MEMORY;")?;
         Ok(conn)
     }
 }
@@ -1190,13 +1192,35 @@ pub fn run() {
                             Err(e) => log::warn!("Body purge failed: {}", e),
                         }
                     }
-                    // Every 24 hours (2880 ticks × 30s): VACUUM and optimize
+                    // Every 24 hours (2880 ticks × 30s): optimize, and VACUUM only
+                    // when at least 10% of the file is free pages. An unconditional
+                    // VACUUM rewrote the whole ~850 MB DB (~3 GB of SSD writes with
+                    // the WAL) to reclaim 4 MB (measured 2026-10-02).
                     if tick_count % 2880 == 0 {
                         let conn = state.db.safe_lock();
-                        if let Err(e) = conn.execute_batch("VACUUM; PRAGMA optimize;") {
+                        let pages: i64 = conn
+                            .query_row("PRAGMA page_count", [], |r| r.get(0))
+                            .unwrap_or(0);
+                        let free: i64 = conn
+                            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+                            .unwrap_or(0);
+                        let vacuum = pages > 0 && free * 10 >= pages;
+                        let sql = if vacuum {
+                            // FILE for the VACUUM's own copy, then back to MEMORY.
+                            "PRAGMA temp_store = FILE; VACUUM; PRAGMA temp_store = MEMORY; PRAGMA optimize;"
+                        } else {
+                            "PRAGMA optimize;"
+                        };
+                        if let Err(e) = conn.execute_batch(sql) {
+                            let _ = conn.execute_batch("PRAGMA temp_store = MEMORY;");
                             log::warn!("Database maintenance failed: {}", e);
                         } else {
-                            log::info!("Database maintenance complete (VACUUM + optimize)");
+                            log::info!(
+                                "Database maintenance complete ({} of {} pages free, vacuum={})",
+                                free,
+                                pages,
+                                vacuum
+                            );
                         }
                     }
 

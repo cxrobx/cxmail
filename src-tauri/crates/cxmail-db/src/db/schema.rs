@@ -11,6 +11,11 @@ pub fn initialize(conn: &Connection) -> Result<()> {
     // Cap WAL file at 64 MB. After a checkpoint that resets the WAL, SQLite
     // truncates the file back to this size instead of letting it grow unbounded.
     conn.execute_batch("PRAGMA journal_size_limit = 67108864;")?;
+    // Sort/GROUP BY spills stay in RAM. With the default (FILE) every sync pass
+    // spilled dozens of 1-8 MB `etilqs_*` temp files — ~90 MB of SSD writes per
+    // 5-minute pass, ~26 GB/day (measured 2026-10-02). The daily VACUUM flips
+    // this back to FILE for its own run so its full-size copy never lands in RAM.
+    conn.execute_batch("PRAGMA temp_store = MEMORY;")?;
 
     let version = get_schema_version(conn)?;
 
@@ -2421,6 +2426,18 @@ mod tests {
         migrate_v57_invite_notifications, set_schema_version, table_has_column,
     };
     use rusqlite::Connection;
+
+    /// Every initialized connection keeps sort spills in RAM. Losing this pragma
+    /// silently costs ~26 GB/day of SSD writes from `etilqs_*` temp files.
+    #[test]
+    fn initialize_keeps_temp_store_in_memory() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let temp_store: i64 = conn
+            .query_row("PRAGMA temp_store", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(temp_store, 2, "temp_store must be MEMORY (2)");
+    }
 
     /// v54 repairs snippets the Latin-1 bug double-encoded, and — the assertion
     /// that matters — leaves everything else byte-for-byte alone. It runs over
