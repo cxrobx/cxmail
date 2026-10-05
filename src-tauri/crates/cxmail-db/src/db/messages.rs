@@ -308,7 +308,7 @@ pub fn list_by_folder(
     );
 
     let list_sql = format!(
-        "WITH eligible AS (
+        "WITH eligible AS MATERIALIZED (
             SELECT m.uid, m.subject, m.from_name, m.from_email, m.date, m.snippet,
                    m.is_read, m.is_flagged, m.has_attachments, m.size_bytes,
                    m.category, m.is_muted, m.is_pinned, m.account_id, m.folder_name,
@@ -317,7 +317,7 @@ pub fn list_by_folder(
              WHERE {predicate}
          ),
          keys AS (SELECT DISTINCT account_id, group_key FROM eligible),
-         aggregates AS (
+         aggregates AS MATERIALIZED (
             SELECT m.account_id,
                    COALESCE(m.thread_root_id, m.message_id, 'uid:' || m.folder_name || ':' || m.uid) AS group_key,
                    {aggregate_columns}
@@ -468,8 +468,14 @@ pub fn list_all_inboxes(
 
     let offset = page * page_size;
     let param_offset = acct_params.len();
+    // MATERIALIZED is load-bearing on `eligible` and `aggregates` (here, in
+    // list_by_folder and in inbox_groups::list_messages_for_group). Inlined, SQLite made
+    // the unindexed `aggregates` the outer loop and re-ran `eligible` once per
+    // thread: 129 s for All Inboxes on the real mailbox (2026-10-05), past the
+    // frontend's 30 s timeout. Materialized, each runs once and the join gets
+    // an automatic index: 0.24 s, identical rows.
     let list_sql = format!(
-        "WITH eligible AS (
+        "WITH eligible AS MATERIALIZED (
             SELECT m.uid, m.account_id, m.subject, m.from_name, m.from_email, m.date, m.snippet,
                    m.is_read, m.is_flagged, m.has_attachments, m.size_bytes,
                    m.category, m.is_muted, m.is_pinned, m.folder_name,
@@ -478,7 +484,7 @@ pub fn list_all_inboxes(
              WHERE {predicate}
          ),
          keys AS (SELECT DISTINCT account_id, group_key FROM eligible),
-         aggregates AS (
+         aggregates AS MATERIALIZED (
             SELECT m.account_id,
                    COALESCE(m.thread_root_id, m.message_id, 'uid:' || m.folder_name || ':' || m.uid) AS group_key,
                    {aggregate_columns}
@@ -2125,6 +2131,32 @@ mod recipient_integrity_tests {
 #[cfg(test)]
 mod reclassify_row_tests {
     use super::*;
+
+    /// The thread-list queries reference `eligible` twice and join it to
+    /// `aggregates`; without MATERIALIZED, SQLite inlines both and the join
+    /// goes quadratic (129 s for All Inboxes, 2026-10-05). An empty test DB
+    /// cannot reproduce that plan, so the source is the only place to pin it.
+    #[test]
+    fn thread_list_ctes_stay_materialized() {
+        for (name, src, lists) in [
+            ("messages", include_str!("messages.rs"), 2),
+            ("inbox_groups", include_str!("inbox_groups.rs"), 1),
+        ] {
+            let production = src.split("#[cfg(test)]").next().unwrap();
+            let joined = production.matches("JOIN keys k").count();
+            assert_eq!(joined, lists, "db/{name}.rs: unexpected number of thread-list queries");
+            assert_eq!(
+                production.matches("aggregates AS MATERIALIZED (").count(),
+                lists,
+                "db/{name}.rs: `aggregates` must be MATERIALIZED"
+            );
+            assert!(!production.contains("aggregates AS ("), "db/{name}.rs: inlined `aggregates`");
+            assert!(
+                production.matches("WITH eligible AS MATERIALIZED (").count() >= lists,
+                "db/{name}.rs: `eligible` must be MATERIALIZED in every thread list"
+            );
+        }
+    }
 
     /// `mail_rules` conditions on the `to` field were evaluated against an
     /// empty string on BOTH the sync and the reclassify path, so they could

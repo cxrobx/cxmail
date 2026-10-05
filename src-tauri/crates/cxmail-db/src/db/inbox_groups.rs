@@ -375,7 +375,7 @@ pub fn list_messages_for_group(
 
     let offset = page * page_size;
     let list_sql = format!(
-        "WITH eligible AS (
+        "WITH eligible AS MATERIALIZED (
             SELECT m.uid, m.account_id, m.subject, m.from_name, m.from_email, m.date, m.snippet,
                    m.is_read, m.is_flagged, m.has_attachments, m.size_bytes,
                    m.category, m.is_muted, m.is_pinned, m.folder_name,
@@ -384,7 +384,7 @@ pub fn list_messages_for_group(
              WHERE {predicate}
          ),
          keys AS (SELECT DISTINCT account_id, group_key FROM eligible),
-         aggregates AS (
+         aggregates AS MATERIALIZED (
             SELECT m.account_id,
                    COALESCE(m.thread_root_id, m.message_id, 'uid:' || m.folder_name || ':' || m.uid) AS group_key,
                    {aggregate_columns}
