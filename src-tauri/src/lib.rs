@@ -71,6 +71,11 @@ pub struct AppState {
     /// IPC and the backend periodic safety-net sync check this to avoid
     /// racing each other. Use compare_exchange/swap for atomic claiming.
     pub sync_in_flight: AtomicBool,
+    /// When the last full `sync_all_inboxes` finished, from either caller. The
+    /// backend safety-net sync reads it so it only runs when the frontend's own
+    /// 5-minute sync has stopped — otherwise the two schedules drift apart and
+    /// every account is synced twice per 5 minutes (T257).
+    pub last_sync_finished: Mutex<Option<std::time::Instant>>,
 }
 
 impl AppState {
@@ -85,6 +90,11 @@ impl AppState {
         Ok(conn)
     }
 }
+
+/// The safety-net sync stands down when any full sync finished this recently.
+/// Just under its own 5-minute cadence, so a healthy frontend schedule always
+/// covers it and a stalled one is picked up within one more tick.
+const SAFETY_NET_FRESH: Duration = Duration::from_secs(280);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -490,6 +500,7 @@ pub fn run() {
                 db_path: db_path.clone(),
                 pending_sends: Mutex::new(HashMap::new()),
                 sync_in_flight: AtomicBool::new(false),
+                last_sync_finished: Mutex::new(None),
             });
 
             // Calendar-invite approvals no longer expire on their own, so one
@@ -1235,6 +1246,14 @@ pub fn run() {
                             let Some(state) = app_for_sync.try_state::<AppState>() else {
                                 return;
                             };
+                            let recent = state
+                                .last_sync_finished
+                                .safe_lock()
+                                .is_some_and(|t| t.elapsed() < SAFETY_NET_FRESH);
+                            if recent {
+                                log::debug!("Backend safety-net sync: skipped, a sync finished recently");
+                                return;
+                            }
                             log::info!("Backend safety-net sync: starting");
                             match commands::messages::sync_all_inboxes_inner(
                                 state.inner(),

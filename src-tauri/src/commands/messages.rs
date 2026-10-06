@@ -1160,6 +1160,7 @@ struct SyncInFlightGuard<'a> {
 }
 impl<'a> Drop for SyncInFlightGuard<'a> {
     fn drop(&mut self) {
+        *self.state.last_sync_finished.safe_lock() = Some(std::time::Instant::now());
         self.state
             .sync_in_flight
             .store(false, std::sync::atomic::Ordering::Release);

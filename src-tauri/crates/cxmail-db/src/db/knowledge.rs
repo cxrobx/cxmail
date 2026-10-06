@@ -8,6 +8,17 @@ use std::collections::HashMap;
 pub const CHUNK_CHARS: usize = 1_600;
 pub const MAX_CHUNKS: usize = 64;
 
+/// The blank characters a chunk may not consist of. `chunks()` and the
+/// backfill SELECT must agree on this set: SQLite's `trim()` strips only
+/// spaces, so a newline-only body passed the SELECT, chunked to nothing, and
+/// was re-selected on every pass, forever (T257). Spelled once, used by both.
+const BLANK: &[char] = &[' ', '\t', '\n', '\r', '\u{0B}', '\u{0C}', '\u{A0}'];
+const BLANK_SQL: &str = "' '||char(9,10,13,11,12,160)";
+
+fn is_blank(s: &str) -> bool {
+    s.trim_matches(BLANK).is_empty()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct KnowledgeHit {
     pub result: SearchResult,
@@ -53,7 +64,7 @@ pub fn chunks(text: &str) -> Vec<String> {
     chars
         .chunks(CHUNK_CHARS)
         .map(|x| x.iter().collect::<String>())
-        .filter(|s| !s.trim().is_empty())
+        .filter(|s| !is_blank(s))
         .collect()
 }
 
@@ -84,25 +95,34 @@ pub fn index_source(
 /// One transaction per batch: autocommitting every chunk insert made each a
 /// separate commit while the caller held the app's DB mutex (gotcha #11).
 /// Callers loop small batches and release the lock between them.
+///
+/// Returns how many selected rows actually left a chunk behind, not how many
+/// were selected: callers loop until a batch comes back short, and a row that
+/// chunks to nothing is selected again next time, so counting it as progress
+/// is what let the loop spin.
 pub fn backfill(c: &Connection, limit: usize) -> Result<usize, AppError> {
     let tx = c.unchecked_transaction()?;
     let batch = tx
-        .prepare(
+        .prepare(&format!(
             "SELECT m.id,b.plain_text FROM messages m JOIN message_bodies b
       ON b.account_id=m.account_id AND b.folder_name=m.folder_name AND b.uid=m.uid
-      WHERE length(trim(COALESCE(b.plain_text,'')))>0 AND NOT EXISTS
+      WHERE length(trim(COALESCE(b.plain_text,''),{BLANK_SQL}))>0 AND NOT EXISTS
         (SELECT 1 FROM knowledge_chunks k WHERE k.message_id=m.id AND k.source='Email')
-      ORDER BY m.id DESC LIMIT ?1",
-        )?
+      ORDER BY m.id DESC LIMIT ?1"
+        ))?
         .query_map([limit as i64], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut chunked = 0;
     for (id, text) in &batch {
         index_source(&tx, *id, "Email", text)?;
+        if !chunks(text).is_empty() {
+            chunked += 1;
+        }
     }
     tx.commit()?;
-    Ok(batch.len())
+    Ok(chunked)
 }
 
 /// Chunks of opted-in, visible accounts. `pending` and `progress` share it so

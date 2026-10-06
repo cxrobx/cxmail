@@ -392,3 +392,23 @@ fn index_progress_counts_exactly_what_the_indexer_will_pick_up() {
     let p = knowledge::progress(&c, "another-model").unwrap();
     assert_eq!((p.embedded, p.pending), (0, 2), "a model change re-queues everything");
 }
+
+#[test]
+fn blank_bodies_are_never_reselected_by_the_chunk_backfill() {
+    // T257: SQLite trim() strips spaces only, so a newline-only body passed the
+    // SELECT, chunked to nothing, and came back every pass; with a batch's
+    // worth of them the run_pass loop never broke.
+    let c = setup();
+    message(&c, "a", "INBOX", 1, "-1 day", "<one>", None);
+    for (uid, body) in [(2, "\n\n\n"), (3, "\r\n\r\n"), (4, " \t\u{A0}\n")] {
+        message(&c, "a", "INBOX", uid, "-1 day", &format!("<b{uid}>"), None);
+        c.execute(
+            "UPDATE message_bodies SET plain_text=?1 WHERE uid=?2",
+            rusqlite::params![body, uid],
+        )
+        .unwrap();
+    }
+    assert_eq!(knowledge::backfill(&c, 10).unwrap(), 1);
+    assert_eq!(knowledge::backfill(&c, 10).unwrap(), 0, "blank bodies are not selected again");
+    assert!(knowledge::chunks("\n\r\n\t").is_empty());
+}
