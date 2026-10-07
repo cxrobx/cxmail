@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils";
 // recovery short of a rebuild. Reasoning effort has no such failure mode, which
 // is why it is a constant in the backend and not a control here.
 const MODEL_SUGGESTIONS = [
+  // Not a model: selects OpenAI's Decisions API (the default since 2026-10-06).
+  "decisions",
   "gpt-6-luna",
   "gpt-5.6-terra",
   "gpt-6.1-sol",
@@ -200,7 +202,9 @@ export default function TriageSection() {
 
       <p className="mt-1.5 text-[11px] leading-snug text-content-faint">
         Separate from the model used for Reply with AI, so a model chosen to classify
-        cheaply does not also write your drafts.
+        cheaply does not also write your drafts. <code>decisions</code> asks OpenAI's
+        Decisions API instead of a chat model; a model id such as gpt-6-luna goes back
+        to the prompted path.
       </p>
 
       <div className="mt-3 flex items-center gap-2">

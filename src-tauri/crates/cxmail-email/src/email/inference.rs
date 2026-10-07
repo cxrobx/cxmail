@@ -184,6 +184,36 @@ impl InferenceClient {
         })
     }
 
+    /// POST a request to OpenAI's Decisions API and return the JSON reply.
+    ///
+    /// OpenAI only: no other provider has the endpoint, so anything else is an
+    /// error rather than a guess at a compatible shape.
+    pub async fn decide(&self, body: &serde_json::Value) -> Result<serde_json::Value, AppError> {
+        if self.provider != ProviderKind::Openai {
+            return Err(AppError::AiService(format!(
+                "Decisions needs the OpenAI provider; {} is configured",
+                provider_label(self.provider)
+            )));
+        }
+        let mut request = self.http.post(format!("{}/decisions", self.base_url)).json(body);
+        if let Some(api_key) = &self.api_key {
+            request = request.bearer_auth(api_key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| AppError::AiService(format!("Request failed: {e}")))?;
+        let status = response.status();
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::AiService(format!("Failed to parse response: {e}")))?;
+        if !status.is_success() {
+            return Err(provider_http_error(self.provider, status, &value));
+        }
+        Ok(value)
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }

@@ -144,6 +144,7 @@ describe("TriageSection", () => {
     expect(suggestions).toContain("gpt-6.1-sol");
     expect(suggestions).not.toContain("gpt-6-sol");
     expect(suggestions).toContain("gpt-6-luna");
+    expect(suggestions).toContain("decisions");
   });
 
   it("does not put a reasoning-effort control in front of the user", async () => {

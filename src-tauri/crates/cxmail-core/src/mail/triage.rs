@@ -31,9 +31,34 @@ pub struct TriageVerdict {
 /// from a fixture.
 pub const NEEDS_RESPONSE_THRESHOLD: f32 = 0.7;
 
+/// `TriageVerdict::model` prefix for verdicts from OpenAI's Decisions API.
+pub const DECISIONS_MODEL_PREFIX: &str = "decisions:";
+
+/// The Decisions threshold. Its probabilities are a distribution, not a
+/// prompted point estimate, so 0.7 means something different there. Measured
+/// on 419 real messages against "the recipient replied" (2026-10-06,
+/// `examples/triage_compare.rs`): at 0.1 it flags 65 and catches 19 of 26
+/// replied-to messages, against prompted Luna's 55 / 17 at 0.7. Retune from the
+/// shadow queue, never from a fixture.
+pub const DECISIONS_NEEDS_RESPONSE_THRESHOLD: f32 = 0.1;
+
 impl TriageVerdict {
+    pub fn is_decisions(&self) -> bool {
+        self.model.starts_with(DECISIONS_MODEL_PREFIX)
+    }
+
+    /// The threshold belongs to the verdict's origin, so stored Luna verdicts
+    /// keep their meaning after the default engine changes.
+    pub fn needs_response_threshold(&self) -> f32 {
+        if self.is_decisions() {
+            DECISIONS_NEEDS_RESPONSE_THRESHOLD
+        } else {
+            NEEDS_RESPONSE_THRESHOLD
+        }
+    }
+
     pub fn says_needs_response(&self) -> bool {
-        self.needs_response >= NEEDS_RESPONSE_THRESHOLD
+        self.needs_response >= self.needs_response_threshold()
     }
 
     pub fn urgency_label(&self) -> &'static str {
