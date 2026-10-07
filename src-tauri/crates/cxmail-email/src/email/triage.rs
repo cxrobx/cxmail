@@ -134,7 +134,7 @@ pub const PROMPT_VERSION: &str = "v1";
 /// real messages, saying what was actually meant ("a specific person is waiting
 /// on you", mass-sent mail excluded by name) took the survey to 0.03 and the
 /// flagged set from 14 to 1. Do not "simplify" this wording back.
-const SYSTEM_PROMPT: &str = r#"You triage one email for its recipient and return ONLY a JSON object.
+pub const SYSTEM_PROMPT: &str = r#"You triage one email for its recipient and return ONLY a JSON object.
 
 Answer these four questions about the message given to you:
 
@@ -163,7 +163,7 @@ const VALID_CATEGORIES: &[&str] = &[
 ];
 
 /// Render the gated message as the user prompt.
-fn user_prompt(m: &SafeMessage) -> String {
+pub fn user_prompt(m: &SafeMessage) -> String {
     let mut s = String::new();
     s.push_str(&format!("From: {}", m.from_email));
     if let Some(n) = &m.from_name {

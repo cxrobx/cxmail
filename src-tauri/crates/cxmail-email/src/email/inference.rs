@@ -167,6 +167,23 @@ impl InferenceClient {
         })
     }
 
+    /// An OpenAI client from an explicit key, bypassing the credential store.
+    /// For evals and probes run outside the app bundle, where reading the
+    /// Keychain would prompt; the app always goes through `load`.
+    pub fn openai_with_key(api_key: String, model: &str) -> Result<Self, AppError> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| AppError::AiService(format!("HTTP client init failed: {e}")))?;
+        Ok(Self {
+            provider: ProviderKind::Openai,
+            model: model.to_string(),
+            base_url: DEFAULT_OPENAI_URL.trim_end_matches('/').to_string(),
+            api_key: Some(api_key),
+            http,
+        })
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
