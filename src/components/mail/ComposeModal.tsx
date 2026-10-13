@@ -61,6 +61,7 @@ import type { DraftSnapshot } from "@/lib/draftValidation";
 import FollowupPopover from "./FollowupPopover";
 import { useDockDrag } from "@/hooks/useDockDrag";
 import { formatPresetDate } from "@/components/shared/DateTimePickerMenu";
+import { ComposerSelectionFeedback } from "@/components/shared/SelectionFeedback";
 
 export type ComposeMode = "new" | "reply" | "reply-all" | "forward";
 export type ComposeSurface = "docked" | "windowed" | "inline";
@@ -1583,6 +1584,7 @@ export default function ComposeModal({
         }}
       >
         <EditorContent editor={editor} />
+        {editor && <ComposerSelectionFeedback editor={editor} />}
       </div>
 
       {/* Attachments */}

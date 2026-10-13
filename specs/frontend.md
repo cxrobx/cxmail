@@ -132,6 +132,36 @@ Persist uiStore to localStorage so layout survives restarts.
 - **EmptyState**: centered icon + message for empty folders
 - **LoadingSpinner**: consistent loading indicator
 - **ErrorBoundary**: catches React errors, shows fallback UI
+- **SelectionFeedback**: selecting message or draft text immediately opens
+  Shorten, Soften, Humanize, and a free-text instruction field. Showing the
+  bubble keeps focus on the selected text; interacting with it freezes the range.
+  Enter submits; Shift+Enter adds a line; Escape or an outside click dismisses.
+  The bubble is portalled to the document body and clamped to the viewport.
+
+### Selection feedback
+
+- Draft actions use the existing `ai_adjust_tone` and `ai_rewrite_text` commands,
+  then replace the saved plain-text range as one isolated undo step. Formatting
+  within that range is dropped. Styled HTML blocks, signatures, quoted history,
+  non-text selections, and draft selections over 4,000 characters are excluded.
+  If the range's text changed during inference, the result stays in the bubble
+  with Copy instead of overwriting the draft.
+- Incoming HTML and plain-text mail use `MessageBody` in the reading pane,
+  expanded thread cards, and pop-out email views. Quick actions show a result
+  with Copy and Use in reply; Use in reply opens a new threaded draft and keeps
+  existing drafts intact. Free text starts the in-app Claude chat with that
+  body's own `(account_id, folder, uid)`, then sends the quoted passage and note.
+- `public/email-frame.js` relays bounded selections and frame-local rectangles
+  over `postMessage`; `EmailFrame` validates the owning source window and geometry.
+  Text right-click remains native. The existing iframe sandbox and CSP are retained.
+- Humanize uses a fixed natural-language instruction, without voice-profile
+  context. All rewrite output still passes through backend `call_inference_prose`.
+
+Unit tests cover command routing, range protection, undo, relay validation, and
+chat context. `scripts/check-selection-feedback-webkit.mjs` drives the actual
+components via `selection-feedback.html` on a running Vite server. It requires
+Playwright with WebKit installed; `CXMAIL_PLAYWRIGHT_MODULE`,
+`CXMAIL_WEBKIT_EXECUTABLE`, and `CXMAIL_TEST_URL` support an existing runtime.
 
 ## Hooks
 

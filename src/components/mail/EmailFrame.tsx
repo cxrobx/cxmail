@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -6,12 +6,18 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ImageOff } from "lucide-react";
 import { useResolvedTheme } from "../../hooks/useResolvedTheme";
 import { api } from "../../lib/tauri";
+import SelectionFeedback from "@/components/shared/SelectionFeedback";
+import { readFrameSelection, type FeedbackSelection } from "@/lib/selectionFeedback";
 
 interface EmailFrameProps {
   html: string;
   /** Sender address used for the per-sender image-trust allowlist. When
    * omitted, blocked-image banner is hidden (no sender to attribute trust to). */
   senderEmail?: string;
+  feedback?: {
+    onAsk: (quote: string, note: string) => Promise<void>;
+    onUseInReply: (text: string) => void;
+  };
 }
 
 // Script injected into the iframe. Runs in a sandboxed context (allow-scripts +
@@ -101,10 +107,16 @@ function buildFrameDocument(html: string, isDark: boolean): string {
 </html>`;
 }
 
-export default function EmailFrame({ html, senderEmail }: EmailFrameProps) {
+export default function EmailFrame({ html, senderEmail, feedback }: EmailFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const theme = useResolvedTheme();
   const [frameHeight, setFrameHeight] = useState(200);
+  const [selection, setSelection] = useState<FeedbackSelection | null>(null);
+  const feedbackOpen = useRef(false);
+  const closeFeedback = useCallback(() => {
+    feedbackOpen.current = false;
+    setSelection(null);
+  }, []);
   // Tri-state on purpose: 'pending' suppresses the banner during the trust
   // query so a trusted sender doesn't briefly flash a "blocked" prompt before
   // we postMessage the iframe to load.
@@ -121,6 +133,18 @@ export default function EmailFrame({ html, senderEmail }: EmailFrameProps) {
   >(null);
   const isDark = theme === "dark";
   const srcDoc = useMemo(() => buildFrameDocument(html, isDark), [html, isDark]);
+  useEffect(closeFeedback, [srcDoc, closeFeedback]);
+  useEffect(() => {
+    if (!feedback) return;
+    const receive = (event: MessageEvent) => {
+      const frame = iframeRef.current;
+      if (!frame) return;
+      const next = readFrameSelection(event, frame);
+      if (next !== undefined && !feedbackOpen.current) setSelection(next);
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [feedback]);
   const hasBlockedImages = useMemo(() => /data-original-src=/i.test(html), [html]);
 
   // Resolve trust state for this sender on mount / when sender changes.
@@ -356,6 +380,9 @@ export default function EmailFrame({ html, senderEmail }: EmailFrameProps) {
         className="w-full border-0"
         style={{ height: frameHeight }}
       />
+      {selection && feedback && <SelectionFeedback mode="readonly" selection={selection}
+        onInteract={() => { feedbackOpen.current = true; }} onClose={closeFeedback}
+        onAsk={feedback.onAsk} onUseInReply={feedback.onUseInReply} />}
       {imageMenu &&
         createPortal(
           <div

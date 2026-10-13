@@ -8,6 +8,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "@/lib/tauri";
 import { applyChatEvent } from "@/lib/chatEvents";
+import { passagePrompt } from "@/lib/selectionFeedback";
 import type { ChatEnvelope, ChatItem, ChatSeed, ChatStarted } from "@/types/chat";
 
 interface ChatState {
@@ -28,6 +29,7 @@ interface ChatState {
   setModel: (model: string) => void;
   startNew: (seed?: ChatSeed) => Promise<boolean>;
   askAboutEmail: (seed: ChatSeed) => Promise<void>;
+  askAboutPassage: (seed: ChatSeed, quote: string, note: string) => Promise<void>;
   send: (text: string, images?: string[]) => Promise<void>;
   answer: (requestId: string, allow: boolean, remember: boolean) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -83,6 +85,16 @@ export const useChatStore = create<ChatState>()(
       askAboutEmail: async (seed) => {
         set({ open: true });
         await get().startNew(seed);
+      },
+
+      askAboutPassage: async (seed, quote, note) => {
+        if (!quote.trim() || !note.trim()) return;
+        // Start with the selected email, just like Ask Claude about this email.
+        // Never send the passage into an unseeded chat after a launch failure.
+        set({ open: true });
+        if (get().starting) throw new Error("Claude is starting. Try again in a moment.");
+        if (!await get().startNew(seed)) throw new Error("Couldn't start Claude. Try again.");
+        await get().send(passagePrompt(quote, note));
       },
 
       send: async (text, images = []) => {

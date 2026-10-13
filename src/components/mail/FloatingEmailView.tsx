@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/tauri";
-import EmailFrame from "./EmailFrame";
+import MessageBody from "./MessageBody";
 import AttachmentList from "./AttachmentList";
 import CalendarEventCard from "./CalendarEventCard";
 import LoadingSpinner from "@/components/shared/LoadingSpinner";
@@ -119,10 +119,8 @@ export default function FloatingEmailView({ accountId, folder, uid }: FloatingEm
 
       {/* Body */}
       <div className="flex-1 overflow-auto">
-        {detail.sanitized_html ? (
-          <EmailFrame html={detail.sanitized_html} senderEmail={detail.from_email} />
-        ) : detail.plain_text ? (
-          <pre className="whitespace-pre-wrap p-4 text-sm text-content-secondary">{detail.plain_text}</pre>
+        {detail.sanitized_html || detail.plain_text ? (
+          <MessageBody detail={detail} accountId={accountId} folder={folder} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <Mail className="h-8 w-8 text-content-muted" />

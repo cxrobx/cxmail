@@ -3,7 +3,7 @@ import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
 import { useWindowStore } from "@/stores/windowStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { api } from "@/lib/tauri";
-import EmailFrame from "./EmailFrame";
+import MessageBody from "./MessageBody";
 import AttachmentList from "./AttachmentList";
 import ComposeModal from "./ComposeModal";
 import type { ComposeMode } from "./ComposeModal";
@@ -845,12 +845,8 @@ export default function ReadingPane() {
           {/* The email dial's veil: the body only, never the header rows above
               it — the text here sits right on the pane's glass. */}
           <div className="flex-1 overflow-auto bg-email-veil">
-            {detail.sanitized_html ? (
-              <EmailFrame html={detail.sanitized_html} senderEmail={detail.from_email} />
-            ) : detail.plain_text ? (
-              <pre className="whitespace-pre-wrap p-4 text-sm text-content-secondary">
-                {detail.plain_text}
-              </pre>
+            {detail.sanitized_html || detail.plain_text ? (
+              <MessageBody detail={detail} accountId={resolvedAccountId} folder={resolvedFolder} />
             ) : (
               <EmptyState icon={Mail} title="No content" />
             )}

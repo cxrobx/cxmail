@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Pencil } from "lucide-react";
-import EmailFrame from "./EmailFrame";
+import MessageBody from "./MessageBody";
 import AttachmentList from "./AttachmentList";
 import LoadingSpinner from "@/components/shared/LoadingSpinner";
 import { cn, formatRelativeDate, getInitials } from "@/lib/utils";
@@ -231,12 +231,8 @@ function ExpandedBody({ detail, accountId, folder }: ExpandedBodyProps) {
     // lies on this card rather than on the pane (emailVeilAlphas). The card does
     // not clip, so the veil rounds its own bottom corners to stay inside it.
     <div className={cn("rounded-b-md bg-email-veil-card px-1 py-2")}>
-      {hasHtml ? (
-        <EmailFrame html={composedHtml} senderEmail={detail.from_email} />
-      ) : plainText ? (
-        <pre className="whitespace-pre-wrap p-4 text-sm text-content-secondary">
-          {plainText}
-        </pre>
+      {hasHtml || plainText ? (
+        <MessageBody detail={detail} accountId={accountId} folder={folder} html={composedHtml} />
       ) : (
         <p className="px-4 py-3 text-sm text-content-muted">No content.</p>
       )}

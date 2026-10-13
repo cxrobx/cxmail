@@ -64,6 +64,37 @@
     parent.postMessage({ type: 'cxmail-iframe-wheel' }, '*');
   }, { passive: true });
 
+  // Selection is opaque to the parent: relay bounded text and frame-local
+  // coordinates. Leave contextmenu untouched so native text Copy still works.
+  var selecting = false;
+  function reportSelection() {
+    var selection = window.getSelection();
+    var text = selection && !selection.isCollapsed ? selection.toString().slice(0, 4000) : '';
+    var rect = text && selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+    parent.postMessage({
+      type: 'cxmail-selection',
+      text: text,
+      rect: rect ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } : null,
+    }, '*');
+  }
+  document.addEventListener('pointerdown', function (e) {
+    if (e.button === 0) selecting = true;
+  });
+  document.addEventListener('pointerup', function (e) {
+    selecting = false;
+    if (e.button === 0) reportSelection();
+  });
+  document.addEventListener('pointercancel', function () { selecting = false; });
+  document.addEventListener('keyup', function (e) {
+    if (e.key !== 'Escape') reportSelection();
+  });
+  document.addEventListener('selectionchange', function () {
+    if (!selecting) reportSelection();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') parent.postMessage({ type: 'cxmail-iframe-escape' }, '*');
+  });
+
   // Intercept link clicks and relay to parent via postMessage
   document.addEventListener('click', function (e) {
     var target = e.target;
