@@ -654,7 +654,7 @@ pub async fn chat_continue_in_terminal(app: AppHandle) -> Result<(), AppError> {
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
     std::fs::set_permissions(&script_path, perms)?;
 
-    claude_handoff::launch_in_ghostty(ghostty, session.cwd.clone(), script_path).await
+    claude_handoff::launch_in_ghostty(ghostty, session.cwd.clone(), script_path, None).await
 }
 
 /// `--add-dir` last, as everywhere else (gotcha #49).

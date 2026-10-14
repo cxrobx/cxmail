@@ -162,10 +162,11 @@ pub async fn open_email_in_claude(
     perms.set_mode(0o755);
     fs::set_permissions(&launch_path, perms)?;
 
-    launch_in_ghostty(ghostty_app, landing_dir.clone(), launch_path).await?;
+    let herdr_scope = repo.is_none().then(|| format!("cxmail:account:{account_id}"));
+    launch_in_ghostty(ghostty_app, landing_dir.clone(), launch_path, herdr_scope).await?;
 
     log::info!(
-        "claude_handoff: launched Ghostty session in {:?} ({})",
+        "claude_handoff: opened Claude session in {:?} ({})",
         landing_dir,
         match (&repo, &missing_repo_path) {
             (Some(r), _) => format!("{} {}", r.scope.as_str(), r.source),
@@ -180,7 +181,7 @@ pub async fn open_email_in_claude(
     })
 }
 
-/// Open a Ghostty window in `working_dir` running `launch_path`.
+/// Open a Herdr tab (or standalone Ghostty window) running `launch_path`.
 ///
 /// Shared by the email handoff and the chat panel's "Continue in terminal",
 /// so both get the running-instance route and its fallback (gotchas #24, #35).
@@ -188,12 +189,34 @@ pub(crate) async fn launch_in_ghostty(
     ghostty_app: PathBuf,
     working_dir: PathBuf,
     launch_path: PathBuf,
+    herdr_scope: Option<String>,
 ) -> Result<(), AppError> {
     let working_dir_arg = format!("--working-directory={}", working_dir.display());
     let ghostty_app_clone = ghostty_app;
     let launch_path_for_err = launch_path;
     let scratch_for_spawn = working_dir;
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+        // Shared with CXTasks and Onyx: exact checkout identity, fresh tab.
+        // Fall back only when the router is absent, never after a failed or
+        // uncertain Herdr launch (which could otherwise start Claude twice).
+        if let Some(router) = dirs::home_dir()
+            .map(|home| home.join(".local/bin/cx-open-in-herdr"))
+            .filter(|router| router.is_file())
+        {
+            let mut command = Command::new(router);
+            command.arg("--cwd").arg(&scratch_for_spawn)
+                .arg("--launch").arg(&launch_path_for_err);
+            if let Some(scope) = herdr_scope {
+                command.arg("--scope").arg(scope).arg("--space").arg("CXMail");
+            }
+            let output = command.stdin(Stdio::null()).output()?;
+            return if output.status.success() {
+                Ok(())
+            } else {
+                Err(AppError::General(format!("Could not open Claude in Herdr: {}",
+                    String::from_utf8_lossy(&output.stderr).trim())))
+            };
+        }
         // Preferred: ask the Ghostty the user ALREADY has for a new window,
         // over AppleScript. Without it every "Open in Claude" leaves a second
         // whole Ghostty application behind — its own Dock icon, its own
