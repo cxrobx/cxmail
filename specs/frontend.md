@@ -141,17 +141,27 @@ Persist uiStore to localStorage so layout survives restarts.
 
 ### Selection feedback
 
+- The bubble opens on selection without taking focus, as one compact row (three
+  chips and a short field). It grows to the full text box only when the field is
+  focused or there is a result, error or question to show. A lone word of 24
+  characters or fewer gets no bubble (`wantsFeedback`): that selection is
+  usually made to retype, bold or copy it.
 - Draft actions use the existing `ai_adjust_tone` and `ai_rewrite_text` commands,
   then replace the saved plain-text range as one isolated undo step. Formatting
-  within that range is dropped. Styled HTML blocks, signatures, quoted history,
+  within that range is dropped; a blank line in the result becomes a paragraph
+  break and a single newline a line break. Styled HTML blocks, signatures, quoted history,
   non-text selections, and draft selections over 4,000 characters are excluded.
   If the range's text changed during inference, the result stays in the bubble
   with Copy instead of overwriting the draft.
 - Incoming HTML and plain-text mail use `MessageBody` in the reading pane,
   expanded thread cards, and pop-out email views. Quick actions show a result
   with Copy and Use in reply; Use in reply opens a new threaded draft and keeps
-  existing drafts intact. Free text starts the in-app Claude chat with that
-  body's own `(account_id, folder, uid)`, then sends the quoted passage and note.
+  existing drafts intact. Its props come from `buildReplyComposeProps`, the same
+  builder as the reading pane's reply (#39). Free text goes to the in-app Claude
+  chat with that body's own `(account_id, folder, uid)`: as a follow-up when the
+  live chat is already about that email, otherwise as a new chat, which first
+  asks before ending a conversation the user has had. Only this path is labelled
+  Claude; the quick actions and draft rewrites run on the configured provider.
 - `public/email-frame.js` relays bounded selections and frame-local rectangles
   over `postMessage`; `EmailFrame` validates the owning source window and geometry.
   Text right-click remains native. The existing iframe sandbox and CSP are retained.

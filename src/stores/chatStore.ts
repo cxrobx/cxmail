@@ -18,6 +18,8 @@ interface ChatState {
   /** Generation of the live process; events from any other are stale. */
   gen: number | null;
   started: ChatStarted | null;
+  /** The email the live chat was started about, if any. */
+  seed: ChatSeed | null;
   sessionModel: string | null;
   items: ChatItem[];
   busy: boolean;
@@ -30,6 +32,8 @@ interface ChatState {
   startNew: (seed?: ChatSeed) => Promise<boolean>;
   askAboutEmail: (seed: ChatSeed) => Promise<void>;
   askAboutPassage: (seed: ChatSeed, quote: string, note: string) => Promise<void>;
+  /** True when asking about `seed` would end a conversation the user has had. */
+  wouldReplaceChat: (seed: ChatSeed) => boolean;
   send: (text: string, images?: string[]) => Promise<void>;
   answer: (requestId: string, allow: boolean, remember: boolean) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -41,6 +45,9 @@ interface ChatState {
 /** The process is gone, so a question it asked can no longer be answered. */
 const expirePending = (items: ChatItem[]): ChatItem[] =>
   items.map((i) => (i.kind === "permission" && i.state === "pending" ? { ...i, state: "expired" as const } : i));
+
+const sameSeed = (a: ChatSeed | null, b: ChatSeed) =>
+  !!a && a.account_id === b.account_id && a.folder === b.folder && a.uid === b.uid;
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 let noticeSeq = 0;
@@ -58,6 +65,7 @@ export const useChatStore = create<ChatState>()(
       model: "",
       gen: null,
       started: null,
+      seed: null,
       sessionModel: null,
       items: [],
       busy: false,
@@ -69,7 +77,7 @@ export const useChatStore = create<ChatState>()(
       setModel: (model) => set({ model }),
 
       startNew: async (seed) => {
-        set({ starting: true, items: [], busy: false, alive: false, started: null, sessionModel: null, gen: null });
+        set({ starting: true, items: [], busy: false, alive: false, started: null, seed: seed ?? null, sessionModel: null, gen: null });
         try {
           const started = await api.chat.start(seed ?? null, get().model || null);
           // `alive` goes true here, not on `ready`: the CLI emits its init only
@@ -93,8 +101,20 @@ export const useChatStore = create<ChatState>()(
         // Never send the passage into an unseeded chat after a launch failure.
         set({ open: true });
         if (get().starting) throw new Error("Claude is starting. Try again in a moment.");
-        if (!await get().startNew(seed)) throw new Error("Couldn't start Claude. Try again.");
+        // A chat already about this email keeps its history: the passage is a
+        // follow-up, not a reason to start over.
+        if (get().alive && sameSeed(get().seed, seed)) {
+          // `send` drops a message while busy; say so rather than lose the note.
+          if (get().busy) throw new Error("Claude is still answering. Try again when it finishes.");
+        } else if (!await get().startNew(seed)) {
+          throw new Error("Couldn't start Claude. Try again.");
+        }
         await get().send(passagePrompt(quote, note));
+      },
+
+      wouldReplaceChat: (seed) => {
+        const { alive, items } = get();
+        return alive && !sameSeed(get().seed, seed) && items.some((i) => i.kind === "user");
       },
 
       send: async (text, images = []) => {

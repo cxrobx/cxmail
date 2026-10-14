@@ -4,7 +4,7 @@ import Image from "@tiptap/extension-image";
 import { SignatureBlock, QuotedBlock, HtmlBlock } from "@/lib/composeNodes";
 import {
   captureEditableSelection, feedbackPosition, passagePrompt, readFrameSelection,
-  replaceFeedbackSelection, type EditableFeedbackSelection,
+  replaceFeedbackSelection, wantsFeedback, type EditableFeedbackSelection,
 } from "@/lib/selectionFeedback";
 
 const anchor = { left: 20, top: 100, right: 150, bottom: 120 };
@@ -27,6 +27,22 @@ describe("draft selection replacement", () => {
     expect(editor.getHTML()).toBe("<p>Before &lt;b&gt;Natural&lt;/b&gt;<br>words after</p>");
     editor.commands.undo();
     expect(editor.getHTML()).toBe("<p>Before <strong>selected words</strong> after</p>");
+  });
+
+  it("keeps the model's paragraphs as paragraphs, joined to the text around the selection", () => {
+    expect(replaceFeedbackSelection(editor, saved(), "First part.\n\nSecond part,\nsame paragraph.\n\nThird")).toBe(true);
+    expect(editor.getHTML()).toBe("<p>Before First part.</p><p>Second part,<br>same paragraph.</p><p>Third after</p>");
+    editor.commands.undo();
+    expect(editor.getHTML()).toBe("<p>Before <strong>selected words</strong> after</p>");
+  });
+
+  it("does not offer feedback on a lone short word, which is usually selected to retype or copy", () => {
+    editor.commands.setContent("<p>Before selected after</p>");
+    const range = document.createRange();
+    const text = editor.view.dom.querySelector("p")!.firstChild!;
+    range.setStart(text, 7); range.setEnd(text, 15);
+    document.getSelection()?.addRange(range);
+    expect(captureEditableSelection(editor)).toBeNull();
   });
 
   it("isolates the rewrite from edits immediately before and after it", () => {
@@ -93,9 +109,17 @@ describe("iframe relay validation", () => {
   it("clears empty selections and ignores malformed geometry", () => {
     expect(readFrameSelection(message(""), frame)).toBeNull();
     for (const rect of [null, {}, { ...anchor, left: NaN }, { ...anchor, top: Infinity }, { ...anchor, right: -1 }]) {
-      expect(readFrameSelection(message("hello", rect), frame)).toBeUndefined();
+      expect(readFrameSelection(message("hello there", rect), frame)).toBeUndefined();
     }
   });
+});
+
+it("treats a phrase, or one long token, as worth feedback and a lone short word as not", () => {
+  expect(wantsFeedback("word")).toBe(false);
+  expect(wantsFeedback("  padded  ")).toBe(false);
+  expect(wantsFeedback("two words")).toBe(true);
+  expect(wantsFeedback("x".repeat(25))).toBe(true);
+  expect(wantsFeedback("   ")).toBe(false);
 });
 
 it("clamps the bubble to the viewport and moves below a selection near the top", () => {

@@ -120,3 +120,36 @@ it("shows all controls immediately without moving focus or starting inference", 
   expect(interact).toHaveBeenCalled();
   previous.remove();
 });
+
+it("opens as one compact row and grows when the user reaches for the field", () => {
+  render(<SelectionFeedback mode="editable" selection={selection} onClose={vi.fn()} onApply={vi.fn()} />);
+  const field = screen.getByRole("textbox", { name: "Describe the change" });
+  expect(field).toHaveAttribute("rows", "1");
+  expect(screen.queryByRole("button", { name: "Close feedback" })).toBeNull();
+  fireEvent.focus(field);
+  expect(field).toHaveAttribute("rows", "2");
+  expect(screen.getByRole("button", { name: "Close feedback" })).toBeInTheDocument();
+});
+
+it("names Claude only where the request actually goes to the Claude chat", () => {
+  const { unmount } = render(<SelectionFeedback mode="editable" selection={selection} onClose={vi.fn()} onApply={vi.fn()} />);
+  expect(screen.getByRole("textbox").getAttribute("aria-label")).not.toMatch(/claude/i);
+  unmount();
+  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={vi.fn()} onUseInReply={vi.fn()} />);
+  expect(screen.getByRole("textbox", { name: "Ask Claude about this passage" })).toBeInTheDocument();
+});
+
+it("asks before a passage would end a chat in progress, and sends only once confirmed", async () => {
+  const ask = vi.fn().mockResolvedValue(undefined);
+  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={ask}
+    onUseInReply={vi.fn()} wouldReplaceChat={() => true} />);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Explain" } });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  expect(await screen.findByText(/ends your current one/)).toBeInTheDocument();
+  expect(ask).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByText(/ends your current one/)).toBeNull();
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  fireEvent.click(await screen.findByRole("button", { name: "Start new chat" }));
+  await waitFor(() => expect(ask).toHaveBeenCalledWith(selection.text, "Explain"));
+});

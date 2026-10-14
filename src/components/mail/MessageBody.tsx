@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import EmailFrame from "./EmailFrame";
 import SelectionFeedback from "@/components/shared/SelectionFeedback";
-import { MAX_SELECTION_LENGTH, type FeedbackSelection } from "@/lib/selectionFeedback";
+import { MAX_SELECTION_LENGTH, wantsFeedback, type FeedbackSelection } from "@/lib/selectionFeedback";
 import { useChatStore } from "@/stores/chatStore";
 import { useWindowStore } from "@/stores/windowStore";
-import { buildQuotedEmailHtml, plainToHtmlParagraphs } from "@/lib/utils";
+import { buildReplyComposeProps } from "@/lib/replyCompose";
 import type { MessageDetail } from "@/types/email";
 
 interface Props {
@@ -28,19 +28,14 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
     return {
       onAsk: (quote: string, note: string) => useChatStore.getState().askAboutPassage(seed, quote, note),
       onUseInReply: (text: string) => {
-        // A new draft preserves any reply the user already has open.
+        // A new window rather than the inline reply, so a reply the user
+        // already has open is never replaced.
         useWindowStore.getState().openWindow({
           type: "compose", title: `Re: ${detail.subject || "(no subject)"}`,
-          props: {
-            mode: "reply", accountId, defaultTo: detail.from_email,
-            defaultSubject: /^re:/i.test(detail.subject ?? "") ? detail.subject : `Re: ${detail.subject || ""}`,
-            defaultBody: plainToHtmlParagraphs(text), quotedHtml: buildQuotedEmailHtml(detail),
-            inReplyTo: detail.message_id || undefined,
-            referencesHeader: [detail.references, detail.message_id].filter(Boolean).join(" ") || undefined,
-            replyContext: { accountId, folder, uid: detail.uid },
-          },
+          props: buildReplyComposeProps(detail, "reply", { accountId, folder, uid: detail.uid }, text),
         });
       },
+      wouldReplaceChat: () => useChatStore.getState().wouldReplaceChat(seed),
     };
   }, [detail, accountId, folder]);
 
@@ -52,7 +47,9 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
       !plainRoot.current?.contains(range.startContainer) || !plainRoot.current.contains(range.endContainer)) {
       setSelection(null); return;
     }
-    setSelection({ text: domSelection.toString().slice(0, MAX_SELECTION_LENGTH), anchor: range.getBoundingClientRect() });
+    const text = domSelection.toString();
+    if (!wantsFeedback(text)) { setSelection(null); return; }
+    setSelection({ text: text.slice(0, MAX_SELECTION_LENGTH), anchor: range.getBoundingClientRect() });
   };
   useEffect(() => {
     const cleared = () => { if (!frozen.current && document.getSelection()?.isCollapsed) setSelection(null); };
@@ -66,6 +63,6 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
     <pre ref={plainRoot} onMouseUp={updateSelection} onKeyUp={(event) => { if (event.key !== "Escape") updateSelection(); }}
       className="whitespace-pre-wrap p-4 text-sm text-content-secondary">{detail.plain_text}</pre>
     {selection && feedback && <SelectionFeedback mode="readonly" selection={selection} onClose={close}
-      onInteract={() => { frozen.current = true; }} onAsk={feedback.onAsk} onUseInReply={feedback.onUseInReply} />}
+      onInteract={() => { frozen.current = true; }} onAsk={feedback.onAsk} onUseInReply={feedback.onUseInReply} wouldReplaceChat={feedback.wouldReplaceChat} />}
   </>;
 }

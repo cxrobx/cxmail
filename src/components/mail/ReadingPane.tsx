@@ -4,6 +4,7 @@ import { useWindowStore } from "@/stores/windowStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { api } from "@/lib/tauri";
 import MessageBody from "./MessageBody";
+import { buildReplyComposeProps } from "@/lib/replyCompose";
 import AttachmentList from "./AttachmentList";
 import ComposeModal from "./ComposeModal";
 import type { ComposeMode } from "./ComposeModal";
@@ -19,7 +20,6 @@ import ReplySuggestionCard from "./ReplySuggestionCard";
 import CalendarEventCard from "./CalendarEventCard";
 import TrackingBadge from "./TrackingBadge";
 import { useUnsubscribe } from "@/hooks/useUnsubscribe";
-import { buildQuotedEmailHtml, plainToHtmlParagraphs } from "@/lib/utils";
 import { uidsForThreadAction } from "@/lib/threadActions";
 import { isDraftFolder } from "@/lib/draftFolder";
 import { openDraftForEdit } from "@/lib/draftCompose";
@@ -457,67 +457,13 @@ export default function ReadingPane() {
   const buildComposeProps = useCallback(
     (mode: ComposeMode, body?: string | null): Record<string, unknown> | null => {
       if (!detail) return null;
-      const quotedBody = buildQuotedEmailHtml(detail);
-      const subjectPrefix = mode === "forward" ? "Fwd:" : "Re:";
-      const defaultSubject = detail.subject?.startsWith(subjectPrefix)
-        ? detail.subject
-        : `${subjectPrefix} ${detail.subject || ""}`;
-
-      const props: Record<string, unknown> = {
-        mode,
-        accountId: resolvedAccountId || undefined,
-        defaultSubject,
-        quotedHtml: quotedBody,
-      };
-
-      if (mode === "reply" || mode === "reply-all") {
-        props.defaultTo = detail.from_email;
-        if (body) props.defaultBody = plainToHtmlParagraphs(body);
-        props.inReplyTo = detail.message_id || undefined;
-        props.referencesHeader = detail.message_id
-          ? [detail.references, detail.message_id].filter(Boolean).join(" ")
-          : undefined;
-        props.replyContext = resolvedAccountId && resolvedFolder && selectedMessageUid
-          ? { accountId: resolvedAccountId, folder: resolvedFolder, uid: selectedMessageUid }
-          : undefined;
-        if (mode === "reply-all") {
-          // Self-set = the receiving account's address + its send-as aliases.
-          // Normalize with the codebase's lowercase+trim convention (no shared
-          // helper exists). Reply-all should never Cc the user, and should dedupe
-          // the sender (already To) out of Cc.
-          const norm = (e: string) => e.toLowerCase().trim();
-          const self = new Set(
-            [accountEmail, ...aliasEmails].filter(Boolean).map((e) => norm(e!)),
-          );
-          const fromIsSelf = self.has(norm(detail.from_email || ""));
-          const dedupeExclude = (emails: string[], exclude: Set<string>) => {
-            const seen = new Set<string>();
-            return emails.filter((em) => {
-              const k = norm(em);
-              if (!k || exclude.has(k) || seen.has(k)) return false;
-              seen.add(k);
-              return true;
-            });
-          };
-          if (fromIsSelf) {
-            // Reply-all to your OWN sent message → reply to the original
-            // recipients, not yourself.
-            const toEmails = dedupeExclude(detail.to_list.map((a) => a.email), self);
-            props.defaultTo = toEmails.length ? toEmails : detail.from_email;
-            props.defaultCc = dedupeExclude(
-              detail.cc_list.map((a) => a.email),
-              new Set([...self, ...toEmails.map(norm)]),
-            );
-          } else {
-            props.defaultTo = detail.from_email; // unchanged for the common case
-            props.defaultCc = dedupeExclude(
-              detail.to_list.concat(detail.cc_list).map((a) => a.email),
-              new Set([...self, norm(detail.from_email || "")]),
-            );
-          }
-        }
-      }
-      return props;
+      return buildReplyComposeProps(detail, mode, {
+        accountId: resolvedAccountId,
+        folder: resolvedFolder,
+        uid: selectedMessageUid,
+        accountEmail,
+        aliasEmails,
+      }, body);
     },
     [detail, resolvedAccountId, resolvedFolder, selectedMessageUid, accountEmail, aliasEmails],
   );

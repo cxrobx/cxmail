@@ -8,6 +8,14 @@ export const HUMANIZE_INSTRUCTION =
   "Make this sound natural and human. Remove AI tells and robotic phrasing. Keep the meaning. Return only the rewritten text.";
 export const SOFTEN_TONE = "softer and warmer, same meaning";
 
+/** A single word this short is usually selected to retype, bold or copy, not to
+ * rewrite, so the bubble stays out of the way. A phrase always qualifies. */
+export const QUICK_EDIT_MAX_LENGTH = 24;
+export function wantsFeedback(text: string): boolean {
+  const trimmed = text.trim();
+  return !!trimmed && (/\s/.test(trimmed) || trimmed.length > QUICK_EDIT_MAX_LENGTH);
+}
+
 export interface SelectionAnchor {
   left: number;
   top: number;
@@ -33,7 +41,7 @@ export function readFrameSelection(
   if (event.source !== frame.contentWindow) return undefined;
   const data = event.data;
   if (!data || data.type !== "cxmail-selection" || typeof data.text !== "string") return undefined;
-  if (!data.text.trim()) return null;
+  if (!wantsFeedback(data.text)) return null;
   const rect = data.rect;
   if (!rect || ![rect.left, rect.top, rect.right, rect.bottom].every(
     (value) => typeof value === "number" && Number.isFinite(value),
@@ -91,25 +99,31 @@ export function captureEditableSelection(editor: Editor): EditableFeedbackSelect
     const to = editor.view.posAtDOM(range.endContainer, range.endOffset);
     const text = editableRangeText(editor, from, to);
     // Truncating an editable selection would silently delete its unsent tail.
-    if (!text?.trim() || text.length > MAX_SELECTION_LENGTH) return null;
+    if (!text || !wantsFeedback(text) || text.length > MAX_SELECTION_LENGTH) return null;
     return { from, to, text, anchor: range.getBoundingClientRect() };
   } catch {
     return null;
   }
 }
 
-/** One isolated undo step. Model output is inserted as text, never parsed HTML. */
+/** One isolated undo step. Model output is inserted as text, never parsed HTML.
+ * A blank line in the output starts a new paragraph; a single newline is a
+ * line break inside one, matching how the composer itself treats them. */
 export function replaceFeedbackSelection(editor: Editor, selection: EditableFeedbackSelection, text: string): boolean {
   if (editor.isDestroyed || !editor.isEditable || !text.trim() ||
     editableRangeText(editor, selection.from, selection.to) !== selection.text) return false;
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const nodes = lines.flatMap((line, index) => [
+  const inline = (paragraph: string) => paragraph.split("\n").flatMap((line, index) => [
     ...(index ? [editor.schema.nodes.hardBreak.create()] : []),
     ...(line ? [editor.schema.text(line)] : []),
   ]);
-  const tr = closeHistory(editor.state.tr).replaceRange(
-    selection.from, selection.to, new Slice(Fragment.fromArray(nodes), 0, 0),
-  );
+  const paragraphs = text.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "").split(/\n[ \t]*\n+/);
+  // Open on both sides, so the first paragraph joins the text before the
+  // selection and the last joins the text after it.
+  const slice = paragraphs.length === 1
+    ? new Slice(Fragment.fromArray(inline(paragraphs[0])), 0, 0)
+    : new Slice(Fragment.fromArray(paragraphs.map((p) =>
+      editor.schema.nodes.paragraph.create(null, inline(p)))), 1, 1);
+  const tr = closeHistory(editor.state.tr).replaceRange(selection.from, selection.to, slice);
   tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(selection.to))));
   editor.view.dispatch(tr.scrollIntoView());
   editor.view.dispatch(closeHistory(editor.state.tr));

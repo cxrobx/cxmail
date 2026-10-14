@@ -6,6 +6,7 @@ import { ArrowUp, Loader2, X } from "lucide-react";
 import { api } from "@/lib/tauri";
 import { useResolvedTheme } from "@/hooks/useResolvedTheme";
 import { useUIStore } from "@/stores/uiStore";
+import { cn } from "@/lib/utils";
 import {
   captureEditableSelection, feedbackPosition, HUMANIZE_INSTRUCTION,
   replaceFeedbackSelection, SOFTEN_TONE,
@@ -24,6 +25,8 @@ type Props = {
   mode: "readonly";
   onAsk: (quote: string, note: string) => Promise<void>;
   onUseInReply: (text: string) => void;
+  /** True when sending would end a chat the user is in the middle of. */
+  wouldReplaceChat?: () => boolean;
 });
 
 /** Portalled because fixed elements inside floating/transformed windows move (#37). */
@@ -37,6 +40,11 @@ export default function SelectionFeedback(props: Props) {
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // Opens as one compact row; grows when the user reaches for the text field
+  // or there is something to show, so a selection made only to copy or delete
+  // covers as little of the text around it as possible.
+  const [focused, setFocused] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [size, setSize] = useState({ width: 360, height: 120 });
   const root = useRef<HTMLDivElement>(null);
   const active = useRef(true);
@@ -87,12 +95,17 @@ export default function SelectionFeedback(props: Props) {
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     if (root.current) observer?.observe(root.current);
     return () => observer?.disconnect();
-  }, [result, error, busy]);
+  }, [result, error, busy, focused, confirming]);
 
-  async function run(action: "shorten" | "soften" | "humanize" | "custom") {
+  async function run(action: "shorten" | "soften" | "humanize" | "custom", replaceConfirmed = false) {
     const note = instruction.trim();
     if (inFlight.current || (action === "custom" && !note)) return;
     props.onInteract?.();
+    if (action === "custom" && props.mode === "readonly" && !replaceConfirmed && props.wouldReplaceChat?.()) {
+      setConfirming(true);
+      return;
+    }
+    setConfirming(false);
     inFlight.current = true;
     setBusy(true);
     setError(null);
@@ -126,7 +139,15 @@ export default function SelectionFeedback(props: Props) {
     props.onInteract?.();
     event.preventDefault();
   };
-  const chipClass = "rounded-full border border-border-subtle bg-surface px-3 py-1 text-xs text-content-secondary hover:bg-elevated hover:text-content disabled:opacity-50";
+  const expanded = focused || busy || confirming || error !== null || result !== null;
+  // Free text on someone's email goes to the Claude chat; everything else runs
+  // on the configured AI provider, which need not be Claude.
+  const asksClaude = props.mode === "readonly";
+  const fieldLabel = asksClaude ? "Ask Claude about this passage" : "Describe the change";
+  const placeholder = expanded
+    ? (asksClaude ? "Ask Claude about this passage…" : "Change it how? e.g. more direct")
+    : (asksClaude ? "Ask Claude…" : "Change…");
+  const chipClass = "rounded-full border border-border-subtle bg-surface px-2.5 py-0.5 text-xs text-content-secondary hover:bg-elevated hover:text-content disabled:opacity-50";
 
   return createPortal(
     <div ref={root} style={position} data-theme={preference === "vault" ? "vault" : theme}
@@ -135,30 +156,51 @@ export default function SelectionFeedback(props: Props) {
       onPointerDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => event.stopPropagation()}>
         <div role="dialog" aria-label="Selection feedback"
-          className="w-[360px] max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-auto rounded-xl border border-border-subtle bg-base-solid p-3 shadow-2xl">
-          <div className="mb-2 flex items-center gap-1.5">
-            {(["shorten", "soften", "humanize"] as const).map((action) => (
-              <button key={action} type="button" onMouseDown={keepSelection} disabled={busy}
-                onClick={() => void run(action)} className={chipClass}>
-                {action[0].toUpperCase() + action.slice(1)}
-              </button>
-            ))}
-            <button type="button" aria-label="Close feedback" onMouseDown={keepSelection} onClick={onClose}
-              className="ml-auto rounded p-1 text-content-muted hover:text-content"><X className="h-3.5 w-3.5" /></button>
-          </div>
+          className={cn(
+            "max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-auto border border-border-subtle bg-base-solid shadow-2xl",
+            expanded ? "w-[360px] rounded-xl p-3" : "rounded-full py-1 pl-1.5 pr-1",
+          )}>
           <form onSubmit={(event) => { event.preventDefault(); void run("custom"); }}
-            className="flex items-end gap-1 rounded-lg border border-border-subtle bg-surface p-2">
-            <textarea aria-label="Tell Claude what to change" placeholder="Tell Claude what to change…"
-              rows={2} value={instruction} onChange={(event) => setInstruction(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault(); void run("custom");
-                }
-              }}
-              className="min-w-0 flex-1 resize-none bg-transparent text-xs text-content outline-none placeholder:text-content-muted" />
-            <button type="submit" disabled={busy || !instruction.trim()} aria-label="Send feedback"
-              className="rounded-md p-1 text-accent hover:bg-elevated disabled:opacity-40"><ArrowUp className="h-4 w-4" /></button>
+            className={cn("flex gap-1.5", expanded ? "flex-col" : "items-center")}>
+            <div className="flex items-center gap-1">
+              {(["shorten", "soften", "humanize"] as const).map((action) => (
+                <button key={action} type="button" onMouseDown={keepSelection} disabled={busy}
+                  onClick={() => void run(action)} className={chipClass}>
+                  {action[0].toUpperCase() + action.slice(1)}
+                </button>
+              ))}
+              {expanded && (
+                <button type="button" aria-label="Close feedback" onMouseDown={keepSelection} onClick={onClose}
+                  className="ml-auto rounded p-1 text-content-muted hover:text-content"><X className="h-3.5 w-3.5" /></button>
+              )}
+            </div>
+            <div className={cn("flex items-end gap-1", expanded
+              ? "rounded-lg border border-border-subtle bg-surface p-2"
+              : "rounded-full bg-surface py-0.5 pl-2.5 pr-0.5")}>
+              <textarea aria-label={fieldLabel} placeholder={placeholder}
+                rows={expanded ? 2 : 1} value={instruction}
+                onFocus={() => setFocused(true)}
+                onChange={(event) => { setInstruction(event.target.value); setConfirming(false); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault(); void run("custom");
+                  }
+                }}
+                className={cn("min-w-0 resize-none bg-transparent text-xs leading-5 text-content outline-none placeholder:text-content-muted",
+                  expanded ? "flex-1" : "w-24")} />
+              <button type="submit" disabled={busy || !instruction.trim()} aria-label="Send feedback"
+                className="rounded-md p-1 text-accent hover:bg-elevated disabled:opacity-40"><ArrowUp className="h-3.5 w-3.5" /></button>
+            </div>
           </form>
+          {confirming && (
+            <div role="alert" className="mt-2 text-xs text-content-secondary">
+              <p>This starts a new chat about this email and ends your current one.</p>
+              <div className="mt-2 flex gap-2">
+                <button type="button" className={chipClass} onClick={() => void run("custom", true)}>Start new chat</button>
+                <button type="button" className={chipClass} onClick={() => setConfirming(false)}>Cancel</button>
+              </div>
+            </div>
+          )}
           {busy && <p role="status" className="mt-2 flex items-center gap-2 text-xs text-content-muted"><Loader2 className="h-3 w-3 animate-spin" />{props.mode === "readonly" ? "Working…" : "Rewriting…"}</p>}
           {error && <p role="alert" className="mt-2 text-xs text-red-400">{error}</p>}
           {result !== null && (
