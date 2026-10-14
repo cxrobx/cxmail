@@ -1,3 +1,4 @@
+mod quickask;
 pub mod appearance_macos;
 mod commands;
 // Stays in the app crate rather than moving with `email/`: its six `crate::notify`
@@ -143,6 +144,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            quickask::publish_quickask_selection,
             commands::auth::start_oauth2,
             commands::auth::start_calendar_oauth,
             commands::auth::calendar_connection_status,
@@ -345,6 +347,7 @@ pub fn run() {
             commands::vault_look::fetch_vault_look,
         ])
         .setup(|app| {
+            quickask::start(app.handle().clone());
             // Install logging in BOTH debug and release builds. Production
             // logs land in ~/Library/Logs/com.cxmail.app/. Without this, prod
             // bugs are invisible — see Apr 2026 sync-stuck incident.

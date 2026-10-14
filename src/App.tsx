@@ -1,3 +1,4 @@
+import { useQuickAskSelection } from "@/hooks/useQuickAskSelection";
 import { useEffect } from "react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useAccountStore } from "@/stores/accountStore";
@@ -9,6 +10,7 @@ import ErrorBoundary from "@/components/shared/ErrorBoundary";
 import LicenseGate from "@/components/accounts/LicenseGate";
 
 function App() {
+  useQuickAskSelection();
   const { isSetupComplete, setAccounts } = useAccountStore();
   const cacheMessages = useMailStore((s) => s.cacheMessages);
 

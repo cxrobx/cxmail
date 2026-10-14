@@ -6,6 +6,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ImageOff } from "lucide-react";
 import { useResolvedTheme } from "../../hooks/useResolvedTheme";
 import { api } from "../../lib/tauri";
+import { prepareEmailHtml } from "@/lib/emailTheme";
 import SelectionFeedback from "@/components/shared/SelectionFeedback";
 import { readFrameSelection, type FeedbackSelection } from "@/lib/selectionFeedback";
 
@@ -58,7 +59,7 @@ function buildFrameDocument(html: string, isDark: boolean): string {
         padding: 0 12px;
       }
       a { cursor: pointer; }
-      a:not([style*="background"]) { color: rgb(10, 132, 255); }
+      ${isDark ? "a" : 'a:not([style*="background"])'} { color: rgb(10, 132, 255); }
       img { max-width: 100%; height: auto; }
       img[data-original-src] { display: none !important; }
       blockquote {
@@ -68,40 +69,10 @@ function buildFrameDocument(html: string, isDark: boolean): string {
         color: ${isDark ? "rgb(160, 144, 120)" : "rgb(100, 90, 75)"};
       }
       hr { border-color: ${isDark ? "rgb(74, 68, 57)" : "rgb(220, 215, 205)"}; }
-      ${isDark ? `
-      div:not([style*="background"]),
-      p,
-      span:not([style*="background"]),
-      td:not([style*="background"]),
-      th,
-      li,
-      h1,
-      h2,
-      h3,
-      h4,
-      h5,
-      h6,
-      font {
-        color: rgb(232, 220, 200) !important;
-      }
-      a:not([style*="background"]) {
-        color: rgb(10, 132, 255) !important;
-      }
-      table:not([style*="background"]),
-      tr:not([style*="background"]),
-      td:not([style*="background"]),
-      th:not([style*="background"]),
-      div:not([style*="background"]) {
-        background-color: transparent !important;
-      }
-      table, tr, td, th {
-        border-color: rgb(74, 68, 57) !important;
-      }
-      ` : ""}
     </style>
   </head>
   <body>
-    <div class="email-body">${html}</div>
+    <div class="email-body">${prepareEmailHtml(html, isDark)}</div>
     ${FRAME_SCRIPT}
   </body>
 </html>`;

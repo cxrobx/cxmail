@@ -733,4 +733,13 @@ export const api = {
      * run through `parseVaultPalette` before anything uses it. */
     fetch: (url: string) => invoke<unknown>("fetch_vault_look", { url }),
   },
+  quickAsk: {
+    publishSelection: (selection: {
+      account_id: string | null;
+      folder: string | null;
+      uid: number | null;
+      composing: boolean;
+      view: string;
+    }) => invoke<void>("publish_quickask_selection", { selection }),
+  },
 } as const;

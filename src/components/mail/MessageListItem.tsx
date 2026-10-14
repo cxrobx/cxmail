@@ -10,6 +10,7 @@ import { useUIStore } from "@/stores/uiStore";
 import { useResolvedTheme } from "@/hooks/useResolvedTheme";
 import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
 import { api } from "@/lib/tauri";
+import { prepareEmailHtml } from "@/lib/emailTheme";
 import { openDraftForEdit } from "@/lib/draftCompose";
 import { isDraftFolder as isDraftFolderShared } from "@/lib/draftFolder";
 import SwipeableRow from "./SwipeableRow";
@@ -117,8 +118,8 @@ function buildTooltipDoc(html: string, isDark: boolean): string {
       }
       td, th { word-break: break-word; overflow-wrap: anywhere; }
       img { height: auto !important; }
-      a:not([style*="background"]) { color: rgb(10, 132, 255); }
       a { pointer-events: none; }
+      ${isDark ? "a" : 'a:not([style*="background"])'} { color: rgb(10, 132, 255); }
       img { max-width: 100%; height: auto; }
       img[data-original-src] { display: none !important; }
       blockquote {
@@ -128,26 +129,9 @@ function buildTooltipDoc(html: string, isDark: boolean): string {
         color: ${isDark ? "rgb(160, 144, 120)" : "rgb(100, 90, 75)"};
       }
       hr { border-color: ${isDark ? "rgb(74, 68, 57)" : "rgb(220, 215, 205)"}; }
-      ${isDark ? `
-      div:not([style*="background"]),
-      p, span:not([style*="background"]),
-      td:not([style*="background"]), th, li,
-      h1, h2, h3, h4, h5, h6, font {
-        color: rgb(232, 220, 200) !important;
-      }
-      a:not([style*="background"]) { color: rgb(10, 132, 255) !important; }
-      table:not([style*="background"]),
-      tr:not([style*="background"]),
-      td:not([style*="background"]),
-      th:not([style*="background"]),
-      div:not([style*="background"]) {
-        background-color: transparent !important;
-      }
-      table, tr, td, th { border-color: rgb(74, 68, 57) !important; }
-      ` : ""}
     </style>
   </head>
-  <body><div class="email-body">${html}</div></body>
+  <body><div class="email-body">${prepareEmailHtml(html, isDark)}</div></body>
 </html>`;
 }
 

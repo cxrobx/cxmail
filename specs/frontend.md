@@ -115,6 +115,7 @@ Persist uiStore to localStorage so layout survives restarts.
 - Auto-resize iframe height to fit content
 - Intercept link clicks → open in system browser
 - Handle light/dark theme for email content
+- Dark mode preserves sender backgrounds and readable foregrounds. `src/lib/emailTheme.ts` resolves inline CSS and legacy colors, composites translucent backgrounds through ancestors, and corrects unreadable text to at least 4.5:1 contrast. Hover previews use the same preparation without adding scripts to their sandbox. Original sanitized HTML remains the source for each theme change.
 
 ### AccountSetup.tsx
 - Shown when no accounts are configured
@@ -163,7 +164,19 @@ components via `selection-feedback.html` on a running Vite server. It requires
 Playwright with WebKit installed; `CXMAIL_PLAYWRIGHT_MODULE`,
 `CXMAIL_WEBKIT_EXECUTABLE`, and `CXMAIL_TEST_URL` support an existing runtime.
 
+`scripts/check-email-theme-webkit.mjs` drives `email-theme.html` with synthetic
+receipts to check actual text contrast, nested light/dark surfaces, colored
+buttons, alpha and legacy colors, previews, theme flips and blocked images.
+It uses the same Playwright environment variables as the selection check.
+
 ## Hooks
+
+### useQuickAskSelection.ts
+Publishes the selected message's own account, folder and UID through the typed
+IPC wrapper, with serialized updates and bounded startup retries. Multiple
+selection publishes no single UID. Rust resolves the display label locally and
+serves it through a per-user Unix socket for Quick Ask; no email body or screen
+capture is included. Native window identity is read on the AppKit main thread.
 
 ### useMessages.ts
 Wraps message IPC calls. Handles loading states, error handling, and mailStore updates.

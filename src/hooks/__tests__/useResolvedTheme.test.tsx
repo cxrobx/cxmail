@@ -30,7 +30,10 @@ function Probe() {
   return <span data-testid="t">{useResolvedTheme()}</span>;
 }
 
-const DARK_INK = "rgb(232, 220, 200) !important";
+// Dark mode now corrects authored foregrounds against their actual backgrounds
+// instead of forcing pale !important text onto every element. The base ink
+// still has to follow the resolved macOS appearance.
+const DARK_INK = "color: rgb(232, 220, 200);";
 
 afterEach(() => {
   // @ts-expect-error jsdom has none; remove ours
