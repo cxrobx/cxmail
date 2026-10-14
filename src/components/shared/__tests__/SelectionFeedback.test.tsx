@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { api } from "@/lib/tauri";
-import { HUMANIZE_INSTRUCTION, SOFTEN_TONE } from "@/lib/selectionFeedback";
+import { READ_ACTIONS, SOFTEN_TONE } from "@/lib/selectionFeedback";
 import SelectionFeedback, { ComposerSelectionFeedback } from "../SelectionFeedback";
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -34,23 +34,40 @@ it.each([
   expect(close).toHaveBeenCalled();
 });
 
-it("humanizes read-only text in the bubble with Copy and Use in reply", async () => {
-  const call = vi.spyOn(api.ai, "rewriteText").mockResolvedValue("Natural version");
-  const reply = vi.fn();
-  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={vi.fn()} onUseInReply={reply} />);
-  fireEvent.click(screen.getByRole("button", { name: "Humanize" }));
-  expect(await screen.findByText("Natural version")).toBeInTheDocument();
-  expect(call).toHaveBeenCalledWith(selection.text, HUMANIZE_INSTRUCTION);
-  fireEvent.click(screen.getByRole("button", { name: "Copy" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith("Natural version"));
-  fireEvent.click(screen.getByRole("button", { name: "Use in reply" }));
-  expect(reply).toHaveBeenCalledWith("Natural version");
+it("offers questions, not rewrites, on received mail, each sent to the chat with the passage", async () => {
+  const ask = vi.fn().mockResolvedValue(undefined), close = vi.fn();
+  const rewrite = vi.spyOn(api.ai, "rewriteText"), tone = vi.spyOn(api.ai, "adjustTone");
+  render(<SelectionFeedback mode="readonly" selection={selection} onClose={close} onAsk={ask} />);
+  for (const label of ["Shorten", "Soften", "Humanize"]) expect(screen.queryByRole("button", { name: label })).toBeNull();
+  for (const { label, note } of READ_ACTIONS) {
+    fireEvent.click(screen.getByRole("button", { name: label }));
+    await waitFor(() => expect(ask).toHaveBeenLastCalledWith(selection.text, note));
+  }
+  expect(rewrite).not.toHaveBeenCalled();
+  expect(tone).not.toHaveBeenCalled();
+  expect(close).toHaveBeenCalled();
+});
+
+it("asks before a chip would end a chat in progress", async () => {
+  const ask = vi.fn().mockResolvedValue(undefined);
+  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={ask} wouldReplaceChat={() => true} />);
+  fireEvent.click(screen.getByRole("button", { name: "ELI5" }));
+  expect(await screen.findByText(/ends your current one/)).toBeInTheDocument();
+  expect(ask).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Start new chat" }));
+  await waitFor(() => expect(ask).toHaveBeenCalledWith(selection.text, READ_ACTIONS[0].note));
+});
+
+it("still offers the rewrite chips in a draft", () => {
+  render(<SelectionFeedback mode="editable" selection={selection} onClose={vi.fn()} onApply={vi.fn()} />);
+  for (const label of ["Shorten", "Soften", "Humanize"]) expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "ELI5" })).toBeNull();
 });
 
 it("routes free text to chat for mail and to rewriting for drafts; composition Enter does not send", async () => {
   const ask = vi.fn().mockResolvedValue(undefined), close = vi.fn();
   const rewrite = vi.spyOn(api.ai, "rewriteText").mockResolvedValue("Changed");
-  const { unmount } = render(<SelectionFeedback mode="readonly" selection={selection} onClose={close} onAsk={ask} onUseInReply={vi.fn()} />);
+  const { unmount } = render(<SelectionFeedback mode="readonly" selection={selection} onClose={close} onAsk={ask} />);
   const input = screen.getByRole("textbox");
   fireEvent.change(input, { target: { value: "Explain this" } });
   fireEvent.keyDown(input, { key: "Enter", isComposing: true });
@@ -135,14 +152,14 @@ it("names Claude only where the request actually goes to the Claude chat", () =>
   const { unmount } = render(<SelectionFeedback mode="editable" selection={selection} onClose={vi.fn()} onApply={vi.fn()} />);
   expect(screen.getByRole("textbox").getAttribute("aria-label")).not.toMatch(/claude/i);
   unmount();
-  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={vi.fn()} onUseInReply={vi.fn()} />);
+  render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={vi.fn()} />);
   expect(screen.getByRole("textbox", { name: "Ask Claude about this passage" })).toBeInTheDocument();
 });
 
 it("asks before a passage would end a chat in progress, and sends only once confirmed", async () => {
   const ask = vi.fn().mockResolvedValue(undefined);
   render(<SelectionFeedback mode="readonly" selection={selection} onClose={vi.fn()} onAsk={ask}
-    onUseInReply={vi.fn()} wouldReplaceChat={() => true} />);
+    wouldReplaceChat={() => true} />);
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Explain" } });
   fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
   expect(await screen.findByText(/ends your current one/)).toBeInTheDocument();

@@ -17,7 +17,6 @@ interface EmailFrameProps {
   senderEmail?: string;
   feedback?: {
     onAsk: (quote: string, note: string) => Promise<void>;
-    onUseInReply: (text: string) => void;
     wouldReplaceChat?: () => boolean;
   };
 }
@@ -354,7 +353,7 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
       />
       {selection && feedback && <SelectionFeedback mode="readonly" selection={selection}
         onInteract={() => { feedbackOpen.current = true; }} onClose={closeFeedback}
-        onAsk={feedback.onAsk} onUseInReply={feedback.onUseInReply} wouldReplaceChat={feedback.wouldReplaceChat} />}
+        onAsk={feedback.onAsk} wouldReplaceChat={feedback.wouldReplaceChat} />}
       {imageMenu &&
         createPortal(
           <div

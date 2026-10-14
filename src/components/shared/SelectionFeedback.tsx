@@ -8,7 +8,7 @@ import { useResolvedTheme } from "@/hooks/useResolvedTheme";
 import { useUIStore } from "@/stores/uiStore";
 import { cn } from "@/lib/utils";
 import {
-  captureEditableSelection, feedbackPosition, HUMANIZE_INSTRUCTION,
+  captureEditableSelection, feedbackPosition, HUMANIZE_INSTRUCTION, READ_ACTIONS,
   replaceFeedbackSelection, SOFTEN_TONE,
   type EditableFeedbackSelection, type FeedbackSelection,
 } from "@/lib/selectionFeedback";
@@ -24,7 +24,6 @@ type Props = {
 } | {
   mode: "readonly";
   onAsk: (quote: string, note: string) => Promise<void>;
-  onUseInReply: (text: string) => void;
   /** True when sending would end a chat the user is in the middle of. */
   wouldReplaceChat?: () => boolean;
 });
@@ -44,7 +43,9 @@ export default function SelectionFeedback(props: Props) {
   // or there is something to show, so a selection made only to copy or delete
   // covers as little of the text around it as possible.
   const [focused, setFocused] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  // The note waiting on "Start new chat", set only while that question is shown.
+  const [pendingNote, setPendingNote] = useState<string | null>(null);
+  const confirming = pendingNote !== null;
   const [size, setSize] = useState({ width: 360, height: 120 });
   const root = useRef<HTMLDivElement>(null);
   const active = useRef(true);
@@ -97,35 +98,16 @@ export default function SelectionFeedback(props: Props) {
     return () => observer?.disconnect();
   }, [result, error, busy, focused, confirming]);
 
-  async function run(action: "shorten" | "soften" | "humanize" | "custom", replaceConfirmed = false) {
-    const note = instruction.trim();
-    if (inFlight.current || (action === "custom" && !note)) return;
+  async function attempt(work: () => Promise<void>) {
+    if (inFlight.current) return;
     props.onInteract?.();
-    if (action === "custom" && props.mode === "readonly" && !replaceConfirmed && props.wouldReplaceChat?.()) {
-      setConfirming(true);
-      return;
-    }
-    setConfirming(false);
+    setPendingNote(null);
     inFlight.current = true;
     setBusy(true);
     setError(null);
     setCopied(false);
     try {
-      if (action === "custom" && props.mode === "readonly") {
-        await props.onAsk(selection.text, note);
-        if (active.current) onClose();
-        return;
-      }
-      const rewritten = action === "shorten" || action === "soften"
-        ? await api.ai.adjustTone(selection.text, action === "shorten" ? "concise" : SOFTEN_TONE)
-        : await api.ai.rewriteText(selection.text, action === "humanize" ? HUMANIZE_INSTRUCTION : note);
-      if (!active.current) return;
-      if (!rewritten.trim()) throw new Error("Claude returned no text. Try again.");
-      if (props.mode === "editable") {
-        if (props.onApply(rewritten)) { onClose(); return; }
-        setStale(true);
-      }
-      setResult(rewritten);
+      await work();
     } catch (e) {
       if (active.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -133,6 +115,42 @@ export default function SelectionFeedback(props: Props) {
       if (active.current) setBusy(false);
     }
   }
+
+  /** Received mail: every action is a question for the Claude chat. */
+  function ask(note: string, replaceConfirmed = false) {
+    if (props.mode !== "readonly" || !note.trim() || inFlight.current) return;
+    props.onInteract?.();
+    if (!replaceConfirmed && props.wouldReplaceChat?.()) { setPendingNote(note); return; }
+    const onAsk = props.onAsk;
+    void attempt(async () => {
+      await onAsk(selection.text, note.trim());
+      if (active.current) onClose();
+    });
+  }
+
+  /** Drafts: rewrite the selection and put the result back in place. */
+  function rewrite(action: "shorten" | "soften" | "humanize" | "custom") {
+    const note = instruction.trim();
+    if (props.mode !== "editable" || (action === "custom" && !note)) return;
+    const onApply = props.onApply;
+    void attempt(async () => {
+      const rewritten = action === "shorten" || action === "soften"
+        ? await api.ai.adjustTone(selection.text, action === "shorten" ? "concise" : SOFTEN_TONE)
+        : await api.ai.rewriteText(selection.text, action === "humanize" ? HUMANIZE_INSTRUCTION : note);
+      if (!active.current) return;
+      if (!rewritten.trim()) throw new Error("The model returned no text. Try again.");
+      if (onApply(rewritten)) { onClose(); return; }
+      setStale(true);
+      setResult(rewritten);
+    });
+  }
+
+  const submit = () => props.mode === "readonly" ? ask(instruction) : rewrite("custom");
+  const chips: { label: string; onClick: () => void }[] = props.mode === "readonly"
+    ? READ_ACTIONS.map(({ label, note }) => ({ label, onClick: () => ask(note) }))
+    : (["shorten", "soften", "humanize"] as const).map((action) => ({
+      label: action[0].toUpperCase() + action.slice(1), onClick: () => rewrite(action),
+    }));
 
   const position = feedbackPosition(selection.anchor, size.width, size.height);
   const keepSelection = (event: React.MouseEvent) => {
@@ -160,13 +178,13 @@ export default function SelectionFeedback(props: Props) {
             "max-w-[calc(100vw-16px)] max-h-[calc(100vh-16px)] overflow-auto border border-border-subtle bg-base-solid shadow-2xl",
             expanded ? "w-[360px] rounded-xl p-3" : "rounded-full py-1 pl-1.5 pr-1",
           )}>
-          <form onSubmit={(event) => { event.preventDefault(); void run("custom"); }}
+          <form onSubmit={(event) => { event.preventDefault(); submit(); }}
             className={cn("flex gap-1.5", expanded ? "flex-col" : "items-center")}>
             <div className="flex items-center gap-1">
-              {(["shorten", "soften", "humanize"] as const).map((action) => (
-                <button key={action} type="button" onMouseDown={keepSelection} disabled={busy}
-                  onClick={() => void run(action)} className={chipClass}>
-                  {action[0].toUpperCase() + action.slice(1)}
+              {chips.map(({ label, onClick }) => (
+                <button key={label} type="button" onMouseDown={keepSelection} disabled={busy}
+                  onClick={onClick} className={chipClass}>
+                  {label}
                 </button>
               ))}
               {expanded && (
@@ -180,10 +198,10 @@ export default function SelectionFeedback(props: Props) {
               <textarea aria-label={fieldLabel} placeholder={placeholder}
                 rows={expanded ? 2 : 1} value={instruction}
                 onFocus={() => setFocused(true)}
-                onChange={(event) => { setInstruction(event.target.value); setConfirming(false); }}
+                onChange={(event) => { setInstruction(event.target.value); setPendingNote(null); }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault(); void run("custom");
+                    event.preventDefault(); submit();
                   }
                 }}
                 className={cn("min-w-0 resize-none bg-transparent text-xs leading-5 text-content outline-none placeholder:text-content-muted",
@@ -196,8 +214,8 @@ export default function SelectionFeedback(props: Props) {
             <div role="alert" className="mt-2 text-xs text-content-secondary">
               <p>This starts a new chat about this email and ends your current one.</p>
               <div className="mt-2 flex gap-2">
-                <button type="button" className={chipClass} onClick={() => void run("custom", true)}>Start new chat</button>
-                <button type="button" className={chipClass} onClick={() => setConfirming(false)}>Cancel</button>
+                <button type="button" className={chipClass} onClick={() => ask(pendingNote ?? "", true)}>Start new chat</button>
+                <button type="button" className={chipClass} onClick={() => setPendingNote(null)}>Cancel</button>
               </div>
             </div>
           )}
@@ -212,8 +230,6 @@ export default function SelectionFeedback(props: Props) {
                   try { await writeText(result); if (active.current) setCopied(true); }
                   catch (e) { if (active.current) setError(String(e)); }
                 }}>{copied ? "Copied" : "Copy"}</button>
-                {props.mode === "readonly" && <button type="button" disabled={busy} className={chipClass}
-                  onClick={() => { props.onUseInReply(result); onClose(); }}>Use in reply</button>}
               </div>
             </div>
           )}

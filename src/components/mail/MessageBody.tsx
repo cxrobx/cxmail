@@ -3,8 +3,6 @@ import EmailFrame from "./EmailFrame";
 import SelectionFeedback from "@/components/shared/SelectionFeedback";
 import { MAX_SELECTION_LENGTH, wantsFeedback, type FeedbackSelection } from "@/lib/selectionFeedback";
 import { useChatStore } from "@/stores/chatStore";
-import { useWindowStore } from "@/stores/windowStore";
-import { buildReplyComposeProps } from "@/lib/replyCompose";
 import type { MessageDetail } from "@/types/email";
 
 interface Props {
@@ -27,14 +25,6 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
     const seed = { account_id: accountId, folder, uid: detail.uid };
     return {
       onAsk: (quote: string, note: string) => useChatStore.getState().askAboutPassage(seed, quote, note),
-      onUseInReply: (text: string) => {
-        // A new window rather than the inline reply, so a reply the user
-        // already has open is never replaced.
-        useWindowStore.getState().openWindow({
-          type: "compose", title: `Re: ${detail.subject || "(no subject)"}`,
-          props: buildReplyComposeProps(detail, "reply", { accountId, folder, uid: detail.uid }, text),
-        });
-      },
       wouldReplaceChat: () => useChatStore.getState().wouldReplaceChat(seed),
     };
   }, [detail, accountId, folder]);
@@ -63,6 +53,6 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
     <pre ref={plainRoot} onMouseUp={updateSelection} onKeyUp={(event) => { if (event.key !== "Escape") updateSelection(); }}
       className="whitespace-pre-wrap p-4 text-sm text-content-secondary">{detail.plain_text}</pre>
     {selection && feedback && <SelectionFeedback mode="readonly" selection={selection} onClose={close}
-      onInteract={() => { frozen.current = true; }} onAsk={feedback.onAsk} onUseInReply={feedback.onUseInReply} wouldReplaceChat={feedback.wouldReplaceChat} />}
+      onInteract={() => { frozen.current = true; }} onAsk={feedback.onAsk} wouldReplaceChat={feedback.wouldReplaceChat} />}
   </>;
 }

@@ -8,6 +8,27 @@ export const HUMANIZE_INSTRUCTION =
   "Make this sound natural and human. Remove AI tells and robotic phrasing. Keep the meaning. Return only the rewritten text.";
 export const SOFTEN_TONE = "softer and warmer, same meaning";
 
+/**
+ * What a passage in RECEIVED mail gets instead of the rewrite chips: questions,
+ * answered by the in-app Claude chat with the email loaded. Prove it relies on
+ * the chat's mailbox and vault tools; it has no web access, so it must say
+ * when the passage can't be checked from what it can read.
+ */
+export const READ_ACTIONS = [
+  {
+    label: "ELI5",
+    note: "Explain this passage like I'm five: plain words, an everyday analogy, no jargon. Then say in one line what it means for me.",
+  },
+  {
+    label: "Prove it",
+    note: "Check whether this passage holds up, using what you can read: my other mail with this sender, the rest of this thread, and my notes. Give a verdict of Supported, Partially supported, Not supported, or No evidence, and show the evidence. If it asks me to act, say whether the request looks genuine or like phishing, and why.",
+  },
+  {
+    label: "Next steps",
+    note: "What, if anything, does this passage ask me to do, and by when? List each action with its deadline. If nothing is required of me, say so.",
+  },
+] as const;
+
 /** A single word this short is usually selected to retype, bold or copy, not to
  * rewrite, so the bubble stays out of the way. A phrase always qualifies. */
 export const QUICK_EDIT_MAX_LENGTH = 24;

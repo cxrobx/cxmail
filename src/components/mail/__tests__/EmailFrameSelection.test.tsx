@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { api } from "@/lib/tauri";
 import { useChatStore } from "@/stores/chatStore";
-import { useWindowStore } from "@/stores/windowStore";
 import MessageBody from "../MessageBody";
 import type { MessageDetail } from "@/types/email";
 import type { ChatStarted } from "@/types/chat";
@@ -17,7 +16,6 @@ const detail: MessageDetail = {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(api.imageTrust, "isTrusted").mockResolvedValue(false);
-  useWindowStore.setState({ windows: [], nextZIndex: 100 });
   useChatStore.setState({ alive: false, busy: false, starting: false, gen: null, items: [], model: "" });
 });
 function relay(frame: HTMLIFrameElement, text = "Original email words", source = frame.contentWindow) {
@@ -49,21 +47,19 @@ it("rejects other sources, freezes on input focus, and seeds chat with the ownin
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-it("uses rewritten text in a new threaded reply without changing the email or an existing draft", async () => {
-  vi.spyOn(api.ai, "adjustTone").mockResolvedValue("Rewritten passage");
-  useWindowStore.getState().openWindow({ type: "compose", title: "Existing", props: { defaultBody: "Keep this draft" } });
+it("a received email's chips ask the chat about the passage and never rewrite it", async () => {
+  const start = vi.spyOn(api.chat, "start").mockResolvedValue({ gen: 4 } as ChatStarted);
+  const send = vi.spyOn(api.chat, "send").mockResolvedValue(undefined);
+  const tone = vi.spyOn(api.ai, "adjustTone");
   const { container } = render(<MessageBody detail={detail} accountId="frame-account" folder="Archive" />);
   relay(container.querySelector("iframe")!);
-  fireEvent.click(screen.getByRole("button", { name: "Shorten" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Use in reply" }));
-  const windows = useWindowStore.getState().windows;
-  expect(windows).toHaveLength(2);
-  expect(windows[0].props.defaultBody).toBe("Keep this draft");
-  expect(windows[1].props).toMatchObject({
-    accountId: "frame-account", defaultTo: "sender@example.test", defaultBody: "<p>Rewritten passage</p>",
-    inReplyTo: "<id@example.test>", referencesHeader: "<parent@example.test> <id@example.test>",
-    replyContext: { accountId: "frame-account", folder: "Archive", uid: 42 },
-  });
+  expect(screen.queryByRole("button", { name: "Shorten" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Prove it" }));
+  await waitFor(() => expect(send).toHaveBeenCalled());
+  expect(start).toHaveBeenCalledWith({ account_id: "frame-account", folder: "Archive", uid: 42 }, null);
+  expect(send.mock.calls[0][0]).toContain("> Original email words");
+  expect(send.mock.calls[0][0]).toContain("Supported, Partially supported, Not supported, or No evidence");
+  expect(tone).not.toHaveBeenCalled();
   expect(detail.sanitized_html).toBe("<p>Original email words</p>");
 });
 

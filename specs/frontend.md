@@ -153,15 +153,17 @@ Persist uiStore to localStorage so layout survives restarts.
   non-text selections, and draft selections over 4,000 characters are excluded.
   If the range's text changed during inference, the result stays in the bubble
   with Copy instead of overwriting the draft.
-- Incoming HTML and plain-text mail use `MessageBody` in the reading pane,
-  expanded thread cards, and pop-out email views. Quick actions show a result
-  with Copy and Use in reply; Use in reply opens a new threaded draft and keeps
-  existing drafts intact. Its props come from `buildReplyComposeProps`, the same
-  builder as the reading pane's reply (#39). Free text goes to the in-app Claude
-  chat with that body's own `(account_id, folder, uid)`: as a follow-up when the
-  live chat is already about that email, otherwise as a new chat, which first
-  asks before ending a conversation the user has had. Only this path is labelled
-  Claude; the quick actions and draft rewrites run on the configured provider.
+- The chips depend on where the text is. A draft gets Shorten / Soften /
+  Humanize and a "Change…" field that rewrite in place. Received mail (via
+  `MessageBody` in the reading pane, expanded thread cards and pop-out views)
+  gets `READ_ACTIONS` instead: ELI5 / Prove it / Next steps and an "Ask Claude…"
+  field. Every received-mail action is a question for the in-app Claude chat,
+  sent with the quoted passage and that body's own `(account_id, folder, uid)`:
+  as a follow-up when the live chat is already about that email, otherwise as a
+  new chat, which first asks before ending a conversation the user has had.
+  Received mail is never rewritten, so it has no result, Copy or Use in reply.
+  Prove it works from the chat's mailbox and vault tools; the chat has no web
+  access, so its prompt asks for "No evidence" when it cannot check.
 - `public/email-frame.js` relays bounded selections and frame-local rectangles
   over `postMessage`; `EmailFrame` validates the owning source window and geometry.
   Text right-click remains native. The existing iframe sandbox and CSP are retained.
