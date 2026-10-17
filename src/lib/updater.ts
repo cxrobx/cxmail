@@ -12,11 +12,8 @@ export async function checkForAppUpdate(): Promise<void> {
   if (!import.meta.env.PROD) return;
 
   // An owner build must never replace itself with a published artifact.
-  // Published builds carry no owner bypass, so installing one over this build
-  // would drop the user behind the "Activate CXMail" gate with no key — locking
-  // the maintainer out of their own mail with one click on an update toast.
   // Owner builds are maintained from source by whoever compiled them, so there
-  // is no case where accepting a published update is the right outcome.
+  // is no case where accepting a published update over one is the right outcome.
   try {
     if ((await api.license.getStatus()).maskedKey === OWNER_BUILD_MASKED_KEY) {
       void api.system.logClientError("updater", "owner build — update check skipped");

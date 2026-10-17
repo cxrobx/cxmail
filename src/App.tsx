@@ -7,7 +7,6 @@ import { api } from "@/lib/tauri";
 import AccountSetup from "@/components/accounts/AccountSetup";
 import AppLayout from "@/components/layout/AppLayout";
 import ErrorBoundary from "@/components/shared/ErrorBoundary";
-import LicenseGate from "@/components/accounts/LicenseGate";
 
 function App() {
   useQuickAskSelection();
@@ -65,20 +64,18 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <LicenseGate>
-        {!isSetupComplete ? (
-          // AccountSetup is layout-neutral so it can also render inside
-          // AppLayout's fixed-width modal; first-run owns the full-screen
-          // centering (and scrolls, since the IMAP form can be tall).
-          <div className="flex min-h-screen items-center justify-center overflow-y-auto bg-base">
-            <AccountSetup />
-          </div>
-        ) : (
-          <Tooltip.Provider delayDuration={500} skipDelayDuration={300}>
-            <AppLayout />
-          </Tooltip.Provider>
-        )}
-      </LicenseGate>
+      {!isSetupComplete ? (
+        // AccountSetup is layout-neutral so it can also render inside
+        // AppLayout's fixed-width modal; first-run owns the full-screen
+        // centering (and scrolls, since the IMAP form can be tall).
+        <div className="flex min-h-screen items-center justify-center overflow-y-auto bg-base">
+          <AccountSetup />
+        </div>
+      ) : (
+        <Tooltip.Provider delayDuration={500} skipDelayDuration={300}>
+          <AppLayout />
+        </Tooltip.Provider>
+      )}
     </ErrorBoundary>
   );
 }
