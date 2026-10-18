@@ -115,8 +115,15 @@ export default function AccountSetup() {
     try {
       await api.auth.startOAuth2("gmail");
     } catch (e) {
-      setError(String(e));
       setIsLoading(false);
+      // Builds without a Google OAuth client (the public release, most source
+      // builds) connect Gmail with an app password instead; the IMAP form's
+      // Gmail preset carries the server settings and the how-to hint.
+      if (String(e).includes("not configured in this build")) {
+        setView("imap-form");
+        return;
+      }
+      setError(String(e));
     }
   };
 

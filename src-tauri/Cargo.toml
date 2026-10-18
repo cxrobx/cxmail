@@ -23,7 +23,7 @@ dirs = "6"
 
 [package]
 name = "cxmail"
-version = "1.0.0"
+version = "1.1.0"
 # Proprietary. Declared so a licence audit of the dependency tree reports no
 # UNKNOWN rows — the whole point of the audit is that anything unresolved is
 # visible. `publish = false` keeps this off crates.io regardless.

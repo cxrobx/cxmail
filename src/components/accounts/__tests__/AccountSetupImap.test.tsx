@@ -239,3 +239,26 @@ describe('generic IMAP account setup', () => {
     ).toBe('imap.example.net');
   });
 });
+
+describe('Gmail in a build without a Google OAuth client', () => {
+  const startOAuth2 = api.auth.startOAuth2 as ReturnType<typeof vi.fn>;
+
+  // The public release ships no Google client (the 100-user lifetime cap), so
+  // Connect Gmail must lead to the app-password form, not a dead-end error.
+  it('opens the app-password form instead of showing the error', async () => {
+    startOAuth2.mockRejectedValueOnce('OAuth2 error: gmail OAuth is not configured in this build');
+    const user = userEvent.setup();
+    render(<AccountSetup />);
+    await user.click(screen.getByRole('button', { name: /Connect Gmail/i }));
+    expect(await screen.findByRole('heading', { name: /Other mail account/i })).toBeTruthy();
+    expect(screen.queryByText(/not configured/i)).toBeNull();
+  });
+
+  it('still shows any other sign-in failure', async () => {
+    startOAuth2.mockRejectedValueOnce('OAuth2 error: port in use');
+    const user = userEvent.setup();
+    render(<AccountSetup />);
+    await user.click(screen.getByRole('button', { name: /Connect Gmail/i }));
+    expect(await screen.findByText(/port in use/i)).toBeTruthy();
+  });
+});

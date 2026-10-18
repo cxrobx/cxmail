@@ -4,6 +4,13 @@ All notable changes to CXMail are documented here.
 
 ## Unreleased
 
+## 1.1.0 (2026-10-18)
+
+CXMail is free and source-available (Business Source License 1.1). This is the first public download: signed and notarized, Apple Silicon, no license key.
+
+### Changed
+- **Gmail connects with an app password in the public build.** It carries no Google sign-in client, so **Connect Gmail** opens the app-password form with Gmail's settings filled in. A build made with your own Google client keeps the sign-in.
+
 ### Added
 - **Quick Ask email context.** Quick Ask can identify the email selected in CXMail through a local, read-only interface. CXMail publishes selection coordinates instead of sending message bodies or capturing the screen.
 - **Feedback on highlighted text.** Highlight draft or email text to open Shorten, Soften, Humanize, and a free-text instruction immediately. Draft rewrites replace only the saved selection with one-step undo and keep changed drafts safe. Email rewrites stay in a Copy / Use in reply bubble; free-text feedback opens Claude chat with the selected email as context. Native text Copy remains available.
