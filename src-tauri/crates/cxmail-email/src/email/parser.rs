@@ -216,8 +216,23 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         .map(|list| list.into_iter().map(|s| s.to_string()).collect())
         .unwrap_or_default();
 
-    let plain_text = message.body_text(0).map(|s| s.to_string());
-    let html_body = message.body_html(0).map(|s| s.to_string());
+    let orphan = orphan_body_index(&message);
+    let orphan_part = orphan.and_then(|i| message.attachment(i));
+    let orphan_is_html =
+        orphan_part.map_or(false, |p| content_type_of(p.headers()).as_deref() == Some("text/html"));
+    let orphan_text = orphan_part.and_then(|p| p.text_contents()).map(|s| s.to_string());
+
+    let plain_text = message
+        .body_text(0)
+        .map(|s| s.to_string())
+        .or_else(|| orphan_text.clone().filter(|_| !orphan_is_html));
+    // The promoted part takes the same road as any other HTML body below:
+    // sanitize_html, then the sandboxed iframe. Never copy it straight into
+    // `sanitized_html`.
+    let html_body = message
+        .body_html(0)
+        .map(|s| s.to_string())
+        .or_else(|| orphan_text.filter(|_| orphan_is_html));
 
     let snippet = plain_text.as_ref().map(|text| {
         clean_snippet(text)
@@ -278,8 +293,10 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         log::info!("parse_message part[{}]: content-type={}, disposition={}, len={}", i, ct, cd, part.len());
     }
     let mut calendar_events = Vec::new();
-    let attachments: Vec<AttachmentMeta> = (0..attachment_count)
-        .filter_map(|i| {
+    let attachment_indices = real_attachment_indices(&message, orphan);
+    let attachments: Vec<AttachmentMeta> = attachment_indices
+        .iter()
+        .filter_map(|&i| {
             let part = message.attachment(i)?;
             // Use the part's len and headers for metadata
             let headers = part.headers();
@@ -380,9 +397,9 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         }
     }
 
-    let attachment_text = (0..attachment_count.min(10))
+    let attachment_text = (0..attachment_indices.len().min(10))
         .filter_map(|i| {
-            let part = message.attachment(i)?;
+            let part = message.attachment(attachment_indices[i])?;
             let meta = attachments.get(i)?;
             let name = meta.filename.as_deref().unwrap_or("attachment");
             let text =
@@ -416,7 +433,8 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
 /// Extract the binary data of an attachment by index from raw message bytes.
 pub fn extract_attachment(raw: &[u8], index: usize) -> Option<(String, Vec<u8>)> {
     let message = mail_parser::MessageParser::default().parse(raw)?;
-    let part = message.attachment(index)?;
+    let orphan = orphan_body_index(&message);
+    let part = message.attachment(*real_attachment_indices(&message, orphan).get(index)?)?;
     let filename = filename_from_headers(part.headers())
         .unwrap_or_else(|| "attachment".to_string());
     Some((filename, part.contents().to_vec()))
@@ -435,9 +453,9 @@ pub fn extract_all_attachments(raw: &[u8]) -> Vec<(String, String, Vec<u8>, bool
     let Some(message) = mail_parser::MessageParser::default().parse(raw) else {
         return Vec::new();
     };
-    let count = message.attachment_count();
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
+    let indices = real_attachment_indices(&message, orphan_body_index(&message));
+    let mut out = Vec::with_capacity(indices.len());
+    for i in indices {
         let Some(part) = message.attachment(i) else {
             continue;
         };
@@ -470,6 +488,56 @@ pub fn extract_all_attachments(raw: &[u8]) -> Vec<(String, String, Vec<u8>, bool
         out.push((filename, content_type, part.contents().to_vec(), is_inline));
     }
     out
+}
+
+/// The attachment index of a text part that is really the message body.
+///
+/// mail-parser demotes a body part to an attachment when it cannot find where
+/// the part ends — a sender that omits the closing `--boundary--` gets its
+/// whole message filed as a nameless `text/html` "attachment" and an empty
+/// reading pane (AvantLink's affiliate mail, 2026-10-19). Only when the
+/// message has NO body at all, and only for a declared `text/html` or
+/// `text/plain` part with no filename and no `attachment` disposition — so a
+/// real body is never replaced and a real `.html` file is never opened as one.
+fn orphan_body_index(message: &mail_parser::Message<'_>) -> Option<usize> {
+    if message.text_body_count() > 0 || message.html_body_count() > 0 {
+        return None;
+    }
+    (0..message.attachment_count()).find(|&i| {
+        let Some(part) = message.attachment(i) else { return false };
+        let headers = part.headers();
+        let is_body_type = matches!(
+            content_type_of(headers).as_deref(),
+            Some("text/html") | Some("text/plain")
+        );
+        let marked_attachment = headers
+            .iter()
+            .find(|h| h.name == mail_parser::HeaderName::ContentDisposition)
+            .and_then(|h| h.value.as_content_type())
+            .map_or(false, |cd| cd.ctype().eq_ignore_ascii_case("attachment"));
+        is_body_type
+            && !marked_attachment
+            && filename_from_headers(headers).is_none()
+            && part.text_contents().is_some()
+    })
+}
+
+/// mail-parser attachment indices minus the promoted body part. Metadata,
+/// `extract_attachment` and `extract_all_attachments` all go through this, so
+/// a stored attachment index means the same part everywhere.
+fn real_attachment_indices(message: &mail_parser::Message<'_>, orphan: Option<usize>) -> Vec<usize> {
+    (0..message.attachment_count()).filter(|&i| Some(i) != orphan).collect()
+}
+
+fn content_type_of(headers: &[mail_parser::Header<'_>]) -> Option<String> {
+    headers
+        .iter()
+        .find(|h| h.name == mail_parser::HeaderName::ContentType)
+        .and_then(|h| h.value.as_content_type())
+        .map(|ct| match ct.subtype() {
+            Some(sub) => format!("{}/{}", ct.ctype(), sub).to_ascii_lowercase(),
+            None => ct.ctype().to_ascii_lowercase(),
+        })
 }
 
 fn filename_from_headers(headers: &[mail_parser::Header<'_>]) -> Option<String> {
@@ -660,7 +728,8 @@ pub fn inline_cid_images(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_all_attachments, extract_raw_headers, header_block_to_string, html_to_plain_text,
+        extract_all_attachments, extract_attachment, extract_raw_headers, header_block_to_string,
+        html_to_plain_text,
         inline_cid_images, normalize_unstructured_header, parse_message,
         repair_double_encoded_utf8, sanitize_html, RAW_HEADER_CAP,
     };
@@ -836,6 +905,73 @@ mod tests {
         let parsed = parse_message(raw);
         let headers = parsed.raw_headers.expect("raw_headers populated");
         assert!(headers.contains("X-Custom: kept"));
+    }
+
+    /// AvantLink's shape: one text/html part and no closing `--NextPart--`.
+    fn unterminated_mixed(part_headers: &str, body: &str) -> String {
+        format!(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: Test\r\n\
+MIME-Version: 1.0\r\nContent-type: multipart/mixed; boundary=\"NextPart\"\r\n\r\n\
+--NextPart\r\n{part_headers}\r\n{body}\r\n"
+        )
+    }
+
+    #[test]
+    fn unterminated_html_part_becomes_the_body_and_is_sanitized() {
+        let raw = unterminated_mixed(
+            "Content-Type: text/html; charset=us-ascii\r\n",
+            "<p class=\"p1\">Thank you for your interest.</p><script>alert('x')</script>\
+<img src=\"x\" onerror=\"alert(1)\">",
+        );
+        let parsed = parse_message(raw.as_bytes());
+        let html = parsed.sanitized_html.expect("orphan part promoted to the body");
+        assert!(html.contains("Thank you for your interest."), "{html}");
+        assert!(!html.contains("<script"), "script tag survived: {html}");
+        assert!(!html.contains("alert"), "script content or handler survived: {html}");
+        assert!(!html.contains("onerror"), "event handler survived: {html}");
+        assert!(parsed.attachments.is_empty(), "body still listed as an attachment");
+        assert_eq!(parsed.snippet.as_deref(), Some("Thank you for your interest."));
+        assert!(extract_all_attachments(raw.as_bytes()).is_empty());
+        assert!(extract_attachment(raw.as_bytes(), 0).is_none());
+    }
+
+    #[test]
+    fn unterminated_plain_part_becomes_plain_text() {
+        let raw = unterminated_mixed("Content-Type: text/plain\r\n", "Hello there");
+        let parsed = parse_message(raw.as_bytes());
+        assert_eq!(parsed.plain_text.as_deref().map(str::trim), Some("Hello there"));
+        assert!(parsed.html_body.is_none());
+        assert!(parsed.attachments.is_empty());
+    }
+
+    #[test]
+    fn a_named_or_attachment_html_file_is_never_promoted() {
+        for headers in [
+            "Content-Type: text/html\r\nContent-Disposition: attachment\r\n",
+            "Content-Type: text/html; name=\"page.html\"\r\n",
+            "Content-Type: application/octet-stream\r\n",
+        ] {
+            let raw = unterminated_mixed(headers, "<p>file</p>");
+            let parsed = parse_message(raw.as_bytes());
+            assert!(parsed.html_body.is_none(), "promoted {headers:?}");
+            assert!(parsed.plain_text.is_none(), "promoted {headers:?}");
+            assert_eq!(parsed.attachments.len(), 1, "lost the file for {headers:?}");
+        }
+    }
+
+    #[test]
+    fn a_real_body_is_never_replaced_and_attachment_indices_hold() {
+        let raw = "From: a@example.com\r\nSubject: Test\r\nMIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n\
+--B\r\nContent-Type: text/html\r\n\r\n<p>Real body</p>\r\n\
+--B\r\nContent-Type: text/html\r\nContent-Disposition: attachment; filename=\"x.html\"\r\n\r\n<p>file</p>\r\n\
+--B--\r\n";
+        let parsed = parse_message(raw.as_bytes());
+        assert!(parsed.sanitized_html.unwrap().contains("Real body"));
+        assert_eq!(parsed.attachments.len(), 1);
+        let (name, bytes) = extract_attachment(raw.as_bytes(), 0).expect("index 0 still the file");
+        assert_eq!(name, "x.html");
+        assert!(String::from_utf8_lossy(&bytes).contains("file"));
     }
 
     #[test]
