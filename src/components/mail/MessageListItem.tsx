@@ -5,14 +5,12 @@ import { Paperclip, Star, Pin, MailX } from "lucide-react";
 import * as HoverCard from "@radix-ui/react-hover-card";
 import type { MessageDetail, MessageSummary, Nudge } from "@/types/email";
 import NudgeBadge from "./NudgeBadge";
-import { emailWindowKey, useWindowStore } from "@/stores/windowStore";
 import { useUIStore } from "@/stores/uiStore";
 import { useResolvedTheme } from "@/hooks/useResolvedTheme";
 import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
 import { api } from "@/lib/tauri";
 import { prepareEmailHtml } from "@/lib/emailTheme";
-import { openDraftForEdit } from "@/lib/draftCompose";
-import { isDraftFolder as isDraftFolderShared } from "@/lib/draftFolder";
+import { openMessageWindow } from "@/lib/openMessageWindow";
 import SwipeableRow from "./SwipeableRow";
 
 interface MessageListItemProps {
@@ -148,13 +146,9 @@ export default function MessageListItem({ message, isSelected, isMultiSelected, 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarError, setAvatarError] = useState(false);
   const categoryBadge = getCategoryBadge(message.category);
-  const openWindow = useWindowStore((s) => s.openWindow);
   const density = useUIStore((s) => s.density);
   const unsubscribedSenders = useMailStore((s) => s.unsubscribedSenders);
   const foldersByAccount = useMailStore((s) => s.foldersByAccount);
-
-  const isDraftFolder = (aid: string | null | undefined, fld: string | null | undefined) =>
-    isDraftFolderShared(foldersByAccount, aid, fld);
 
   const isUltraCompact = density === "ultra-compact";
   const isUnsubscribed = message.from_email
@@ -253,20 +247,7 @@ export default function MessageListItem({ message, isSelected, isMultiSelected, 
     const resolvedAccountId = accountId || message.account_id;
     if (e.altKey && resolvedAccountId && folder) {
       e.preventDefault();
-      if (isDraftFolder(resolvedAccountId, folder)) {
-        void openDraftForEdit(resolvedAccountId, folder, message.uid);
-      } else {
-        openWindow({
-          type: "email",
-          title: message.subject || "(no subject)",
-          props: {
-            accountId: resolvedAccountId,
-            folder,
-            uid: message.uid,
-          },
-          key: emailWindowKey(resolvedAccountId, folder, message.uid),
-        });
-      }
+      openMessageWindow(resolvedAccountId, folder, message.uid, message.subject);
     } else {
       onClick(e);
     }
@@ -275,18 +256,8 @@ export default function MessageListItem({ message, isSelected, isMultiSelected, 
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.preventDefault();
     const resolvedAccountId = accountId || message.account_id;
-    const resolvedFolder = folder || "INBOX";
     if (!resolvedAccountId) return;
-    if (isDraftFolder(resolvedAccountId, resolvedFolder)) {
-      void openDraftForEdit(resolvedAccountId, resolvedFolder, message.uid);
-      return;
-    }
-    openWindow({
-      type: "email",
-      title: message.subject || "(no subject)",
-      props: { accountId: resolvedAccountId, folder: resolvedFolder, uid: message.uid },
-      key: emailWindowKey(resolvedAccountId, resolvedFolder, message.uid),
-    });
+    openMessageWindow(resolvedAccountId, folder || "INBOX", message.uid, message.subject);
   };
 
   const button = isUltraCompact ? (

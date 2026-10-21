@@ -18,6 +18,7 @@ import AISummary from "./AISummary";
 import SmartReplies from "./SmartReplies";
 import ReplySuggestionCard from "./ReplySuggestionCard";
 import CalendarEventCard from "./CalendarEventCard";
+import RecipientLines from "./RecipientLines";
 import TrackingBadge from "./TrackingBadge";
 import { useUnsubscribe } from "@/hooks/useUnsubscribe";
 import { uidsForThreadAction } from "@/lib/threadActions";
@@ -606,8 +607,6 @@ export default function ReadingPane() {
 
   if (!detail) return null;
 
-  const toStr = detail.to_list.map((a) => a.name || a.email).join(", ");
-  const ccStr = detail.cc_list.map((a) => a.name || a.email).join(", ");
 
   return (
     <div className="flex h-full flex-col overflow-auto">
@@ -634,16 +633,11 @@ export default function ReadingPane() {
                   </span>
                 )}
               </p>
-              {toStr && (
-                <p>
-                  <span className="text-content-muted">To:</span> {toStr}
-                </p>
-              )}
-              {ccStr && (
-                <p>
-                  <span className="text-content-muted">Cc:</span> {ccStr}
-                </p>
-              )}
+              <RecipientLines
+                key={`${detail.message_id ?? ""}|${detail.uid}`}
+                to={detail.to_list}
+                cc={detail.cc_list}
+              />
               {detail.date && (
                 <p className="flex items-center gap-2 text-xs text-content-muted">
                   {new Date(detail.date).toLocaleString()}

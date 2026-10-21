@@ -6,6 +6,7 @@ import { useUIStore, type DensityMode } from "@/stores/uiStore";
 import { api } from "@/lib/tauri";
 import MessageListItem from "./MessageListItem";
 import EmailContextMenu from "./EmailContextMenu";
+import { AddressName } from "./RecipientLines";
 import SnoozedList from "./SnoozedList";
 import ScheduledView from "./ScheduledView";
 import FollowupList from "./FollowupList";
@@ -19,6 +20,7 @@ import { uidsForThreadAction } from "@/lib/threadActions";
 import { filtersFromChips, runServerSearch } from "@/lib/searchFilters";
 import { formatRelativeDate } from "@/lib/utils";
 import { openDraftForEdit } from "@/lib/draftCompose";
+import { openMessageWindow } from "@/lib/openMessageWindow";
 import { isDraftFolder as isDraftFolderShared } from "@/lib/draftFolder";
 import type { AppliedFilter, MessageSummary, McpActivity, Nudge } from "@/types/email";
 import { AlertCircle, Cloud, Inbox, Loader2, Paperclip, Search, X } from "lucide-react";
@@ -646,6 +648,10 @@ export default function MessageList() {
             <button
               ref={isSelected ? selectedResultRef : undefined}
               onClick={() => setSelectedMessage(r.uid, r.account_id, r.folder_name)}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                openMessageWindow(r.account_id, r.folder_name, r.uid, r.subject);
+              }}
               className={`flex w-full flex-col gap-0.5 border-b border-border-subtle px-4 py-3 text-left hover:bg-surface ${
                 isSelected ? "bg-accent/20" : ""
               }`}
@@ -653,7 +659,7 @@ export default function MessageList() {
               <div className="flex items-baseline justify-between gap-2">
                 <span className={`flex min-w-0 items-center gap-1.5 text-sm text-content ${r.is_read ? "font-medium" : "font-semibold"}`}>
                   {!r.is_read && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
-                  <span className="truncate">{r.from_name || r.from_email || "Unknown"}</span>
+                  <AddressName name={r.from_name} email={r.from_email} className="truncate" />
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5 text-xs text-content-muted">
                   {r.from_server && <Cloud className="h-3 w-3 text-accent" aria-label="Found on server" />}

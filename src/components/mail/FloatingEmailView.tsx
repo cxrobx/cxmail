@@ -8,6 +8,7 @@ import type { MessageDetail } from "@/types/email";
 import { Reply, Forward, Mail } from "lucide-react";
 import { useWindowStore } from "@/stores/windowStore";
 import { buildQuotedEmailHtml } from "@/lib/utils";
+import RecipientLines from "./RecipientLines";
 
 interface FloatingEmailViewProps {
   accountId: string;
@@ -49,7 +50,6 @@ export default function FloatingEmailView({ accountId, folder, uid }: FloatingEm
 
   if (!detail) return null;
 
-  const toStr = detail.to_list.map((a) => a.name || a.email).join(", ");
 
   const handleReply = () => {
     const quotedBody = buildQuotedEmailHtml(detail);
@@ -99,7 +99,7 @@ export default function FloatingEmailView({ accountId, folder, uid }: FloatingEm
             {detail.from_name || detail.from_email}
             {detail.from_name && <span className="text-content-muted"> &lt;{detail.from_email}&gt;</span>}
           </p>
-          {toStr && <p><span className="text-content-muted">To:</span> {toStr}</p>}
+          <RecipientLines key={`${accountId}|${folder}|${uid}`} to={detail.to_list} />
           {detail.date && (
             <p className="text-content-muted">{new Date(detail.date).toLocaleString()}</p>
           )}
