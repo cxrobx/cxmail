@@ -14,7 +14,7 @@ const COMPATIBLE_KEY: &str = "ai:compatible:key";
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
-const DEFAULT_COMPATIBLE_MODEL: &str = "llama3.2";
+const DEFAULT_COMPATIBLE_MODEL: &str = "qwen3.5:4b";
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_COMPATIBLE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -582,6 +582,13 @@ fn openai_compatible_body_with(
     body[token_field] = serde_json::json!(max_tokens);
     if let Some(effort) = reasoning_effort {
         body["reasoning_effort"] = serde_json::json!(effort);
+    } else if provider == ProviderKind::Compatible {
+        // Local thinking models (qwen3.5) otherwise reason before every short
+        // helper call: ~500 hidden tokens to answer one number. On Ollama's
+        // OpenAI endpoint "none" is the only switch that works (`think: false`
+        // and `/no_think` are ignored there), and a model without thinking,
+        // llama3.2 included, accepts it unchanged. Measured 2026-10-21.
+        body["reasoning_effort"] = serde_json::json!("none");
     }
     body
 }
@@ -748,6 +755,9 @@ mod tests {
         assert_eq!(compatible["max_tokens"], 100);
         assert!(compatible.get("max_completion_tokens").is_none());
         assert_eq!(openai["max_completion_tokens"], 100);
+        // Thinking off for local models; never sent to OpenAI unasked.
+        assert_eq!(compatible["reasoning_effort"], "none");
+        assert!(openai.get("reasoning_effort").is_none());
     }
 
     #[test]

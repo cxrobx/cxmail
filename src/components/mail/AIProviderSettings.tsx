@@ -11,7 +11,7 @@ import { Check, Loader2, X } from "lucide-react";
 const defaults: Record<AIProvider, Pick<Settings, "model" | "baseUrl">> = {
   openai: { model: "gpt-5.4-mini", baseUrl: "https://api.openai.com/v1" },
   anthropic: { model: "claude-sonnet-5", baseUrl: "https://api.anthropic.com/v1" },
-  compatible: { model: "llama3.2", baseUrl: "http://127.0.0.1:11434/v1" },
+  compatible: { model: "qwen3.5:4b", baseUrl: "http://127.0.0.1:11434/v1" },
 };
 
 interface AIProviderSettingsProps {
