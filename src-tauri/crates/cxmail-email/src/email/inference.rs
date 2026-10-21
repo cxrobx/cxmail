@@ -15,6 +15,8 @@ const COMPATIBLE_KEY: &str = "ai:compatible:key";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.4-mini";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-sonnet-5";
 const DEFAULT_COMPATIBLE_MODEL: &str = "qwen3.5:4b";
+/// Earlier Compatible defaults, read as "use the current default" (see `resolve_model`).
+const LEGACY_COMPATIBLE_MODELS: &[&str] = &["llama3.2", "llama3.2:latest"];
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com/v1";
 const DEFAULT_COMPATIBLE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -137,9 +139,7 @@ impl InferenceClient {
                 .as_deref()
                 .unwrap_or("openai"),
         )?;
-        let model = keychain::get_credential(MODEL_KEY)?
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| provider.default_model().to_string());
+        let model = resolve_model(provider, keychain::get_credential(MODEL_KEY)?);
         let base_url = keychain::get_credential(BASE_URL_KEY)?
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| provider.default_base_url().to_string());
@@ -195,7 +195,10 @@ impl InferenceClient {
                 provider_label(self.provider)
             )));
         }
-        let mut request = self.http.post(format!("{}/decisions", self.base_url)).json(body);
+        let mut request = self
+            .http
+            .post(format!("{}/decisions", self.base_url))
+            .json(body);
         if let Some(api_key) = &self.api_key {
             request = request.bearer_auth(api_key);
         }
@@ -593,14 +596,30 @@ fn openai_compatible_body_with(
     body
 }
 
+/// The model to use: the stored one, else the provider's default.
+///
+/// `llama3.2` was the Compatible default until 2026-10-21, and choosing the
+/// provider in settings saved whatever default was showing. So a stored
+/// `llama3.2` almost always means "the default", not a choice, and keeping it
+/// would break every local AI call once the model is removed from Ollama.
+/// It is read as unset; any other stored model is honoured as written.
+fn resolve_model(provider: ProviderKind, stored: Option<String>) -> String {
+    stored
+        .filter(|value| !value.trim().is_empty())
+        .filter(|value| {
+            provider != ProviderKind::Compatible
+                || !LEGACY_COMPATIBLE_MODELS.contains(&value.trim())
+        })
+        .unwrap_or_else(|| provider.default_model().to_string())
+}
+
 pub fn get_settings() -> Result<ProviderSettings, AppError> {
     let provider = ProviderKind::parse(
         keychain::get_credential(PROVIDER_KEY)?
             .as_deref()
             .unwrap_or("openai"),
     )?;
-    let model = keychain::get_credential(MODEL_KEY)?
-        .unwrap_or_else(|| provider.default_model().to_string());
+    let model = resolve_model(provider, keychain::get_credential(MODEL_KEY)?);
     let base_url = keychain::get_credential(BASE_URL_KEY)?
         .unwrap_or_else(|| provider.default_base_url().to_string());
     let api_key = load_api_key(provider)?;
@@ -670,7 +689,9 @@ pub fn validate_base_url(value: &str) -> Result<(), AppError> {
         ));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(AppError::AiService("AI provider URL cannot contain credentials; use the API key field".into()));
+        return Err(AppError::AiService(
+            "AI provider URL cannot contain credentials; use the API key field".into(),
+        ));
     }
     Ok(())
 }
@@ -726,6 +747,41 @@ mod tests {
         assert!(validate_base_url("http://localhost:11434/v1").is_ok());
         assert!(validate_base_url("http://127.0.0.1:11434/v1").is_ok());
         assert!(validate_base_url("http://[::1]:11434/v1").is_ok());
+    }
+
+    #[test]
+    fn a_saved_legacy_local_default_follows_the_current_default() {
+        let saved = |m: &str| Some(m.to_string());
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, saved("llama3.2")),
+            DEFAULT_COMPATIBLE_MODEL
+        );
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, saved("llama3.2:latest")),
+            DEFAULT_COMPATIBLE_MODEL
+        );
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, saved("  ")),
+            DEFAULT_COMPATIBLE_MODEL
+        );
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, None),
+            DEFAULT_COMPATIBLE_MODEL
+        );
+        // A deliberate choice is kept, including another llama.
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, saved("llama3.2:1b")),
+            "llama3.2:1b"
+        );
+        assert_eq!(
+            resolve_model(ProviderKind::Compatible, saved("qwen3.5:9b")),
+            "qwen3.5:9b"
+        );
+        // Only the local provider is affected.
+        assert_eq!(
+            resolve_model(ProviderKind::Openai, saved("llama3.2")),
+            "llama3.2"
+        );
     }
 
     #[test]
