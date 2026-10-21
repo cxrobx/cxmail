@@ -56,7 +56,8 @@ Full list with patterns in `.claude/rules/architecture.md`.
 | File | Purpose | Loaded |
 |------|---------|--------|
 | `.claude/rules/architecture.md` | Tech stack, invariants, patterns | Always |
-| `.claude/rules/gotchas.md` | Known issues & workarounds | Always |
+| `.claude/rules/gotchas.md` | Known issues — one-line rules | Always |
+| `docs/gotchas.md` | Known issues — full entries (same numbers) | On demand |
 | `.claude/rules/frontend.md` | React/UI patterns | Path: `src/**` |
 | `.claude/rules/backend.md` | Rust/Tauri patterns | Path: `src-tauri/**` |
 | `docs/mail-providers.md` | Providers, generic IMAP, autodiscovery, folder classification | On demand |

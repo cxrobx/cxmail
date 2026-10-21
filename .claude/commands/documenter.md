@@ -21,7 +21,7 @@ You are a documentation specialist. Analyze the current session's changes and up
 | 1 | `CHANGELOG.md` | Every session (dated entry) |
 | 2 | `CLAUDE.md` Recent Learnings | Every session (append one-liner) |
 | 3 | `.claude/rules/architecture.md` | Core patterns changed |
-| 4 | `.claude/rules/gotchas.md` | New gotcha discovered |
+| 4 | `docs/gotchas.md` + `.claude/rules/gotchas.md` | New gotcha: full entry in docs, one rule line in rules |
 | 5 | `.claude/rules/frontend.md` | Frontend patterns changed |
 | 6 | `.claude/rules/backend.md` | Backend patterns changed |
 | 7 | `docs/` reference files | API/setup/deployment changed |

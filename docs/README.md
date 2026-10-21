@@ -20,7 +20,8 @@
 | Document | Scope |
 |----------|-------|
 | [architecture.md](../.claude/rules/architecture.md) | Always loaded — tech stack, invariants, patterns |
-| [gotchas.md](../.claude/rules/gotchas.md) | Always loaded — known issues and workarounds |
+| [gotchas.md](../.claude/rules/gotchas.md) | Always loaded — one-line rule per gotcha |
+| [gotchas.md (full)](gotchas.md) | Full gotcha entries, same numbers |
 | [frontend.md](../.claude/rules/frontend.md) | Path-scoped: `src/**` — React/UI patterns |
 | [backend.md](../.claude/rules/backend.md) | Path-scoped: `src-tauri/**` — Rust/Tauri patterns |
 

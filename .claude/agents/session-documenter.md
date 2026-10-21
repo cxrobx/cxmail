@@ -78,7 +78,7 @@ specs/                            # Technical specifications (pre-existing)
 | File | Update When |
 |------|-------------|
 | `.claude/rules/architecture.md` | Core architectural changes |
-| `.claude/rules/gotchas.md` | New gotcha discovered |
+| `docs/gotchas.md` + `.claude/rules/gotchas.md` | New gotcha: full entry in docs, one rule line in rules |
 
 **Path-scoped:**
 | File | Scope | Update When |
