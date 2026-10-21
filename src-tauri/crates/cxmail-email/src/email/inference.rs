@@ -603,6 +603,8 @@ fn openai_compatible_body_with(
 /// `llama3.2` almost always means "the default", not a choice, and keeping it
 /// would break every local AI call once the model is removed from Ollama.
 /// It is read as unset; any other stored model is honoured as written.
+/// To run llama3.2 on purpose (a machine short on memory), save it as
+/// `llama3.2:3b`: the same model, and not in the legacy list.
 fn resolve_model(provider: ProviderKind, stored: Option<String>) -> String {
     stored
         .filter(|value| !value.trim().is_empty())
