@@ -686,6 +686,10 @@ export const api = {
   system: {
     getShowInMenuBar: () => invoke<boolean>("get_show_in_menu_bar"),
     setShowInMenuBar: (visible: boolean) => invoke<void>("set_show_in_menu_bar", { visible }),
+    /** The SSH target whose Herdr takes Claude handoffs; empty is this Mac. */
+    getHerdrHost: () => invoke<string>("get_herdr_host"),
+    /** Resolves to the value as saved, trimmed. */
+    setHerdrHost: (host: string) => invoke<string>("set_herdr_host", { host }),
     /** Request that CXMail become the default `mailto:` handler. Resolves to
      * whether Launch Services accepted — NOT a guarantee it silently applied
      * (macOS may show a confirmation prompt). */

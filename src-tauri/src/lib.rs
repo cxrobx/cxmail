@@ -326,6 +326,8 @@ pub fn run() {
             commands::settings::is_background_sync_installed,
             commands::settings::get_show_in_menu_bar,
             commands::settings::set_show_in_menu_bar,
+            commands::settings::get_herdr_host,
+            commands::settings::set_herdr_host,
             commands::claude_handoff::open_email_in_claude,
             commands::claude_handoff::get_claude_prompt,
             commands::claude_repos::list_claude_repos,

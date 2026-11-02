@@ -64,6 +64,68 @@ pub async fn set_show_in_menu_bar(app: tauri::AppHandle, visible: bool) -> Resul
     rx.await.map_err(|e| AppError::General(e.to_string()))?
 }
 
+// ─── Herdr host ───────────────────────────────────────────────────────
+//
+// Which Mac's Herdr takes Claude handoffs: blank for this one, otherwise an SSH
+// target. The answer differs per Mac while the build doesn't, so it lives here
+// and never in code. Stored as a file for the same reason as the menu bar
+// preference: the backend reads it, and no window has to be open.
+
+const HERDR_HOST_FILE: &str = "herdr-host.json";
+
+pub(crate) fn read_herdr_host(app_dir: &std::path::Path) -> Result<String, AppError> {
+    match std::fs::read(app_dir.join(HERDR_HOST_FILE)) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| AppError::Parse(format!("Invalid Herdr host setting: {e}"))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn write_herdr_host(app_dir: &std::path::Path, host: &str) -> Result<(), AppError> {
+    let pending = app_dir.join("herdr-host.json.tmp");
+    std::fs::write(&pending, serde_json::to_vec(host).map_err(|e| AppError::Parse(e.to_string()))?)?;
+    std::fs::rename(pending, app_dir.join(HERDR_HOST_FILE))?;
+    Ok(())
+}
+
+/// Trim, then accept only what `cx-open-in-herdr` accepts, so a bad value is
+/// refused here rather than at the first handoff. The leading character is the
+/// one that matters: `ssh` would read `-…` as an option.
+fn normalize_herdr_host(value: &str) -> Result<String, AppError> {
+    let host = value.trim();
+    let allowed = |c: char| c.is_ascii_alphanumeric() || "._@%-".contains(c);
+    let first_ok = host.chars().next().is_none_or(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !first_ok || host.len() > 255 || !host.chars().all(allowed) {
+        return Err(AppError::General(
+            "That isn't an SSH target. Use a name or user@host, or leave it blank for this Mac."
+                .into(),
+        ));
+    }
+    Ok(host.to_string())
+}
+
+#[tauri::command]
+pub async fn get_herdr_host(app: tauri::AppHandle) -> Result<String, AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    read_herdr_host(&app_dir)
+}
+
+/// Returns the value as saved, so the field can show what will actually be used.
+#[tauri::command]
+pub async fn set_herdr_host(app: tauri::AppHandle, host: String) -> Result<String, AppError> {
+    let host = normalize_herdr_host(&host)?;
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    write_herdr_host(&app_dir, &host)?;
+    Ok(host)
+}
+
 // ─── Mail Rules ───────────────────────────────────────────────────────
 //
 // REMOVED 2026-08-03. An older, narrower rule command set lived here
@@ -238,5 +300,41 @@ mod tests {
         std::fs::write(dir.join("menu-bar.json"), "\"false\"").unwrap();
         assert!(read_show_in_menu_bar(&dir).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn herdr_host_defaults_blank_and_persists() {
+        let dir = std::env::temp_dir().join(format!("cxmail-herdr-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_herdr_host(&dir).unwrap(), "");
+        write_herdr_host(&dir, "user@host").unwrap();
+        assert_eq!(read_herdr_host(&dir).unwrap(), "user@host");
+        write_herdr_host(&dir, "").unwrap();
+        assert_eq!(read_herdr_host(&dir).unwrap(), "");
+        assert!(!dir.join("herdr-host.json.tmp").exists());
+        std::fs::write(dir.join("herdr-host.json"), "user@host").unwrap();
+        assert!(read_herdr_host(&dir).is_err(), "a damaged file must not read as this Mac");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Same shape as the helper's own check, so a value saved here cannot be
+    /// refused later, and nothing starting with `-` can reach `ssh` as an option.
+    #[test]
+    fn herdr_host_is_trimmed_and_must_be_an_ssh_target() {
+        for (given, saved) in [
+            ("", ""),
+            ("   ", ""),
+            ("  user@host \n", "user@host"),
+            ("mini", "mini"),
+            ("_alias-1", "_alias-1"),
+            ("user@10.0.0.2", "user@10.0.0.2"),
+            ("host.tailnet.ts.net", "host.tailnet.ts.net"),
+        ] {
+            assert_eq!(normalize_herdr_host(given).unwrap(), saved, "{given:?}");
+        }
+        for bad in ["-oProxyCommand=x", "user@host:22", "two words", "a;b", "$(x)", ".host", "@host"] {
+            assert!(normalize_herdr_host(bad).is_err(), "{bad:?} should be refused");
+        }
+        assert!(normalize_herdr_host(&"a".repeat(256)).is_err());
     }
 }

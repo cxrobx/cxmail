@@ -1329,6 +1329,31 @@ Pattern: `src-tauri/src/commands/vault_look.rs`, `src/lib/vaultLook.ts`, `src/li
 
 ---
 
+### 66. With a Herdr host, a handoff's script runs on another Mac, so nothing in it may lean on this one
+
+**Settings → Herdr host** is blank for this Mac or an SSH target. It sets `CX_HERDR_HOST` on `cx-open-in-herdr` (shared with Quick Ask and CXTasks; its README's "Running sessions on another Mac" is the contract), which tar-copies the **whole folder holding the launch script** to the same absolute path there and runs itself on that host. One build serves both Macs because the value lives in `herdr-host.json` in the app folder, per Mac. A GUI app never sees the shell, so the setting is the source; a blank one still honours an inherited variable. **`claude_handoff::herdr_host` is the only place that decides**, so the script and the route cannot disagree.
+
+**What changes with a host, and why each one is not optional:**
+
+- **The CLI is the bare `claude`** (`handoff_claude_cli`). Absolute paths differ between Macs and this Mac needs no CLI at all; the host's login shell resolves it. Blank still probes with `find_claude_cli`.
+- **The existence check is off** (`split_for_handoff`, used by both prompt builders and by `list_claude_repos`). A repo can live on the host alone, so "not on this disk" proves nothing. The price: a mapping that is stale on the host no longer falls back to the scratch folder (#49); the helper refuses with one sentence and opens nothing. The in-app chat keeps `split_on_existence`, because that process runs here.
+- **No router means an error, not the Ghostty fallback.** The fallback stays for blank only: the script was written for the host, and a window here is the split the setting prevents.
+- **The prompt says how to find the account** (`host_account_note`). Account ids are `Uuid::new_v4` per install, so this Mac's id can mean nothing to the host's `cxmail` MCP. The address, folder and IMAP uid hold on both.
+
+**Continue in terminal is the case that looks done and isn't.** `claude --resume <id>` reads a transcript under this Mac's `~/.claude/projects`, so passing the host alone gives "no conversation found" on the other side. `prepare_host_resume` copies the transcript into `claude-chat/handoffs/<session>/` beside `resume.sh`, and the script installs it there before resuming. Three things in that are load-bearing:
+
+1. **The folder.** `resume.sh` cannot stay in `claude-chat`: the helper copies everything beside it, and `mcp.json` there can carry credentials.
+2. **`pwd -P`, in the script.** Claude Code names the project folder from the REAL cwd, and a home folder can be a link on the host, so only the host can spell it. Taking the path as written installs the transcript where `--resume` never looks.
+3. **The copy happens after the stop**, so the transcript is complete. A failed launch still leaves the chat stopped here; the transcript is safe, but the panel can't retry.
+
+`--add-dir` is not filtered: a directory missing on the host is ignored by `claude` (checked with `-p`, 2.1.316).
+
+**Attachments have no size cap.** `fetch_all_attachments` saves every attachment of the message into the scratch folder, and the helper gives the copy 25 seconds, so a large one on a slow link fails the handoff with "took too long. Nothing was opened." Don't work around that with a retry: the copy is uncompressed and all or nothing.
+
+Pattern: `commands/claude_handoff.rs::{herdr_host, handoff_claude_cli, split_for_handoff, herdr_command, host_account_note}`, `commands/chat.rs::{prepare_host_resume, host_resume_script}`, `commands/settings.rs::{read_herdr_host, normalize_herdr_host}`, `commands/claude_repos.rs::view_for`, `HerdrHostSection.tsx`. Related: #24, #35, #49, #64.
+
+---
+
 ## Lifecycle Management
 
 - **SUPERSEDED**: When a gotcha is resolved, mark it: `## #N: [Title] ~~SUPERSEDED~~`

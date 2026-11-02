@@ -4,6 +4,9 @@ All notable changes to CXMail are documented here.
 
 ## Unreleased
 
+### Added
+- **Herdr host (Settings → Claude handoff).** *Open in Claude* and *Continue in terminal* can start their session in the Herdr on another Mac: enter an SSH target such as `user@host`, or leave it blank for this Mac. A session that can't open there says why and opens nothing, rather than starting on the wrong Mac.
+
 ## 1.1.0 (2026-10-18)
 
 CXMail is free and source-available (Business Source License 1.1). This is the first public download: signed and notarized, Apple Silicon, no license key.

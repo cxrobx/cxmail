@@ -615,10 +615,14 @@ async fn stop_current() -> Option<ChatSession> {
 /// Stop FIRST and wait for the exit — two processes appending to one session
 /// file is a corrupted transcript. And the same directory, because Claude Code
 /// files sessions under the working directory they started in.
+///
+/// With a Herdr host the transcript has to travel too: see `prepare_host_resume`.
 #[tauri::command]
 pub async fn chat_continue_in_terminal(app: AppHandle) -> Result<(), AppError> {
     let ghostty = claude_handoff::find_ghostty_app()
         .ok_or_else(|| AppError::General("Ghostty is not installed.".into()))?;
+    // Before the stop, so an unreadable setting costs nothing.
+    let herdr_host = claude_handoff::herdr_host(&app)?;
     let session_id = {
         let guard = CHAT.lock().await;
         let session = guard
@@ -636,7 +640,8 @@ pub async fn chat_continue_in_terminal(app: AppHandle) -> Result<(), AppError> {
     if let Some(exited) = session.exited.take() {
         let _ = tokio::time::timeout(Duration::from_secs(5), exited).await;
     }
-    let cli = tokio::task::spawn_blocking(claude_handoff::find_claude_cli)
+    let host = herdr_host.clone();
+    let cli = tokio::task::spawn_blocking(move || claude_handoff::handoff_claude_cli(host.as_deref()))
         .await
         .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))?
         .ok_or_else(|| AppError::General("Claude Code CLI not found.".into()))?;
@@ -645,20 +650,116 @@ pub async fn chat_continue_in_terminal(app: AppHandle) -> Result<(), AppError> {
         .path()
         .app_data_dir()
         .map_err(|e| AppError::General(format!("failed to resolve app_data_dir: {e}")))?;
-    let script_path = app_dir.join("claude-chat").join("resume.sh");
-    std::fs::write(
-        &script_path,
-        resume_script(&cli, &session.cwd, &session_id, &session.add_dirs),
-    )?;
-    let mut perms = std::fs::metadata(&script_path)?.permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&script_path, perms)?;
+    let chat_home = app_dir.join("claude-chat");
+    let script_path = if herdr_host.is_some() {
+        let projects = dirs::home_dir()
+            .ok_or_else(|| AppError::General("Could not find the home folder.".into()))?
+            .join(".claude/projects");
+        prepare_host_resume(
+            &chat_home.join("handoffs").join(&session_id),
+            &projects,
+            &cli,
+            &session.cwd,
+            &session_id,
+            &session.add_dirs,
+        )?
+    } else {
+        let script_path = chat_home.join("resume.sh");
+        let script = resume_script(&cli, &session.cwd, &session_id, &session.add_dirs);
+        write_executable(&script_path, &script)?;
+        script_path
+    };
 
-    claude_handoff::launch_in_ghostty(ghostty, session.cwd.clone(), script_path, None).await
+    claude_handoff::launch_in_ghostty(ghostty, session.cwd.clone(), script_path, None, herdr_host)
+        .await
+}
+
+fn write_executable(path: &Path, contents: &str) -> Result<(), AppError> {
+    std::fs::write(path, contents)?;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+/// Build what `claude --resume` needs on another Mac, in a folder of its own.
+///
+/// The conversation is a file under this Mac's `~/.claude/projects`, so resuming
+/// by id on the host finds nothing unless the file goes with it. And the folder
+/// is not optional: the helper copies everything beside the launch script, and
+/// `claude-chat` itself holds `mcp.json`, whose servers can carry credentials.
+///
+/// The transcript is looked up by id across every project folder, which spares
+/// this Mac from re-deriving Claude Code's folder naming. The host derives it,
+/// because only the host knows its own real path (`host_resume_script`).
+fn prepare_host_resume(
+    folder: &Path,
+    projects: &Path,
+    cli: &Path,
+    cwd: &Path,
+    session_id: &str,
+    add_dirs: &[PathBuf],
+) -> Result<PathBuf, AppError> {
+    let file_name = format!("{session_id}.jsonl");
+    let transcript = std::fs::read_dir(projects)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join(&file_name))
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            AppError::General(
+                "This chat's transcript wasn't found, so it can't move to the Herdr host. \
+                 Nothing was opened."
+                    .into(),
+            )
+        })?;
+    std::fs::create_dir_all(folder)?;
+    let copied = folder.join(&file_name);
+    std::fs::copy(transcript, &copied)?;
+    let script_path = folder.join("resume.sh");
+    write_executable(
+        &script_path,
+        &host_resume_script(cli, cwd, session_id, &copied, add_dirs),
+    )?;
+    Ok(script_path)
+}
+
+/// `resume_script`, after putting the transcript where the host's Claude Code
+/// will look: `~/.claude/projects/<the cwd with every non-alphanumeric as ->`.
+///
+/// `pwd -P`, not this Mac's path. Claude Code names the folder from the real
+/// cwd, and a home folder that is a link on the host resolves to something else
+/// there, so only a script running on the host can spell it.
+fn host_resume_script(
+    cli: &Path,
+    cwd: &Path,
+    session_id: &str,
+    transcript: &Path,
+    add_dirs: &[PathBuf],
+) -> String {
+    let install = format!(
+        "sessions=\"$HOME/.claude/projects/$(pwd -P | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')\"\n\
+         mkdir -p \"$sessions\"\n\
+         cp {} \"$sessions/\"\n",
+        claude_handoff::shell_quote(&transcript.to_string_lossy()),
+    );
+    resume_script_after(&install, cli, cwd, session_id, add_dirs)
+}
+
+fn resume_script(cli: &Path, cwd: &Path, session_id: &str, add_dirs: &[PathBuf]) -> String {
+    resume_script_after("", cli, cwd, session_id, add_dirs)
 }
 
 /// `--add-dir` last, as everywhere else (gotcha #49).
-fn resume_script(cli: &Path, cwd: &Path, session_id: &str, add_dirs: &[PathBuf]) -> String {
+fn resume_script_after(
+    before_exec: &str,
+    cli: &Path,
+    cwd: &Path,
+    session_id: &str,
+    add_dirs: &[PathBuf],
+) -> String {
     let q = |p: &Path| claude_handoff::shell_quote(&p.to_string_lossy());
     let dirs = if add_dirs.is_empty() {
         String::new()
@@ -669,7 +770,7 @@ fn resume_script(cli: &Path, cwd: &Path, session_id: &str, add_dirs: &[PathBuf])
         )
     };
     format!(
-        "#!/bin/zsh -l\nset -e\ncd {}\nexec {} --resume {}{dirs}\n",
+        "#!/bin/zsh -l\nset -e\ncd {}\n{before_exec}exec {} --resume {}{dirs}\n",
         q(cwd),
         q(cli),
         claude_handoff::shell_quote(session_id),
@@ -753,5 +854,115 @@ mod tests {
             script.contains("cd '/Users/x/Library/Application Support/com.cxmail.app/claude-chat'"),
             "{script}"
         );
+    }
+
+    /// A blank Herdr host resumes the way it always did: no copying, no folder.
+    #[test]
+    fn the_local_resume_script_is_unchanged() {
+        assert_eq!(
+            resume_script(Path::new("/opt/claude"), Path::new("/Users/x/chat"), "abc-1", &[]),
+            "#!/bin/zsh -l\nset -e\ncd '/Users/x/chat'\nexec '/opt/claude' --resume 'abc-1'\n"
+        );
+    }
+
+    /// The whole route for real, minus the copy between Macs: this Mac's
+    /// transcript goes into a folder, and the script run "on the host" must land
+    /// it where Claude Code looks and then resume it.
+    ///
+    /// The cwd is reached through a link on purpose. A home folder can be one on
+    /// the host, and Claude Code names its folder from the real path, so a slug
+    /// taken from the path as written would install the transcript somewhere
+    /// `--resume` never looks, and fail with "no conversation found".
+    #[test]
+    fn a_host_resume_lands_the_transcript_where_claude_will_look() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("cxmail-resume-{}", uuid::Uuid::new_v4()));
+        let id = "7415e5f1-37b5-4500-82c1-6e1493d7695c";
+
+        // This Mac: some other session's folder, then this chat's.
+        let projects = root.join("here/.claude/projects");
+        std::fs::create_dir_all(projects.join("-some-other-folder")).unwrap();
+        let session_dir = projects.join("-chat-home");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join(format!("{id}.jsonl")), "{\"the\":\"conversation\"}\n").unwrap();
+
+        // The host: a real folder under a name with a dot and a space, the link
+        // this Mac's path goes through, and a `claude` that reports its argv.
+        let real_cwd = root.join("real/com.cxmail.app/claude chat");
+        std::fs::create_dir_all(&real_cwd).unwrap();
+        let linked_root = root.join("linked");
+        std::os::unix::fs::symlink(root.join("real"), &linked_root).unwrap();
+        let linked_cwd = linked_root.join("com.cxmail.app/claude chat");
+        let home = root.join("host-home");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        write_executable(&bin.join("claude"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+
+        let folder = root.join("handoff");
+        let script = prepare_host_resume(
+            &folder,
+            &projects,
+            Path::new("claude"),
+            &linked_cwd,
+            id,
+            &[PathBuf::from("/Users/x/Projects/it's a repo")],
+        )
+        .unwrap();
+
+        // Only what the host needs travels; the helper copies this whole folder.
+        let mut names: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec![format!("{id}.jsonl"), "resume.sh".to_string()]);
+
+        let out = std::process::Command::new("/bin/zsh")
+            .arg(&script)
+            .env("HOME", &home)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).lines().collect::<Vec<_>>(),
+            ["--resume", id, "--add-dir", "/Users/x/Projects/it's a repo"]
+        );
+
+        let slug: String = real_cwd
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let landed = home.join(".claude/projects").join(slug).join(format!("{id}.jsonl"));
+        assert_eq!(
+            std::fs::read_to_string(&landed).unwrap_or_default(),
+            "{\"the\":\"conversation\"}\n",
+            "not at {landed:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Nothing to resume on the host means nothing should open there.
+    #[test]
+    fn a_missing_transcript_stops_the_handoff() {
+        let root = std::env::temp_dir().join(format!("cxmail-resume-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("projects/-a-folder")).unwrap();
+        let err = prepare_host_resume(
+            &root.join("handoff"),
+            &root.join("projects"),
+            Path::new("claude"),
+            Path::new("/Users/x/chat"),
+            "7415e5f1-37b5-4500-82c1-6e1493d7695c",
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Nothing was opened"), "{err}");
+        assert!(!root.join("handoff").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

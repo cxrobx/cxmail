@@ -7,6 +7,7 @@ import { PANE_FLOOR } from "@/lib/windowAlpha";
 import TriageSection from "./TriageSection";
 import SendAsSection from "./SendAsSection";
 import MenuBarSection from "./MenuBarSection";
+import HerdrHostSection from "./HerdrHostSection";
 import IntelligenceSection from "./IntelligenceSection";
 
 // "System" sits last rather than first: the two explicit choices are the ones
@@ -305,6 +306,8 @@ export default function SettingsDialog() {
               </span>
             </p>
           </section>
+
+          <HerdrHostSection />
 
           <SendAsSection />
 

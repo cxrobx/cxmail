@@ -30,6 +30,7 @@ entry there, then add its one line here.
 - **#22** Don't use `layout="card"` for correspondence — Gmail folds it.
 - **#23** Compare ISO timestamps as `datetime(col) <= datetime('now')`; don't change the stored format.
 - **#24/#35** "Open in Claude": AppleScript `new window with configuration` first (shell-quote `command`, cwd raw), `open -na --window-save-state=never` fallback; needs both Apple Events grants.
+- **#66** With a Herdr host a handoff runs on another Mac: bare `claude`, no local existence check, no Ghostty fallback, and Continue in terminal must carry its transcript in its own folder (never `claude-chat`, which holds `mcp.json`).
 - **#25** Drafts carry attachment metadata only — reopen must reload bytes or the next save drops them.
 - **#33/#34** Designed MCP HTML needs `layout` to survive compose-open; don't build bullets from table rows; don't use `rich` for plain prose.
 - **#36** `MailRule` validation lives in Rust and `mailRuleValidation.ts` (change both); empty conditions match everything; one matcher (`scan_rule_matches`); `apply_mail_rule` dry-runs by default; keep stdin open when probing over stdio.

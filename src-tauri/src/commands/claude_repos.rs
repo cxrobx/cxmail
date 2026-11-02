@@ -6,8 +6,9 @@
 //! on the wire at all.
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use super::claude_handoff;
 use crate::db;
 use crate::db::claude_repos::{RepoKey, RepoMapping, RepoScope};
 use crate::error::AppError;
@@ -29,6 +30,15 @@ pub struct ClaudeRepoView {
     pub exists: bool,
 }
 
+/// With a Herdr host the session runs there, so this Mac's filesystem says
+/// nothing about the mapping: a repo can live on the host alone, and a mapping
+/// missing there is reported by the handoff. No warning beats a wrong one.
+fn view_for(mapping: RepoMapping, herdr_host: Option<&str>) -> ClaudeRepoView {
+    let mut view = ClaudeRepoView::from(mapping);
+    view.exists |= herdr_host.is_some();
+    view
+}
+
 impl From<RepoMapping> for ClaudeRepoView {
     fn from(m: RepoMapping) -> Self {
         let exists = std::path::Path::new(&m.repo_path).is_dir();
@@ -45,23 +55,27 @@ impl From<RepoMapping> for ClaudeRepoView {
 
 #[tauri::command]
 pub async fn list_claude_repos(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<ClaudeRepoView>, AppError> {
+    let host = claude_handoff::herdr_host(&app)?;
     let conn = state.db.safe_lock();
     Ok(db::claude_repos::list(&conn)?
         .into_iter()
-        .map(ClaudeRepoView::from)
+        .map(|m| view_for(m, host.as_deref()))
         .collect())
 }
 
 #[tauri::command]
 pub async fn set_claude_repo(
+    app: AppHandle,
     state: State<'_, AppState>,
     key: RepoKey,
     repo_path: String,
 ) -> Result<ClaudeRepoView, AppError> {
+    let host = claude_handoff::herdr_host(&app)?;
     let conn = state.db.safe_lock();
-    Ok(db::claude_repos::set(&conn, &key, &repo_path)?.into())
+    Ok(view_for(db::claude_repos::set(&conn, &key, &repo_path)?, host.as_deref()))
 }
 
 #[tauri::command]

@@ -5,11 +5,15 @@ use std::process::{Command, Stdio};
 
 use tauri::{AppHandle, Manager, State};
 
+use super::settings::read_herdr_host;
 use crate::db;
 use crate::db::claude_repos::ResolvedRepo;
 use crate::email::{imap, parser};
 use crate::error::AppError;
 use crate::{AppState, LockExt};
+
+/// Read by `cx-open-in-herdr`: unset or empty is this Mac, otherwise an SSH target.
+const HERDR_HOST_VARIABLE: &str = "CX_HERDR_HOST";
 
 /// What the handoff actually did, so the UI can say where it landed.
 ///
@@ -42,7 +46,8 @@ pub async fn open_email_in_claude(
                 .into(),
         )
     })?;
-    let claude_cli = find_claude_cli().ok_or_else(|| {
+    let herdr_host = herdr_host(&app)?;
+    let claude_cli = handoff_claude_cli(herdr_host.as_deref()).ok_or_else(|| {
         AppError::General(
             "Claude Code CLI (`claude`) was not found on PATH. Install it (e.g. \
              `npm install -g @anthropic-ai/claude-code`) and try again."
@@ -134,13 +139,13 @@ pub async fn open_email_in_claude(
     // volume unmounted — falls back to the scratch dir and SAYS so, in the
     // prompt and in the return value. Refusing to open would be the wrong
     // trade: the point of the handoff is getting the mail in front of Claude.
-    let (repo, missing_repo_path) = split_on_existence(mapped_repo);
+    let (repo, missing_repo_path) = split_for_handoff(mapped_repo, herdr_host.as_deref());
     let landing_dir = repo
         .as_ref()
         .map(|r| PathBuf::from(&r.repo_path))
         .unwrap_or_else(|| scratch.clone());
 
-    let prompt = build_prompt(
+    let mut prompt = build_prompt(
         &account_id,
         &folder_name,
         uid,
@@ -150,6 +155,9 @@ pub async fn open_email_in_claude(
         repo.as_ref(),
         missing_repo_path.as_deref(),
     );
+    if let Some(host) = &herdr_host {
+        prompt.push_str(&host_account_note(host, &account_id, &account.email));
+    }
     let prompt_path = scratch.join("prompt.txt");
     fs::write(&prompt_path, &prompt)?;
 
@@ -163,7 +171,7 @@ pub async fn open_email_in_claude(
     fs::set_permissions(&launch_path, perms)?;
 
     let herdr_scope = repo.is_none().then(|| format!("cxmail:account:{account_id}"));
-    launch_in_ghostty(ghostty_app, landing_dir.clone(), launch_path, herdr_scope).await?;
+    launch_in_ghostty(ghostty_app, landing_dir.clone(), launch_path, herdr_scope, herdr_host).await?;
 
     log::info!(
         "claude_handoff: opened Claude session in {:?} ({})",
@@ -185,11 +193,15 @@ pub async fn open_email_in_claude(
 ///
 /// Shared by the email handoff and the chat panel's "Continue in terminal",
 /// so both get the running-instance route and its fallback (gotchas #24, #35).
+///
+/// `herdr_host` comes from `herdr_host()`, and the script must already have been
+/// written for it (gotcha #66). `working_dir` may exist only on that host.
 pub(crate) async fn launch_in_ghostty(
     ghostty_app: PathBuf,
     working_dir: PathBuf,
     launch_path: PathBuf,
     herdr_scope: Option<String>,
+    herdr_host: Option<String>,
 ) -> Result<(), AppError> {
     let working_dir_arg = format!("--working-directory={}", working_dir.display());
     let ghostty_app_clone = ghostty_app;
@@ -199,17 +211,27 @@ pub(crate) async fn launch_in_ghostty(
         // Shared with CXTasks and Onyx: exact checkout identity, fresh tab.
         // Fall back only when the router is absent, never after a failed or
         // uncertain Herdr launch (which could otherwise start Claude twice).
-        if let Some(router) = dirs::home_dir()
+        let router = dirs::home_dir()
             .map(|home| home.join(".local/bin/cx-open-in-herdr"))
-            .filter(|router| router.is_file())
-        {
-            let mut command = Command::new(router);
-            command.arg("--cwd").arg(&scratch_for_spawn)
-                .arg("--launch").arg(&launch_path_for_err);
-            if let Some(scope) = herdr_scope {
-                command.arg("--scope").arg(scope).arg("--space").arg("CXMail");
-            }
-            let output = command.stdin(Stdio::null()).output()?;
+            .filter(|router| router.is_file());
+        // The script was written for the host, and a window on this Mac is the
+        // split the setting exists to prevent, so there is no fallback to take.
+        if router.is_none() && herdr_host.is_some() {
+            return Err(AppError::General(
+                "Herdr host is set, but cx-open-in-herdr isn't installed on this Mac. \
+                 Nothing was opened."
+                    .into(),
+            ));
+        }
+        if let Some(router) = router {
+            let mut command = herdr_command(
+                &router,
+                &scratch_for_spawn,
+                &launch_path_for_err,
+                herdr_scope.as_deref(),
+                herdr_host.as_deref(),
+            );
+            let output = command.output()?;
             return if output.status.success() {
                 Ok(())
             } else {
@@ -265,6 +287,83 @@ pub(crate) async fn launch_in_ghostty(
     })
     .await
     .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))?
+}
+
+/// The helper's own command line. With a host it also carries the target; it
+/// gets no such variable otherwise, which is what keeps a blank setting local.
+fn herdr_command(
+    router: &Path,
+    working_dir: &Path,
+    launch_path: &Path,
+    scope: Option<&str>,
+    herdr_host: Option<&str>,
+) -> Command {
+    let mut command = Command::new(router);
+    command.arg("--cwd").arg(working_dir).arg("--launch").arg(launch_path);
+    if let Some(scope) = scope {
+        command.arg("--scope").arg(scope).arg("--space").arg("CXMail");
+    }
+    if let Some(host) = herdr_host {
+        command.env(HERDR_HOST_VARIABLE, host);
+    }
+    command.stdin(Stdio::null());
+    command
+}
+
+/// The SSH target whose Herdr takes handoffs, or `None` for this Mac.
+///
+/// The setting is the real source, because a GUI app never sees the shell's
+/// environment. Every decision that depends on the host starts here, so the
+/// script and the route can't disagree about which Mac runs the session.
+pub(crate) fn herdr_host(app: &AppHandle) -> Result<Option<String>, AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::General(format!("failed to resolve app_data_dir: {e}")))?;
+    let setting = read_herdr_host(&app_dir)?;
+    let inherited = std::env::var(HERDR_HOST_VARIABLE).ok();
+    Ok(effective_herdr_host(&setting, inherited.as_deref()))
+}
+
+fn effective_herdr_host(setting: &str, inherited: Option<&str>) -> Option<String> {
+    [setting, inherited.unwrap_or_default()]
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// The `claude` a handoff's script names. With a host, the bare name: install
+/// paths differ between Macs and the script runs under a login shell there, so
+/// this Mac's path could be wrong and this Mac needs no CLI at all.
+pub(crate) fn handoff_claude_cli(herdr_host: Option<&str>) -> Option<PathBuf> {
+    match herdr_host {
+        Some(_) => Some(PathBuf::from("claude")),
+        None => find_claude_cli(),
+    }
+}
+
+/// `split_on_existence`, for a session that may run on another Mac. A repo can
+/// live on the host alone, and this Mac can't see the host's disk, so a host
+/// trusts the mapping. If it is wrong there, the helper says so and opens nothing.
+fn split_for_handoff(
+    mapped: Option<ResolvedRepo>,
+    herdr_host: Option<&str>,
+) -> (Option<ResolvedRepo>, Option<String>) {
+    match herdr_host {
+        Some(_) => (mapped, None),
+        None => split_on_existence(mapped),
+    }
+}
+
+/// Account ids are minted per install, so this Mac's id can mean nothing to the
+/// host's `cxmail` MCP. The address and the IMAP folder and uid hold everywhere.
+fn host_account_note(host: &str, account_id: &str, email: &str) -> String {
+    format!(
+        "\nThis session runs on {host}, not the Mac that opened it. CXMail numbers accounts per \
+Mac, so if account_id {account_id} isn't found here, call list_accounts, find {email}, and use \
+that account's id with the same folder and uid.\n"
+    )
 }
 
 /// Split a resolved mapping on whether its directory is actually there.
@@ -323,24 +422,28 @@ fn build_launch_script(claude: &Path, landing: &Path, scratch: &Path, prompt: &P
 /// into a Claude session the user opens themselves.
 #[tauri::command]
 pub async fn get_claude_prompt(
+    app: AppHandle,
     state: State<'_, AppState>,
     account_id: String,
     folder_name: String,
     uid: u32,
 ) -> Result<String, AppError> {
-    let (row, attachments_meta, repo) = {
+    let herdr_host = herdr_host(&app)?;
+    let (row, account, attachments_meta, repo) = {
         let conn = state.db.safe_lock();
         let row = db::messages::get_by_uid(&conn, &account_id, &folder_name, uid)?
             .ok_or_else(|| {
                 AppError::NotFound(format!("Message uid {} not found in {}", uid, folder_name))
             })?;
+        let account = db::accounts::get_by_id(&conn, &account_id)?
+            .ok_or_else(|| AppError::NotFound("Account not found".into()))?;
         let atts = db::messages::get_attachments(&conn, &account_id, &folder_name, uid)?;
         let repo = db::claude_repos::resolve_for_message(&conn, &account_id, &folder_name, uid)?;
-        (row, atts, repo)
+        (row, account, atts, repo)
     };
 
-    let (repo, missing_repo_path) = split_on_existence(repo);
-    Ok(build_copy_prompt(
+    let (repo, missing_repo_path) = split_for_handoff(repo, herdr_host.as_deref());
+    let mut prompt = build_copy_prompt(
         &account_id,
         &folder_name,
         uid,
@@ -348,7 +451,11 @@ pub async fn get_claude_prompt(
         &attachments_meta,
         repo.as_ref(),
         missing_repo_path.as_deref(),
-    ))
+    );
+    if let Some(host) = &herdr_host {
+        prompt.push_str(&host_account_note(host, &account_id, &account.email));
+    }
+    Ok(prompt)
 }
 
 /// The `command` value for a Ghostty surface configuration: the launch script,
@@ -992,6 +1099,125 @@ mod tests {
             script.contains("cd '/Users/x/Projects/it'\\''s a repo'"),
             "an apostrophe in a repo path must survive quoting: {script}"
         );
+    }
+
+    /// A blank setting has to mean exactly what it meant before the setting
+    /// existed: no variable from us, and the helper decides as it always did.
+    #[test]
+    fn a_blank_setting_stays_local_and_sets_no_env() {
+        assert_eq!(effective_herdr_host("", None), None);
+        assert_eq!(effective_herdr_host("   ", Some("  ")), None);
+        let command = herdr_command(
+            Path::new("/bin/true"),
+            Path::new("/Users/x/scratch"),
+            Path::new("/Users/x/scratch/launch.sh"),
+            Some("cxmail:account:acct"),
+            None,
+        );
+        assert_eq!(command.get_envs().count(), 0, "a local launch must set nothing");
+        let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(
+            args,
+            [
+                "--cwd",
+                "/Users/x/scratch",
+                "--launch",
+                "/Users/x/scratch/launch.sh",
+                "--scope",
+                "cxmail:account:acct",
+                "--space",
+                "CXMail",
+            ]
+        );
+    }
+
+    /// The setting beats the environment, and an inherited value still counts
+    /// when the setting is blank (a launch from a shell, say). Quick Ask reads it
+    /// the same way, so the two can't name different Macs from one environment.
+    #[test]
+    fn the_setting_wins_and_an_inherited_host_still_applies() {
+        assert_eq!(
+            effective_herdr_host(" user@host ", Some("other@host")).as_deref(),
+            Some("user@host")
+        );
+        assert_eq!(
+            effective_herdr_host("", Some(" other@host ")).as_deref(),
+            Some("other@host")
+        );
+    }
+
+    /// Run for real, because `get_envs` only proves the builder was told. This is
+    /// what the helper reads, and `--cwd` must stay unresolved: a repo can exist
+    /// only on the host, and nothing here may require it on this Mac.
+    #[test]
+    fn a_host_reaches_the_helpers_env_and_the_cwd_need_not_exist_here() {
+        let dir = std::env::temp_dir().join(format!("cxmail-router-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let stub = dir.join("cx-open-in-herdr");
+        fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' \"$CX_HERDR_HOST\" \"$2\"\n").unwrap();
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let only_on_host = "/Users/x/Projects/only-on-the-host";
+        let output = herdr_command(
+            &stub,
+            Path::new(only_on_host),
+            &dir.join("launch.sh"),
+            None,
+            Some("user@host"),
+        )
+        .output()
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("user@host\n{only_on_host}\n")
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An absolute path from this Mac could be wrong on the host, so the script
+    /// has to leave the name for that Mac's login PATH to resolve.
+    #[test]
+    fn a_host_produces_a_bare_cli_name() {
+        let cli = handoff_claude_cli(Some("user@host")).unwrap();
+        assert_eq!(cli, Path::new("claude"));
+        let scratch = Path::new("/Users/x/scratch");
+        let script = build_launch_script(&cli, scratch, scratch, &scratch.join("prompt.txt"));
+        let exec_line = script.lines().find(|l| l.starts_with("exec ")).unwrap();
+        let probe = exec_line.replacen("exec ", "printf '%s\\n' ", 1).replace("\"$(cat", "\"$(echo");
+        let out = Command::new("/bin/bash")
+            .args(["--noprofile", "--norc", "-c", &probe])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).lines().next(),
+            Some("claude"),
+            "the host's PATH must resolve it: {script}"
+        );
+    }
+
+    /// With a host this Mac's disk proves nothing: a repo that lives on the host
+    /// alone must still be the landing dir, not a "missing" mapping.
+    #[test]
+    fn a_host_keeps_a_mapping_this_mac_cant_see() {
+        let on_host = "/nonexistent/only-on-the-host";
+        let (repo, missing) = split_for_handoff(Some(resolved(on_host)), Some("user@host"));
+        assert_eq!(repo.map(|r| r.repo_path).as_deref(), Some(on_host));
+        assert_eq!(missing, None);
+        let (repo, missing) = split_for_handoff(Some(resolved(on_host)), None);
+        assert!(repo.is_none(), "local behaviour is unchanged");
+        assert_eq!(missing.as_deref(), Some(on_host));
+    }
+
+    /// Each Mac mints its own account ids, so the host needs a way to find the
+    /// account that doesn't depend on the id it was given.
+    #[test]
+    fn the_host_note_names_the_address_to_find_the_account_by() {
+        let note = host_account_note("user@host", "acct-uuid", "someone@northwind.example");
+        assert!(note.contains("user@host"), "{note}");
+        assert!(note.contains("acct-uuid"), "{note}");
+        assert!(note.contains("list_accounts"), "{note}");
+        assert!(note.contains("someone@northwind.example"), "{note}");
     }
 
     /// The other half: paths handed to `osascript` as ARGUMENTS arrive
