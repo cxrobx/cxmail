@@ -44,7 +44,7 @@ The binary is not committed (`target/` is gitignored) — build it from source:
 cd src-tauri && source "$HOME/.cargo/env" && cargo build --release --bin cxmail-mcp
 ```
 
-This produces `src-tauri/target/release/cxmail-mcp` — an argless stdio server.
+This produces `src-tauri/target/release/cxmail-mcp` — a stdio server when run with no arguments.
 
 ## Step 3 — Register the server
 
@@ -98,7 +98,7 @@ added yet. Go back and add an account through the GUI.
 |---------|-------------|
 | `Failed to connect` | Binary not built or wrong path. Build it (Step 2); confirm `src-tauri/target/release/cxmail-mcp` exists and the registered command path matches. |
 | Tools return empty / no accounts | App-first dependency not met (Step 1). Run the app, add an account, let it sync. |
-| Tempted to add `--stdio` (or any flag) | Don't. The binary is **argless** — flags make it fail to start. |
+| Tempted to add `--stdio` | Don't. Stdio is what you get with no arguments; `--http <port>` is the only flag (see below). |
 | MCP stopped working after `cargo clean` | `target/` is gitignored and `clean` wipes the binary. Rebuild immediately (Step 2). See the build-cache landmine note in the root `CLAUDE.md`. |
 
 ## What the server is
@@ -106,3 +106,23 @@ added yet. Go back and add an account through the GUI.
 A dedicated `cxmail-mcp` binary, separate from the desktop app, speaking MCP over **stdio** with **no
 flags**. It shares the app's SQLite database and credential store. Full tool list and permission
 tiers are in [`specs/mcp.md`](../specs/mcp.md).
+
+## Shared HTTP mode (`--http <port>`)
+
+`cxmail-mcp --http 18704` serves the same tools over MCP **streamable HTTP** at
+`http://127.0.0.1:18704/mcp` — one long-lived process (for a LaunchAgent) instead of one stdio
+process per client. Register it as `{ "type": "http", "url": "http://127.0.0.1:18704/mcp" }`.
+
+- **Loopback only.** It binds `127.0.0.1`, and refuses any request whose `Host` or `Origin` is not
+  `127.0.0.1`/`localhost`/`[::1]` on that port, so a web page cannot reach it by DNS rebinding.
+  It can send mail; there is no other authentication.
+- **One handler per MCP session.** Each client `initialize` gets a fresh handler; tool calls open
+  their own DB connection, so nothing carries between sessions.
+- **`save_path` must be absolute.** The server's working directory is not the caller's, so
+  `download_attachment` refuses a relative `save_path` (the `~/Downloads` default still works).
+- **No orphan watchdog.** Under launchd the parent pid is 1, which the stdio watchdog reads as
+  "orphaned"; `CXMAIL_MCP_IDLE_GRACE_SECS` has no effect in this mode.
+- **Idle sessions** a client abandoned without a `DELETE` are dropped after
+  `CXMAIL_MCP_HTTP_SESSION_IDLE_SECS` (default 86400; `0` = never); the client reinitializes on
+  the 404 that follows.
+- It stops cleanly on SIGTERM/SIGINT.

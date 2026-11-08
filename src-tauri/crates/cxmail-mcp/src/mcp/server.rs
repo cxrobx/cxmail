@@ -2686,6 +2686,12 @@ pub struct CxMailMcp {
     /// The orphan watchdog (see `bin/mcp.rs`) reaps processes that are never
     /// claimed within a grace window — e.g. abandoned pre-warmed spares.
     claimed: Arc<AtomicBool>,
+    /// Whether a relative `save_path` may resolve against this process's cwd.
+    /// True for stdio, where the process was launched in the calling session's
+    /// directory. False for the shared HTTP server: its cwd belongs to launchd,
+    /// not to any session, so a relative path would land somewhere the caller
+    /// never meant — it is refused instead.
+    relative_paths_from_cwd: bool,
 }
 
 impl CxMailMcp {
@@ -2910,6 +2916,20 @@ impl CxMailMcp {
             tool_router: Self::tool_router(),
             db_path,
             claimed: Arc::new(AtomicBool::new(false)),
+            relative_paths_from_cwd: true,
+        }
+    }
+
+    /// A handler for one session of the shared streamable-HTTP server.
+    ///
+    /// The HTTP server builds one of these per session (handler factory), so
+    /// nothing here is shared between sessions; every tool call opens its own
+    /// DB connection. The process cwd is not the caller's, so relative
+    /// `save_path`s are refused (see `relative_paths_from_cwd`).
+    pub fn new_http_session(db_path: String) -> Self {
+        Self {
+            relative_paths_from_cwd: false,
+            ..Self::new(db_path)
         }
     }
 
@@ -5901,7 +5921,11 @@ impl CxMailMcp {
             extracted_name
         };
 
-        let target_path = resolve_save_path(params.save_path.as_deref(), &effective_filename)?;
+        let target_path = resolve_save_path(
+            params.save_path.as_deref(),
+            &effective_filename,
+            self.relative_paths_from_cwd,
+        )?;
         if let Some(parent) = target_path.parent() {
             if !parent.as_os_str().is_empty() && !parent.exists() {
                 std::fs::create_dir_all(parent).map_err(|e| {
@@ -6829,7 +6853,14 @@ impl CxMailMcp {
 /// - Otherwise → treat as a full file path.
 /// - Rejects paths that escape the user's home directory (e.g. `..` traversal,
 ///   or absolute paths outside $HOME) to contain MCP callers.
-fn resolve_save_path(save_path: Option<&str>, filename: &str) -> Result<PathBuf, McpError> {
+///
+/// `relative_from_cwd` is false on the shared HTTP server, whose cwd is not
+/// the caller's: a relative path is refused there rather than guessed at.
+fn resolve_save_path(
+    save_path: Option<&str>,
+    filename: &str,
+    relative_from_cwd: bool,
+) -> Result<PathBuf, McpError> {
     let safe_filename = sanitize_filename_component(filename);
 
     let candidate = match save_path.map(str::trim).filter(|s| !s.is_empty()) {
@@ -6853,6 +6884,14 @@ fn resolve_save_path(save_path: Option<&str>, filename: &str) -> Result<PathBuf,
 
     let absolute = if candidate.is_absolute() {
         candidate
+    } else if !relative_from_cwd {
+        return Err(McpError::invalid_params(
+            format!(
+                "save_path must be absolute on the shared HTTP server (its working directory is not yours); got {}",
+                candidate.display()
+            ),
+            None,
+        ));
     } else {
         std::env::current_dir()
             .map_err(|e| McpError::internal_error(format!("cwd unavailable: {}", e), None))?
@@ -6979,6 +7018,38 @@ impl ServerHandler for CxMailMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── shared HTTP server: the process cwd is never the caller's ──
+
+    #[test]
+    fn a_relative_save_path_is_refused_on_the_http_server_but_not_on_stdio() {
+        let err = resolve_save_path(Some("notes/a.pdf"), "a.pdf", false).unwrap_err();
+        assert!(err.message.contains("must be absolute"), "{}", err.message);
+        // stdio keeps resolving against the launching session's cwd as before.
+        // (The result may still be refused for leaving $HOME; it must not be
+        // refused for being relative.)
+        if let Err(e) = resolve_save_path(Some("notes/a.pdf"), "a.pdf", true) {
+            assert!(!e.message.contains("must be absolute"), "{}", e.message);
+        }
+        // Absolute paths and the ~/Downloads default work in both modes.
+        let home = dirs::home_dir().unwrap();
+        let abs = home.join("Downloads/x.pdf");
+        assert_eq!(
+            resolve_save_path(Some(abs.to_str().unwrap()), "x.pdf", false).unwrap(),
+            abs
+        );
+        assert!(resolve_save_path(None, "x.pdf", false).is_ok());
+    }
+
+    #[test]
+    fn http_session_handlers_share_no_state() {
+        let a = CxMailMcp::new_http_session("/nonexistent/a.db".into());
+        let b = CxMailMcp::new_http_session("/nonexistent/a.db".into());
+        a.claimed.store(true, Ordering::Relaxed);
+        assert!(!b.claimed.load(Ordering::Relaxed));
+        assert!(!a.relative_paths_from_cwd);
+        assert!(CxMailMcp::new("/nonexistent/a.db".into()).relative_paths_from_cwd);
+    }
 
     // ── resolve_project_repo: three states that must not blur together ──
 

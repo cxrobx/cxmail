@@ -16,7 +16,7 @@
 | SMTP | mail-send (rustls) with provider-aware auth, implicit TLS or STARTTLS |
 | Auth | OAuth2 PKCE (Gmail, Outlook), app passwords (iCloud) |
 | Credentials | file_store (dev), macOS Keychain (production) |
-| MCP | rmcp with stdio transport (`cxmail-mcp` crate; the *binary* stays in the app package) |
+| MCP | rmcp, stdio by default or streamable HTTP with `--http <port>` (`cxmail-mcp` crate; the *binary* stays in the app package) |
 | Plugins | rquickjs (QuickJS) sandboxed runtime |
 | Security | ammonia (HTML sanitization) |
 
