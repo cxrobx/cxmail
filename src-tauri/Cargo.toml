@@ -75,6 +75,18 @@ codegen-units = 1
 strip = true
 opt-level = "s"
 
+# Never strip proc-macros (or build scripts). On macOS 27 a stripped
+# proc-macro dylib is refused at load time, so rustc reports `can't find crate
+# for rquickjs_macro` / `tauri_macros` and the build fails. build-override
+# covers every build-time unit, so this is one rule rather than a per-crate
+# list that grows with each proc-macro the strip breaks. Shipped binaries are
+# still stripped by `strip = true` above.
+[profile.dev.build-override]
+strip = "none"
+
+[profile.release.build-override]
+strip = "none"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

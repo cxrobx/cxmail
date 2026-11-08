@@ -290,6 +290,15 @@ export PATH="$HOME/.nvm/versions/node/v24.11.1/bin:$PATH"
    ps -o comm= -p "$(launchctl list | awk '/com.cxmail.app.helper/{print $1}')"
    ```
 
+4b. **Restart the shared HTTP MCP server, if this machine runs one.** On the Mac mini the
+   `com.cx.mcp.cxmail` LaunchAgent runs `cxmail-mcp --http 18704` for every Claude session, and
+   a running process keeps the old (deleted) binary until it restarts. Skip it where the agent
+   isn't loaded (the laptop):
+   ```bash
+   launchctl print gui/$(id -u)/com.cx.mcp.cxmail >/dev/null 2>&1 \
+     && launchctl kickstart -k gui/$(id -u)/com.cx.mcp.cxmail
+   ```
+
 5. **Verify**:
    ```bash
    pgrep -f "cxmail.app" >/dev/null && echo "app running" || echo "APP NOT RUNNING"
