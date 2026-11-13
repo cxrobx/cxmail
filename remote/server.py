@@ -848,8 +848,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html", "text/html", {"Content-Security-Policy": PAGE_CSP})
             if url.path == "/app.js":
                 return self._static("app.js", "text/javascript")
-            if url.path == "/icon.svg":
-                return self._static("icon.svg", "image/svg+xml")
             if url.path in ("/icon-180.png", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"):
                 name = "icon-180.png" if url.path == "/apple-touch-icon.png" else url.path[1:]
                 return self._static(name, "image/png", {"Cache-Control": "max-age=86400"})
