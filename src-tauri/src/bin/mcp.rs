@@ -10,6 +10,9 @@
 //!                            CXMail Remote's send path (`remote/`): one JSON
 //!                            object on stdout, exit 1 with {"error"} on failure.
 //!                            NOT MCP tools, on purpose: the MCP never sends.
+//!   cxmail-mcp remote chat [<account_id> <folder> <uid>] [--model <id>]
+//!                            CXMail Remote's chat: the desktop chat panel's
+//!                            launch and permission gate over JSON lines.
 //! Register with Claude Code via the repo-root `.mcp.json`:
 //!   { "mcpServers": { "cxmail": { "command": "./src-tauri/target/release/cxmail-mcp" } } }
 //! or globally with: claude mcp add cxmail /abs/path/to/cxmail-mcp
@@ -84,6 +87,29 @@ async fn main() -> anyhow::Result<()> {
 
     if std::env::args().nth(1).as_deref() == Some("remote") {
         let args: Vec<String> = std::env::args().skip(2).collect();
+        if args.first().map(String::as_str) == Some("chat") {
+            let mut rest: Vec<String> = args[1..].to_vec();
+            let mut model = None;
+            if let Some(i) = rest.iter().position(|a| a == "--model") {
+                model = rest.get(i + 1).cloned();
+                rest.drain(i..(i + 2).min(rest.len()));
+            }
+            let seed = match rest.as_slice() {
+                [] => None,
+                [a, f, u] => match u.parse::<u32>() {
+                    Ok(uid) => Some(cxmail_lib::ChatSeed { account_id: a.clone(), folder: f.clone(), uid }),
+                    Err(_) => {
+                        println!("{}", serde_json::json!({ "error": "uid must be a number" }));
+                        std::process::exit(1);
+                    }
+                },
+                _ => {
+                    println!("{}", serde_json::json!({ "error": "usage: cxmail-mcp remote chat [<account> <folder> <uid>] [--model <id>]" }));
+                    std::process::exit(1);
+                }
+            };
+            std::process::exit(cxmail_lib::run_remote_chat(&db_path, seed, model).await);
+        }
         let (code, out) = run_remote(&db_path, &args).await;
         println!("{out}");
         std::process::exit(code);

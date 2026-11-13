@@ -123,140 +123,21 @@ pub async fn chat_start(
     }
     stop_current().await;
 
-    let (cli, login_path) = tokio::task::spawn_blocking(|| {
-        (claude_handoff::find_claude_cli(), login_shell_path())
-    })
-    .await
-    .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))?;
-    let cli = cli.ok_or_else(|| {
-        AppError::General(
-            "Claude Code CLI (`claude`) was not found. Install it and sign in, then try again."
-                .into(),
-        )
-    })?;
-
+    let (cli, login_path) = locate_cli().await?;
     // One small lock scope for every read (gotcha #11).
-    let (mappings, seed_info) = {
+    let inputs = {
         let conn = state.db.safe_lock();
-        let mut mappings = Vec::new();
-        for m in db::claude_repos::list(&conn)? {
-            let label = db::claude_repos::describe(&conn, &m);
-            mappings.push((label, m.repo_path));
-        }
-        let seed_info = match &seed {
-            Some(s) => {
-                let row = db::messages::get_by_uid(&conn, &s.account_id, &s.folder, s.uid)?
-                    .ok_or_else(|| {
-                        AppError::NotFound(format!("Message uid {} not found in {}", s.uid, s.folder))
-                    })?;
-                let repo =
-                    db::claude_repos::resolve_for_message(&conn, &s.account_id, &s.folder, s.uid)?;
-                Some((row, repo))
-            }
-            None => None,
-        };
-        (mappings, seed_info)
+        gather_launch_inputs(&conn, seed.as_ref())?
     };
-
     let app_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| AppError::General(format!("failed to resolve app_data_dir: {e}")))?;
     // One fixed home, not one per chat: Claude Code files sessions under the
     // working directory, and "Continue in terminal" resumes from the same one.
-    let chat_home = app_dir.join("claude-chat");
-    std::fs::create_dir_all(&chat_home)?;
-
-    let (seed_repo, missing_repo_path) = match &seed_info {
-        Some((_, repo)) => claude_handoff::split_on_existence(repo.clone()),
-        None => (None, None),
-    };
-    let cwd = seed_repo
-        .as_ref()
-        .map(|r| PathBuf::from(&r.repo_path))
-        .unwrap_or_else(|| chat_home.clone());
-
-    // Readable directories: every mapped repo that is actually there, one line
-    // per directory however many mappings name it.
-    let mut repo_lines: Vec<chat_agent::RepoLine> = Vec::new();
-    for (label, path) in mappings {
-        if !Path::new(&path).is_dir() {
-            continue;
-        }
-        match repo_lines.iter_mut().find(|r| r.path == path) {
-            Some(existing) => existing.label = format!("{}, {label}", existing.label),
-            None => repo_lines.push(chat_agent::RepoLine { label, path }),
-        }
-    }
-    let add_dirs: Vec<PathBuf> = repo_lines
-        .iter()
-        .map(|r| PathBuf::from(&r.path))
-        .filter(|p| *p != cwd)
-        .collect();
-
-    let claude_json = dirs::home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".claude.json")).ok())
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
-    let (mcp_config, servers) =
-        chat_agent::build_mcp_config(claude_json.as_ref(), bundled_mcp_binary().as_deref());
-    if !servers.iter().any(|s| s == "cxmail") {
-        return Err(AppError::General(
-            "No cxmail MCP binary found for the chat — neither beside the app nor registered \
-             in ~/.claude.json."
-                .into(),
-        ));
-    }
-    let mcp_path = chat_home.join("mcp.json");
-    write_private(&mcp_path, &serde_json::to_string_pretty(&mcp_config).unwrap_or_default())?;
-
-    let seed_message = seed_info.as_ref().zip(seed.as_ref()).map(|((row, _), s)| {
-        chat_agent::SeedMessage {
-            account_id: s.account_id.clone(),
-            folder: s.folder.clone(),
-            uid: s.uid,
-            subject: row.subject.clone().unwrap_or_else(|| "(no subject)".into()),
-            from: format!(
-                "{} <{}>",
-                row.from_name.as_deref().unwrap_or(""),
-                row.from_email.as_deref().unwrap_or("")
-            ),
-        }
-    });
-    let prompt = chat_agent::build_system_prompt(
-        &repo_lines,
-        seed_message.as_ref(),
-        seed_repo.as_ref().map(|r| r.repo_path.as_str()),
-        servers.iter().any(|s| s == "vault"),
-        servers.iter().any(|s| s == "cxtasks"),
-    );
-    let args = chat_agent::build_args(&chat_agent::ChatLaunch {
-        mcp_config: &mcp_path,
-        servers: &servers,
-        system_prompt: &prompt,
-        model: model.as_deref(),
-        add_dirs: &add_dirs,
-    });
-
-    let mut cmd = Command::new(&cli);
-    cmd.args(&args)
-        .current_dir(&cwd)
-        // The user's hooks stay on — the secret-exposure guard among them —
-        // but a chat turn ending is not a reason to ding or post a banner.
-        .env("CLAUDE_HOOK_SOUND", "0")
-        .env("CLAUDE_HOOK_BANNER", "0")
-        .env("CXMAIL_CHAT", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    // A GUI app inherits a bare PATH; hooks and stdio MCP servers expect the
-    // login shell's (jq, sqlite3, node, uvx).
-    if let Some(path) = login_path {
-        cmd.env("PATH", path);
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| AppError::General(format!("Failed to start Claude ({}): {e}", cli.display())))?;
+    let prepared = assemble_launch(cli, login_path, inputs, seed.as_ref(), &app_dir.join("claude-chat"), model.as_deref())?;
+    let mut child = spawn_chat(&prepared)?;
+    let Prepared { cwd, add_dirs, servers, repo_lines, seed_repo, missing_repo_path, seed_subject, .. } = prepared;
 
     let gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let shared = Arc::new(Shared {
@@ -353,7 +234,7 @@ pub async fn chat_start(
         missing_repo_path,
         readable_repos: repo_lines.iter().map(|r| r.path.clone()).collect(),
         mcp_servers: servers,
-        seed_subject: seed_message.map(|m| m.subject),
+        seed_subject,
     };
     *CHAT.lock().await = Some(ChatSession {
         gen,
@@ -365,6 +246,176 @@ pub async fn chat_start(
         add_dirs,
     });
     Ok(started)
+}
+
+/// Everything one chat launch needs. Built the same way for the desktop panel
+/// (`chat_start`) and for CXMail Remote's bridge (`run_remote_chat`), so the
+/// flags that carry the chat's security (gotcha #64) cannot drift between them.
+pub(crate) struct Prepared {
+    cli: PathBuf,
+    login_path: Option<String>,
+    args: Vec<String>,
+    cwd: PathBuf,
+    add_dirs: Vec<PathBuf>,
+    servers: Vec<String>,
+    repo_lines: Vec<chat_agent::RepoLine>,
+    seed_repo: Option<ResolvedRepo>,
+    missing_repo_path: Option<String>,
+    seed_subject: Option<String>,
+}
+
+type LaunchInputs = (Vec<(String, String)>, Option<(db::messages::MessageRow, Option<ResolvedRepo>)>);
+
+async fn locate_cli() -> Result<(PathBuf, Option<String>), AppError> {
+    let (cli, login_path) = tokio::task::spawn_blocking(|| {
+        (claude_handoff::find_claude_cli(), login_shell_path())
+    })
+    .await
+    .map_err(|e| AppError::General(format!("spawn_blocking join error: {e}")))?;
+    let cli = cli.ok_or_else(|| {
+        AppError::General(
+            "Claude Code CLI (`claude`) was not found. Install it and sign in, then try again."
+                .into(),
+        )
+    })?;
+    Ok((cli, login_path))
+}
+
+/// The database reads a launch needs: every repo mapping, and the seed
+/// message with the repo it maps to.
+fn gather_launch_inputs(conn: &rusqlite::Connection, seed: Option<&ChatSeed>) -> Result<LaunchInputs, AppError> {
+    let mut mappings = Vec::new();
+    for m in db::claude_repos::list(conn)? {
+        let label = db::claude_repos::describe(conn, &m);
+        mappings.push((label, m.repo_path));
+    }
+    let seed_info = match seed {
+        Some(s) => {
+            let row = db::messages::get_by_uid(conn, &s.account_id, &s.folder, s.uid)?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Message uid {} not found in {}", s.uid, s.folder))
+                })?;
+            let repo = db::claude_repos::resolve_for_message(conn, &s.account_id, &s.folder, s.uid)?;
+            Some((row, repo))
+        }
+        None => None,
+    };
+    Ok((mappings, seed_info))
+}
+
+fn assemble_launch(
+    cli: PathBuf,
+    login_path: Option<String>,
+    (mappings, seed_info): LaunchInputs,
+    seed: Option<&ChatSeed>,
+    chat_home: &Path,
+    model: Option<&str>,
+) -> Result<Prepared, AppError> {
+    std::fs::create_dir_all(chat_home)?;
+
+    let (seed_repo, missing_repo_path) = match &seed_info {
+        Some((_, repo)) => claude_handoff::split_on_existence(repo.clone()),
+        None => (None, None),
+    };
+    let cwd = seed_repo
+        .as_ref()
+        .map(|r| PathBuf::from(&r.repo_path))
+        .unwrap_or_else(|| chat_home.to_path_buf());
+
+    // Readable directories: every mapped repo that is actually there, one line
+    // per directory however many mappings name it.
+    let mut repo_lines: Vec<chat_agent::RepoLine> = Vec::new();
+    for (label, path) in mappings {
+        if !Path::new(&path).is_dir() {
+            continue;
+        }
+        match repo_lines.iter_mut().find(|r| r.path == path) {
+            Some(existing) => existing.label = format!("{}, {label}", existing.label),
+            None => repo_lines.push(chat_agent::RepoLine { label, path }),
+        }
+    }
+    let add_dirs: Vec<PathBuf> = repo_lines
+        .iter()
+        .map(|r| PathBuf::from(&r.path))
+        .filter(|p| *p != cwd)
+        .collect();
+
+    let claude_json = dirs::home_dir()
+        .and_then(|h| std::fs::read_to_string(h.join(".claude.json")).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    let (mcp_config, servers) =
+        chat_agent::build_mcp_config(claude_json.as_ref(), bundled_mcp_binary().as_deref());
+    if !servers.iter().any(|s| s == "cxmail") {
+        return Err(AppError::General(
+            "No cxmail MCP binary found for the chat — neither beside the app nor registered \
+             in ~/.claude.json."
+                .into(),
+        ));
+    }
+    let mcp_path = chat_home.join("mcp.json");
+    write_private(&mcp_path, &serde_json::to_string_pretty(&mcp_config).unwrap_or_default())?;
+
+    let seed_message = seed_info.as_ref().zip(seed).map(|((row, _), s)| {
+        chat_agent::SeedMessage {
+            account_id: s.account_id.clone(),
+            folder: s.folder.clone(),
+            uid: s.uid,
+            subject: row.subject.clone().unwrap_or_else(|| "(no subject)".into()),
+            from: format!(
+                "{} <{}>",
+                row.from_name.as_deref().unwrap_or(""),
+                row.from_email.as_deref().unwrap_or("")
+            ),
+        }
+    });
+    let prompt = chat_agent::build_system_prompt(
+        &repo_lines,
+        seed_message.as_ref(),
+        seed_repo.as_ref().map(|r| r.repo_path.as_str()),
+        servers.iter().any(|s| s == "vault"),
+        servers.iter().any(|s| s == "cxtasks"),
+    );
+    let args = chat_agent::build_args(&chat_agent::ChatLaunch {
+        mcp_config: &mcp_path,
+        servers: &servers,
+        system_prompt: &prompt,
+        model,
+        add_dirs: &add_dirs,
+    });
+    Ok(Prepared {
+        cli,
+        login_path,
+        args,
+        cwd,
+        add_dirs,
+        servers,
+        repo_lines,
+        seed_repo,
+        missing_repo_path,
+        seed_subject: seed_message.map(|m| m.subject),
+    })
+}
+
+fn spawn_chat(p: &Prepared) -> Result<tokio::process::Child, AppError> {
+    let mut cmd = Command::new(&p.cli);
+    cmd.args(&p.args)
+        .current_dir(&p.cwd)
+        // The user's hooks stay on — the secret-exposure guard among them —
+        // but a chat turn ending is not a reason to ding or post a banner.
+        .env("CLAUDE_HOOK_SOUND", "0")
+        .env("CLAUDE_HOOK_BANNER", "0")
+        .env("CXMAIL_CHAT", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    // A GUI app inherits a bare PATH; hooks and stdio MCP servers expect the
+    // login shell's (jq, sqlite3, node, uvx).
+    if let Some(path) = &p.login_path {
+        cmd.env("PATH", path);
+    }
+    cmd.spawn()
+        .map_err(|e| AppError::General(format!("Failed to start Claude ({}): {e}", p.cli.display())))
 }
 
 async fn write_loop(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
@@ -386,6 +437,30 @@ async fn read_loop(
     tx: mpsc::UnboundedSender<String>,
     shared: Arc<Shared>,
 ) {
+    pump_stdout(
+        stdout,
+        tx,
+        shared,
+        |event| emit(&app, gen, event),
+        |input| permission_context(&app, input),
+        // A backgrounded window must still say it is waiting on you.
+        || request_attention(&app),
+    )
+    .await
+}
+
+/// The CLI's stdout, turned into events for whoever hosts the chat. One
+/// implementation for the desktop panel and CXMail Remote's bridge, so the
+/// permission gate (remembered tools, open questions, refused control
+/// requests) is the same everywhere.
+async fn pump_stdout(
+    stdout: tokio::process::ChildStdout,
+    tx: mpsc::UnboundedSender<String>,
+    shared: Arc<Shared>,
+    sink: impl Fn(&ChatEvent),
+    context: impl Fn(&Value) -> Option<chat_agent::PermissionContext>,
+    attention: impl Fn(),
+) {
     let mut lines = BufReader::new(stdout).lines();
     let mut parser = chat_agent::StreamParser::default();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -396,7 +471,7 @@ async fn read_loop(
                         *shared.session_id.lock().unwrap_or_else(|p| p.into_inner()) =
                             Some(session_id.clone());
                     }
-                    emit(&app, gen, &event);
+                    sink(&event);
                 }
                 Inbound::CanUseTool {
                     request_id,
@@ -418,21 +493,16 @@ async fn read_loop(
                     if let Ok(mut pending) = shared.pending.lock() {
                         pending.insert(request_id.clone(), (tool_name.clone(), input.clone()));
                     }
-                    let context = permission_context(&app, &input);
-                    emit(
-                        &app,
-                        gen,
-                        &ChatEvent::PermissionRequest {
-                            request_id,
-                            tool_name,
-                            display_name,
-                            input,
-                            rememberable,
-                            context,
-                        },
-                    );
-                    // A backgrounded window must still say it is waiting on you.
-                    request_attention(&app);
+                    let ctx = context(&input);
+                    sink(&ChatEvent::PermissionRequest {
+                        request_id,
+                        tool_name,
+                        display_name,
+                        input,
+                        rememberable,
+                        context: ctx,
+                    });
+                    attention();
                 }
                 Inbound::UnknownControl { request_id, subtype } => {
                     log::info!("chat: refusing unsupported control request {subtype:?}");
@@ -445,16 +515,12 @@ async fn read_loop(
                     if request_id == INIT_REQUEST_ID {
                         shared.handshake_ok.store(ok, Ordering::SeqCst);
                         if !ok {
-                            emit(
-                                &app,
-                                gen,
-                                &ChatEvent::Notice {
-                                    text: format!(
-                                        "Claude Code refused the chat handshake: {}",
-                                        error.unwrap_or_default()
-                                    ),
-                                },
-                            );
+                            sink(&ChatEvent::Notice {
+                                text: format!(
+                                    "Claude Code refused the chat handshake: {}",
+                                    error.unwrap_or_default()
+                                ),
+                            });
                         }
                     }
                 }
@@ -470,20 +536,28 @@ async fn read_loop(
 /// question (gotcha #11). Every lookup that fails just leaves its field empty:
 /// the card falls back to the raw input, and the question still gets asked.
 fn permission_context(app: &AppHandle, input: &Value) -> Option<chat_agent::PermissionContext> {
-    let (account_id, folder, uids) = chat_agent::message_refs(input);
+    let (account_id, _, uids) = chat_agent::message_refs(input);
     if account_id.is_none() && uids.is_empty() {
         return None;
     }
     let conn = app.state::<AppState>().open_read_conn().ok()?;
+    permission_context_from(&conn, input)
+}
+
+fn permission_context_from(conn: &rusqlite::Connection, input: &Value) -> Option<chat_agent::PermissionContext> {
+    let (account_id, folder, uids) = chat_agent::message_refs(input);
+    if account_id.is_none() && uids.is_empty() {
+        return None;
+    }
     let account = account_id
         .as_deref()
-        .and_then(|id| db::accounts::get_by_id(&conn, id).ok().flatten())
+        .and_then(|id| db::accounts::get_by_id(conn, id).ok().flatten())
         .map(|a| a.email);
     let messages = match (account_id.as_deref(), folder.as_deref()) {
         (Some(acct), Some(f)) => uids
             .iter()
             .take(chat_agent::PERMISSION_MESSAGE_PREVIEW)
-            .filter_map(|uid| db::messages::get_by_uid(&conn, acct, f, *uid).ok().flatten())
+            .filter_map(|uid| db::messages::get_by_uid(conn, acct, f, *uid).ok().flatten())
             .map(|row| chat_agent::MessageBrief {
                 subject: row.subject.unwrap_or_else(|| "(no subject)".into()),
                 from: row
@@ -513,8 +587,21 @@ fn request_attention(app: &AppHandle) {
 /// the CLI queues it behind its own startup.
 #[tauri::command]
 pub async fn chat_send(text: String, images: Option<Vec<String>>) -> Result<(), AppError> {
+    let line = user_line(&text, images.unwrap_or_default())?;
+    let guard = CHAT.lock().await;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| AppError::General("No chat is running — start a new one.".into()))?;
+    session
+        .tx
+        .send(line)
+        .map_err(|_| AppError::General("The chat has ended — start a new one.".into()))
+}
+
+/// One user message as a stream-json line, after the same checks wherever it
+/// came from.
+fn user_line(text: &str, images: Vec<String>) -> Result<String, AppError> {
     let text = text.trim();
-    let images = images.unwrap_or_default();
     if text.is_empty() && images.is_empty() {
         return Err(AppError::General("Nothing to send.".into()));
     }
@@ -534,14 +621,7 @@ pub async fn chat_send(text: String, images: Option<Vec<String>>) -> Result<(), 
             "That message is over {MAX_MESSAGE_CHARS} characters."
         )));
     }
-    let guard = CHAT.lock().await;
-    let session = guard
-        .as_ref()
-        .ok_or_else(|| AppError::General("No chat is running — start a new one.".into()))?;
-    session
-        .tx
-        .send(chat_agent::user_message_line(text, &images))
-        .map_err(|_| AppError::General("The chat has ended — start a new one.".into()))
+    Ok(chat_agent::user_message_line(text, &images))
 }
 
 /// Answer a permission question. `remember` allows that tool for the rest of
@@ -556,31 +636,35 @@ pub async fn chat_answer_permission(
     let session = guard
         .as_ref()
         .ok_or_else(|| AppError::General("No chat is running.".into()))?;
-    let (tool, input) = session
-        .shared
-        .pending
-        .lock()
-        .ok()
-        .and_then(|mut p| p.remove(&request_id))
-        .ok_or_else(|| AppError::NotFound("That request was already answered.".into()))?;
-    let line = if allow {
-        // A CXTasks write asks every time, whatever the webview sent.
-        if remember && chat_agent::can_remember(&tool) {
-            if let Ok(mut set) = session.shared.always_allow.lock() {
-                set.insert(tool);
-            }
-        }
-        chat_agent::allow_line(&request_id, &input)
-    } else {
-        chat_agent::deny_line(
-            &request_id,
-            "The user declined this in CXMail. Do not retry it unless they ask.",
-        )
-    };
+    let line = answer_line(&session.shared, &request_id, allow, remember)?;
     session
         .tx
         .send(line)
         .map_err(|_| AppError::General("The chat has ended.".into()))
+}
+
+/// The answer to one open permission question, consuming it.
+fn answer_line(shared: &Shared, request_id: &str, allow: bool, remember: bool) -> Result<String, AppError> {
+    let (tool, input) = shared
+        .pending
+        .lock()
+        .ok()
+        .and_then(|mut p| p.remove(request_id))
+        .ok_or_else(|| AppError::NotFound("That request was already answered.".into()))?;
+    Ok(if allow {
+        // A CXTasks write asks every time, whatever the client sent.
+        if remember && chat_agent::can_remember(&tool) {
+            if let Ok(mut set) = shared.always_allow.lock() {
+                set.insert(tool);
+            }
+        }
+        chat_agent::allow_line(request_id, &input)
+    } else {
+        chat_agent::deny_line(
+            request_id,
+            "The user declined this in CXMail. Do not retry it unless they ask.",
+        )
+    })
 }
 
 /// Stop the current turn; the conversation stays open.
@@ -817,6 +901,196 @@ fn write_private(path: &Path, contents: &str) -> Result<(), AppError> {
         .open(path)?;
     f.write_all(contents.as_bytes())?;
     Ok(())
+}
+
+/// CXMail Remote's chat: the desktop chat's launch and permission gate,
+/// spoken as JSON lines instead of Tauri events (`cxmail-mcp remote chat`).
+///
+/// stdout, one object per line: `{"started": {...}}` once, then
+/// `{"event": <ChatEvent>}` (the panel's own payload), `{"error": "..."}` for
+/// a command it refused. stdin, one object per line: `{"cmd":"send","text":…}`,
+/// `{"cmd":"answer","request_id":…,"allow":bool,"remember":bool}`,
+/// `{"cmd":"interrupt"}`, `{"cmd":"stop"}`. EOF on stdin stops the chat, so a
+/// dead host never leaves a CLI running. Returns the exit code.
+pub async fn run_remote_chat(db_path: &str, seed: Option<ChatSeed>, model: Option<String>) -> i32 {
+    fn out(v: Value) {
+        use std::io::Write;
+        let mut o = std::io::stdout().lock();
+        let _ = writeln!(o, "{v}");
+        let _ = o.flush();
+    }
+    let event = |e: &ChatEvent| out(serde_json::json!({ "event": e }));
+    let fail = |m: String| {
+        out(serde_json::json!({ "error": m }));
+        1
+    };
+
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    if let Some(m) = &model {
+        if let Err(e) = chat_agent::validate_model(m) {
+            return fail(e);
+        }
+    }
+    let (cli, login_path) = match locate_cli().await {
+        Ok(v) => v,
+        Err(e) => return fail(e.to_string()),
+    };
+    let read_conn = || -> Result<rusqlite::Connection, AppError> {
+        let c = rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        c.busy_timeout(Duration::from_secs(5))?;
+        Ok(c)
+    };
+    let inputs = match read_conn().and_then(|c| gather_launch_inputs(&c, seed.as_ref())) {
+        Ok(v) => v,
+        Err(e) => return fail(e.to_string()),
+    };
+    // Its own home, so the phone's sessions never mix with the panel's
+    // "Continue in terminal" history.
+    let chat_home = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("com.cxmail.app")
+        .join("claude-chat-remote");
+    let p = match assemble_launch(cli, login_path, inputs, seed.as_ref(), &chat_home, model.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return fail(e.to_string()),
+    };
+    let mut child = match spawn_chat(&p) {
+        Ok(c) => c,
+        Err(e) => return fail(e.to_string()),
+    };
+    out(serde_json::json!({ "started": {
+        "cwd": p.cwd.to_string_lossy(),
+        "repo": p.seed_repo,
+        "missing_repo_path": p.missing_repo_path,
+        "readable_repos": p.repo_lines.iter().map(|r| r.path.clone()).collect::<Vec<_>>(),
+        "mcp_servers": p.servers,
+        "seed_subject": p.seed_subject,
+    }}));
+
+    let shared = Arc::new(Shared {
+        session_id: StdMutex::new(None),
+        always_allow: StdMutex::new(HashSet::new()),
+        pending: StdMutex::new(HashMap::new()),
+        handshake_ok: AtomicBool::new(false),
+    });
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let (Some(stdin), Some(stdout), Some(stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+        return fail("could not attach to the Claude process".into());
+    };
+    tokio::spawn(write_loop(stdin, rx));
+    let reader = {
+        let tx = tx.clone();
+        let shared = shared.clone();
+        let db_path = db_path.to_string();
+        tokio::spawn(async move {
+            pump_stdout(
+                stdout,
+                tx,
+                shared,
+                |e| out(serde_json::json!({ "event": e })),
+                |input| {
+                    rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                        .ok()
+                        .and_then(|c| permission_context_from(&c, input))
+                },
+                || {},
+            )
+            .await
+        })
+    };
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = BufReader::new(stderr).read_to_end(&mut buf).await;
+        let text = String::from_utf8_lossy(&buf);
+        text.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect::<String>()
+    });
+
+    let _ = tx.send(chat_agent::initialize_line(INIT_REQUEST_ID));
+    let (stop_tx, mut stop_rx) = mpsc::unbounded_channel::<&'static str>();
+    {
+        // Same rule as the panel: no permission gate, no chat.
+        let shared = shared.clone();
+        let stop_tx = stop_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+            if !shared.handshake_ok.load(Ordering::SeqCst) {
+                let _ = stop_tx.send("handshake");
+            }
+        });
+    }
+    {
+        let shared = shared.clone();
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(tokio::io::stdin()).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(cmd) = serde_json::from_str::<Value>(&line) else {
+                    out(serde_json::json!({ "error": "not JSON" }));
+                    continue;
+                };
+                let str_of = |k: &str| cmd.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                let result = match str_of("cmd").as_str() {
+                    "send" => {
+                        let images = cmd
+                            .get("images")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .unwrap_or_default();
+                        user_line(&str_of("text"), images).map(|l| {
+                            let _ = tx.send(l);
+                        })
+                    }
+                    "answer" => answer_line(
+                        &shared,
+                        &str_of("request_id"),
+                        cmd.get("allow").and_then(Value::as_bool).unwrap_or(false),
+                        cmd.get("remember").and_then(Value::as_bool).unwrap_or(false),
+                    )
+                    .map(|l| {
+                        let _ = tx.send(l);
+                    }),
+                    "interrupt" => {
+                        let id = format!("cxmail-interrupt-{}", uuid::Uuid::new_v4());
+                        let _ = tx.send(chat_agent::interrupt_line(&id));
+                        Ok(())
+                    }
+                    "stop" => {
+                        let _ = stop_tx.send("stop");
+                        Ok(())
+                    }
+                    other => Err(AppError::General(format!("unknown command {other:?}"))),
+                };
+                if let Err(e) = result {
+                    out(serde_json::json!({ "error": e.to_string() }));
+                }
+            }
+            // The host is gone: never leave the CLI running unattended.
+            let _ = stop_tx.send("eof");
+        });
+    }
+
+    let status = tokio::select! {
+        s = child.wait() => s.ok(),
+        why = stop_rx.recv() => {
+            if why == Some("handshake") {
+                event(&ChatEvent::Notice {
+                    text: "Claude Code did not answer the chat handshake, so it was stopped \
+                           rather than run without CXMail's permission gate. Is the CLI up \
+                           to date and signed in?"
+                        .into(),
+                });
+            }
+            let _ = child.kill().await;
+            child.wait().await.ok()
+        }
+    };
+    let _ = reader.await;
+    let stderr_tail = stderr_task.await.unwrap_or_default();
+    event(&ChatEvent::Exited {
+        code: status.and_then(|s| s.code()),
+        stderr_tail,
+    });
+    0
 }
 
 #[cfg(test)]

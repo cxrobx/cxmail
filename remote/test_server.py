@@ -30,9 +30,24 @@ case "$2" in
   preview-draft) echo '{"account_id":"'$3'","folder":"'$4'","uid":'$5',"from":{"name":null,"email":"me@example.com"},"to":[{"name":"Ann","email":"ann@example.org"}],"cc":[],"bcc":[{"name":null,"email":"b@example.org"}],"subject":"Hi","sanitized_html":"<p>body</p>","plain_text":"body","attachments":[],"sendable":true,"blocked_reason":null,"digest":"%s"}' ;;
   send-draft) if [ "$6" = "%s" ]; then echo '{"message_id":"<x@cxmail.app>","draft_removed":true,"note":null}'; else echo '{"error":"The draft changed after you reviewed it."}'; exit 1; fi ;;
   silent) exit 1 ;;
+  chat)
+    echo '{"started":{"cwd":"/tmp","mcp_servers":["cxmail"]}}'
+    echo '{"event":{"type":"ready","session_id":"s","model":"m","mcp_servers":[]}}'
+    while read -r line; do
+      echo "$line" >> %s
+      case "$line" in
+        *'"stop"'*) echo '{"event":{"type":"exited","code":0,"stderr_tail":""}}'; exit 0 ;;
+        *'"send"'*) echo '{"event":{"type":"assistant_text","text":"pong"}}'; echo '{"event":{"type":"turn_done","is_error":false,"subtype":"success"}}' ;;
+      esac
+    done
+    echo '{"event":{"type":"exited","code":0,"stderr_tail":""}}' ;;
   *) echo '{"error":"usage: cxmail-mcp remote ..."}'; exit 1 ;;
 esac
-""" % (CALLS, DIGEST, DIGEST))
+""" % (CALLS, DIGEST, DIGEST, CALLS))
+FAKE_T3 = os.path.join(TMP, "fake-t3")
+with open(FAKE_T3, "w") as f:
+    f.write("#!/bin/sh\necho \"t3 $@\" >> %s\ncat > %s\necho '{\"threadId\":\"t-1\"}'\n" % (CALLS, os.path.join(TMP, "t3-prompt.txt")))
+os.chmod(FAKE_T3, 0o755)
 os.chmod(FAKE_BIN, 0o755)
 os.environ.update(
     {
@@ -41,6 +56,8 @@ os.environ.update(
         "CXMAIL_REMOTE_PORT": "0",
         "CXMAIL_MCP_URL": "http://127.0.0.1:9/never",
         "CXMAIL_SEND_BIN": FAKE_BIN,
+        "CXMAIL_T3_BIN": FAKE_T3,
+        "CXMAIL_T3_HOME_PROJECT": TMP,
     }
 )
 os.environ.pop("CXMAIL_REMOTE_DEV", None)
@@ -339,6 +356,56 @@ class Api(unittest.TestCase):
 
     def test_body_needs_the_reviewed_digest(self):
         self.assertEqual(self.req("/api/draft-body?account=a1&folder=x&uid=3&digest=nope")[0], 404)
+
+    # chat + T3 -------------------------------------------------------------------
+    def test_chat_round_trip(self):
+        cid = self.j("/api/chat/start", body={"account": "a1", "folder": "INBOX", "uid": 10})["chat"]
+        r = self.j("/api/chat/events?chat=%d&after=0" % cid)
+        self.assertIn("started", r["events"][0])
+        seq = r["seq"]
+        self.j("/api/chat/send", body={"text": "ping"})
+        got = []
+        while not any(e.get("event", {}).get("type") == "turn_done" for e in got):
+            r = self.j("/api/chat/events?chat=%d&after=%d" % (cid, seq))
+            got += r["events"]; seq = r["seq"]
+        self.assertIn({"event": {"type": "assistant_text", "text": "pong"}}, got)
+        self.assertIn("remote chat a1 INBOX 10", open(CALLS).read())
+        self.j("/api/chat/answer", body={"request_id": "r1", "allow": True, "remember": True})
+        self.assertIn('"request_id": "r1", "allow": true, "remember": true', open(CALLS).read())
+        self.j("/api/chat/stop", body={})
+        while True:
+            r = self.j("/api/chat/events?chat=%d&after=%d" % (cid, seq))
+            seq = r["seq"]
+            if not r["alive"]:
+                break
+        self.assertEqual(self.req("/api/chat/send", {"text": "again"})[0], 409)
+
+    def test_chat_events_reset_for_an_old_chat(self):
+        cid = self.j("/api/chat/start", body={})["chat"]
+        self.assertTrue(self.j("/api/chat/events?chat=%d&after=0" % (cid - 1)).get("reset"))
+        self.j("/api/chat/stop", body={})
+
+    def test_chat_send_validation_and_auth(self):
+        self.assertEqual(self.req("/api/chat/send", {"text": "  "})[0], 400)
+        self.assertEqual(self.req("/api/chat/start", {}, login=None)[0], 403)
+        self.assertEqual(self.req("/api/chat/events?chat=1&after=0", login=None)[0], 403)
+
+    def test_open_in_claude_starts_a_t3_thread(self):
+        r = self.j("/api/claude-thread", body={"account": "a1", "folder": "INBOX", "uid": 10})
+        self.assertEqual((r["project"], r["mapped"], r["thread"]), (TMP, False, {"threadId": "t-1"}))
+        prompt = open(os.path.join(TMP, "t3-prompt.txt")).read()
+        self.assertIn("account_id: a1", prompt)
+        self.assertIn("uid:        10", prompt)
+        self.assertIn("do NOT take write actions", prompt)
+        self.assertIn("no repo mapped", prompt)
+
+    def test_trash_moves_not_deletes(self):
+        self.calls.clear()
+        self.j("/api/action", body={"action": "trash", "account": "a1", "folder": "INBOX", "uid": 10})
+        tool, args = self.calls[-1]
+        self.assertEqual(tool, "delete_email")
+        self.assertNotIn("permanent", args)
+        self.assertEqual(self.j("/api/messages?view=primary"), [])
 
     def test_unknown_action_and_bad_move(self):
         self.assertEqual(self.req("/api/action", {"action": "delete", "account": "a1", "folder": "INBOX", "uid": 1})[0], 400)

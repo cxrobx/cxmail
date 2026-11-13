@@ -2,35 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- viewport-fit=cover is what makes env(safe-area-inset-*) report anything once
+     this runs from the Home Screen; without it the tab bar sits on the home
+     indicator. Zoom is locked: Safari ignores user-scalable, so fields are 16px
+     (its real focus-zoom trigger) and touch-action stops double-tap zoom. -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#151515" media="(prefers-color-scheme: dark)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="CXMail">
+<meta name="format-detection" content="telephone=no">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg">
-<link rel="apple-touch-icon" href="/icon.svg">
-<title>CXMail Remote</title>
+<link rel="apple-touch-icon" href="/icon-180.png">
+<title>CXMail</title>
 <style>
-:root{--bg:#f7f6f2;--card:#fff;--ink:#1b1b1b;--mute:#6b6b66;--line:#e4e2db;--accent:#2f6fde;--unread:#2f6fde;--danger:#c0392b;--chip:#eceae3}
-@media (prefers-color-scheme:dark){:root{--bg:#151515;--card:#1f1f1f;--ink:#e9e8e3;--mute:#9a9992;--line:#2d2d2b;--accent:#6b9cff;--unread:#6b9cff;--chip:#2a2a28}}
-*{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+:root{--bg:#f7f6f2;--card:#fff;--ink:#1b1b1b;--mute:#6b6b66;--line:#e4e2db;--accent:#2f6fde;--unread:#2f6fde;--danger:#c0392b;--chip:#eceae3;
+  --glass:rgba(250,249,246,.78);--glass-edge:rgba(0,0,0,.08);--shadow:0 18px 36px -14px rgba(0,0,0,.35);--blur:saturate(170%) blur(18px);
+  --tabbar-h:64px;--sab:env(safe-area-inset-bottom);--sat:env(safe-area-inset-top)}
+@media (prefers-color-scheme:dark){:root{--bg:#151515;--card:#1f1f1f;--ink:#e9e8e3;--mute:#9a9992;--line:#2d2d2b;--accent:#6b9cff;--unread:#6b9cff;--chip:#2a2a28;
+  --glass:rgba(30,30,30,.74);--glass-edge:rgba(255,255,255,.09);--shadow:0 20px 40px -10px rgba(0,0,0,.8)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{touch-action:manipulation}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,system-ui,sans-serif;-webkit-text-size-adjust:100%;overscroll-behavior-y:none}
 button,input,select,textarea{font:inherit;color:inherit}
+input,select,textarea{font-size:16px}
 button{background:none;border:0;cursor:pointer;padding:0}
-header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 8px) 16px 0;border-bottom:1px solid var(--line)}
+svg{display:block}
+
+/* ── list chrome ── */
+#listhead{position:sticky;top:0;z-index:5;background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  padding:calc(var(--sat) + 6px) max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));border-bottom:1px solid var(--line)}
+.titlerow{display:flex;align-items:center;gap:8px;min-height:40px}
+.bigtitle{flex:1;min-width:0;margin:0;font-size:28px;font-weight:750;letter-spacing:-.02em}
 .row{display:flex;gap:8px;align-items:center}
-.search{flex:1;min-width:0;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
-.iconbtn{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;border:1px solid var(--line);background:var(--card);flex:none}
-.iconbtn svg{width:18px;height:18px}
-select.acct{max-width:40%;padding:9px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
-.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 0;scrollbar-width:none}
-.tabs::-webkit-scrollbar{display:none}
-.tab{flex:none;padding:6px 12px;border-radius:999px;background:var(--chip);color:var(--mute)}
-.tab[aria-pressed=true]{background:var(--ink);color:var(--bg)}
-main{padding:0 0 calc(env(safe-area-inset-bottom) + 80px)}
-.msg{display:block;width:100%;color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent;text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+.search{width:100%;flex:1;min-width:0;padding:8px 12px;border-radius:10px;border:0;background:var(--chip)}
+.searchrow{padding:6px 0 8px}
+.iconbtn{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--accent);flex:none}
+.iconbtn svg{width:20px;height:20px}
+select.acct{max-width:46%;padding:6px 8px;border-radius:9px;border:0;background:var(--chip);font-size:14px;color:var(--mute)}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:0 0 10px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;padding:6px 12px;border-radius:999px;background:var(--chip);color:var(--mute);font-size:14px}
+.chip[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+main{padding:0 0 calc(var(--tabbar-h) + var(--sab) + 28px)}
+.ptr{height:0;overflow:hidden;display:grid;place-items:center;color:var(--mute);font-size:13px;transition:height .2s}
+.msg{display:block;width:100%;color:inherit;text-decoration:none;text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card);
+  -webkit-touch-callout:none;-webkit-user-select:none;user-select:none;transition:background .15s,transform .15s}
+.msg.pressing{background:var(--chip);transform:scale(.985)}
 .msg .top{display:flex;gap:8px;align-items:baseline}
 .msg .from{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .msg .date{flex:none;color:var(--mute);font-size:13px}
@@ -44,15 +65,32 @@ main{padding:0 0 calc(env(safe-area-inset-bottom) + 80px)}
 .empty,.status{padding:32px 16px;text-align:center;color:var(--mute)}
 .banner{margin:12px 16px;padding:10px 12px;border-radius:10px;background:#fdecea;color:#7d1d14}
 @media (prefers-color-scheme:dark){.banner{background:#3a1a17;color:#f3b6ae}}
-/* reader */
-#reader{display:none}
+
+/* ── bottom tab bar (Telly's floating glass bar) ── */
+.tabbar{position:fixed;z-index:15;left:calc(12px + env(safe-area-inset-left));right:calc(12px + env(safe-area-inset-right));bottom:calc(10px + var(--sab));
+  display:grid;grid-template-columns:repeat(5,1fr);padding:6px;border-radius:22px;background:var(--glass);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);border:1px solid var(--glass-edge);box-shadow:var(--shadow)}
+.tbtn{display:grid;justify-items:center;gap:2px;padding:6px 0 4px;border-radius:16px;font-size:10.5px;font-weight:550;color:var(--mute);position:relative}
+.tbtn svg{width:22px;height:22px}
+.tbtn[aria-current=page]{color:var(--accent)}
+.tbtn .badge{position:absolute;top:2px;left:calc(50% + 6px);min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--danger);color:#fff;font-size:10px;line-height:16px;text-align:center}
+body.reading .tabbar{display:none}
+@media (max-width:389px){.tabbar{left:calc(8px + env(safe-area-inset-left));right:calc(8px + env(safe-area-inset-right));bottom:max(6px,calc(var(--sab) - 14px));padding:4px;border-radius:18px}
+  .tbtn{font-size:10px}.tbtn svg{width:20px;height:20px}}
+
+/* ── reader: a pushed screen ── */
+#reader{display:none;padding-bottom:calc(var(--tabbar-h) + var(--sab) + 28px)}
 body.reading #list,body.reading #listhead{display:none}
 body.reading #reader{display:block}
-.rhead{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 8px) 16px 8px;border-bottom:1px solid var(--line)}
-.rhead h1{font-size:19px;line-height:1.3;margin:10px 0 6px}
+.navbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:8px;background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  padding:calc(var(--sat) + 4px) max(10px,env(safe-area-inset-right)) 6px max(6px,env(safe-area-inset-left));border-bottom:1px solid var(--line);min-height:calc(var(--sat) + 48px)}
+.back{display:flex;align-items:center;gap:2px;color:var(--accent);font-size:17px;padding:6px 8px 6px 2px}
+.back svg{width:24px;height:24px}
+.navbar .meta{margin-left:auto;text-align:right;max-width:60%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rmeta{padding:12px 16px 10px;border-bottom:1px solid var(--line)}
+.rmeta h1{font-size:21px;line-height:1.25;margin:0 0 8px;letter-spacing:-.01em}
 .meta{color:var(--mute);font-size:13.5px;overflow-wrap:anywhere}
 .meta b{color:var(--ink);font-weight:600}
-.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .act{padding:7px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);font-size:14px}
 .act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .imgnote{margin:8px 16px 0;font-size:13px;color:var(--mute)}
@@ -64,15 +102,26 @@ pre.body{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 16px;
 .rcpt .rlabel{flex:none;width:38px;color:var(--mute)}
 .rcpt.warn .rlabel{color:var(--danger);font-weight:600}
 .addr b{font-weight:600}
-.act.send{min-width:120px}
-.act.send.armed{background:var(--danger);border-color:var(--danger)}
-.act[disabled]{opacity:.5}
 .attach{padding:8px 16px;color:var(--mute);font-size:13.5px}
 .thread h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:20px 16px 6px}
-/* sheets */
-.sheet{position:fixed;inset:0;z-index:20;display:none;background:rgba(0,0,0,.35)}
+
+/* the reader's bottom toolbar: same glass, actions instead of tabs */
+.toolbar{position:fixed;z-index:15;left:calc(12px + env(safe-area-inset-left));right:calc(12px + env(safe-area-inset-right));bottom:calc(10px + var(--sab));
+  display:flex;justify-content:space-around;padding:6px;border-radius:22px;background:var(--glass);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);border:1px solid var(--glass-edge);box-shadow:var(--shadow)}
+.toolbar button{flex:1;display:grid;justify-items:center;gap:2px;padding:6px 0 4px;color:var(--accent);font-size:10.5px;font-weight:550}
+.toolbar button svg{width:22px;height:22px}
+.toolbar button[disabled]{opacity:.4}
+.toolbar .sendbtn{flex:2;margin:2px;border-radius:16px;background:var(--accent);color:#fff;font-size:15px;font-weight:650;display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px}
+.toolbar .sendbtn.armed{background:var(--danger)}
+.toolbar .sendbtn svg{width:18px;height:18px}
+
+/* ── sheets: compose, move, long-press menu ── */
+.sheet{position:fixed;inset:0;z-index:30;display:none;background:rgba(0,0,0,.35)}
 .sheet.open{display:flex;align-items:flex-end}
-.panel{width:100%;max-height:92vh;overflow:auto;background:var(--bg);border-radius:16px 16px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom) + 16px)}
+.panel{width:100%;max-height:92vh;overflow:auto;background:var(--bg);border-radius:18px 18px 0 0;padding:16px max(16px,env(safe-area-inset-right)) calc(var(--sab) + 16px) max(16px,env(safe-area-inset-left));
+  animation:up .22s cubic-bezier(.2,.8,.2,1)}
+@keyframes up{from{transform:translateY(24px);opacity:.6}to{transform:none;opacity:1}}
 .panel h3{margin:0 0 12px;font-size:17px}
 .field{display:block;margin-bottom:10px}
 .field span{display:block;font-size:12.5px;color:var(--mute);margin-bottom:4px}
@@ -80,28 +129,83 @@ pre.body{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 16px;
 .field textarea{min-height:200px;resize:vertical}
 .note{font-size:13px;color:var(--mute);margin:4px 0 12px}
 .folder{display:block;width:100%;text-align:left;padding:12px;border-bottom:1px solid var(--line)}
-.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 20px);transform:translateX(-50%);z-index:30;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px;max-width:calc(100% - 32px);display:none}
+/* long-press menu, styled after the desktop's context menu */
+.menu .peek{padding:4px 4px 12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.menu .peek .from{font-weight:650}
+.menu .peek .subj{color:var(--mute);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mi{display:flex;align-items:center;gap:14px;width:100%;padding:12px 6px;font-size:16.5px;text-align:left;border-radius:10px}
+.mi svg{width:22px;height:22px;flex:none;color:var(--mute)}
+.mi:active{background:var(--chip)}
+.mi.danger,.mi.danger svg{color:var(--danger)}
+.mi.claude svg{color:var(--accent)}
+.msep{height:1px;background:var(--line);margin:6px 0}
+.toast{position:fixed;left:50%;bottom:calc(var(--tabbar-h) + var(--sab) + 24px);transform:translateX(-50%);z-index:40;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px;max-width:calc(100% - 32px);display:none;text-align:center}
 .toast.show{display:block}
-.fab{position:fixed;right:16px;bottom:calc(env(safe-area-inset-bottom) + 16px);z-index:6;width:54px;height:54px;border-radius:16px;background:var(--accent);color:#fff;display:grid;place-items:center;box-shadow:0 4px 14px rgba(0,0,0,.2)}
-body.reading .fab{display:none}
-.fab svg{width:22px;height:22px}
-@media (min-width:760px){main,#reader{max-width:760px;margin:0 auto}}
+/* ── Claude chat: floating bubble + full-screen panel ── */
+.chatfab{position:fixed;z-index:16;right:calc(18px + env(safe-area-inset-right));bottom:calc(var(--tabbar-h) + var(--sab) + 26px);width:52px;height:52px;border-radius:999px;
+  display:grid;place-items:center;color:#fff;background:var(--accent);box-shadow:var(--shadow)}
+.chatfab svg{width:24px;height:24px}
+.chatfab .badge{position:absolute;top:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:var(--danger);border:2px solid var(--bg);display:none}
+.chatfab.waiting .badge{display:block}
+.chatfab.busy{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{transform:scale(1.06)}}
+body.chatting .chatfab{display:none}
+.chat{position:fixed;inset:0;z-index:45;display:none;flex-direction:column;background:var(--bg);height:100dvh}
+body.chatting .chat{display:flex}
+body.chatting{overflow:hidden}
+.chathead{display:flex;align-items:center;gap:6px;padding:calc(var(--sat) + 6px) max(10px,env(safe-area-inset-right)) 8px max(10px,env(safe-area-inset-left));
+  border-bottom:1px solid var(--line);background:var(--glass);-webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
+.chathead .ttl{flex:1;min-width:0}
+.chathead .ttl b{display:block;font-size:17px}
+.chathead .ttl span{display:block;color:var(--mute);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chathead button{color:var(--accent);font-size:15px;padding:6px 8px}
+.chatlog{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px max(12px,env(safe-area-inset-right)) 12px max(12px,env(safe-area-inset-left));display:flex;flex-direction:column;gap:10px}
+.bub{max-width:88%;padding:9px 12px;border-radius:16px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}
+.bub.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:6px}
+.bub.assistant{align-self:flex-start;background:var(--card);border:1px solid var(--line);border-bottom-left-radius:6px}
+.bub.assistant.streaming::after{content:"▍";opacity:.5}
+.bub code{font:13px ui-monospace,Menlo,monospace;background:var(--chip);padding:1px 4px;border-radius:4px}
+.bub.user code{background:rgba(255,255,255,.2)}
+.toolline{align-self:flex-start;max-width:92%;font-size:13px;color:var(--mute);display:flex;gap:6px;align-items:baseline}
+.toolline button{color:inherit;text-align:left}
+.toolline .st{flex:none}
+.toolline pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px ui-monospace,Menlo,monospace;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;max-height:240px;overflow:auto}
+.notice{align-self:center;max-width:92%;font-size:13px;color:var(--mute);text-align:center;white-space:pre-wrap}
+.notice.error{color:var(--danger)}
+.perm{align-self:stretch;border:1px solid var(--accent);border-radius:14px;padding:12px;background:var(--card)}
+.perm h4{margin:0 0 4px;font-size:15px}
+.perm .ctx{font-size:13.5px;color:var(--mute);margin:4px 0}
+.perm .ctx b{color:var(--ink)}
+.perm details{font-size:12.5px;color:var(--mute);margin:6px 0}
+.perm details pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px ui-monospace,Menlo,monospace;margin:6px 0 0}
+.perm .btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.perm .state{font-size:13px;color:var(--mute);margin-top:6px}
+.composer{display:flex;gap:8px;align-items:flex-end;padding:8px max(10px,env(safe-area-inset-right)) calc(8px + var(--sab)) max(10px,env(safe-area-inset-left));border-top:1px solid var(--line);background:var(--glass);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur)}
+.composer textarea{flex:1;min-height:40px;max-height:140px;resize:none;padding:9px 12px;border-radius:20px;border:1px solid var(--line);background:var(--card);line-height:1.35}
+.composer button{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:#fff;flex:none}
+.composer button svg{width:18px;height:18px}
+.composer button.stop{background:var(--danger)}
+.chatempty{margin:auto;text-align:center;color:var(--mute);padding:24px;max-width:320px}
+.chatempty b{display:block;color:var(--ink);font-size:17px;margin-bottom:6px}
+@media (min-width:760px){main,#reader,.rwrap{max-width:760px;margin:0 auto}.tabbar,.toolbar{max-width:520px;margin:0 auto}}
 </style>
 </head>
 <body>
 <header id="listhead">
-  <div class="row">
-    <input id="q" class="search" type="search" placeholder="Search mail" autocomplete="off" enterkeyhint="search" aria-label="Search mail">
+  <div class="titlerow">
+    <h1 class="bigtitle" id="title">Inbox</h1>
     <select id="acct" class="acct" aria-label="Account"><option value="">All accounts</option></select>
     <button id="refresh" class="iconbtn" aria-label="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
   </div>
-  <nav class="tabs" id="tabs" aria-label="Views"></nav>
+  <div class="searchrow"><input id="q" class="search" type="search" placeholder="Search" autocomplete="off" enterkeyhint="search" aria-label="Search mail"></div>
+  <nav class="chips" id="chips" aria-label="Inbox categories"></nav>
 </header>
-<main id="list"></main>
+<main id="list"><div class="ptr" id="ptr">Release to refresh</div><div id="rows"></div></main>
 
 <section id="reader" aria-live="polite"></section>
 
-<button class="fab" id="compose" aria-label="New draft"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
 
 <div class="sheet" id="draftSheet" role="dialog" aria-modal="true" aria-labelledby="draftTitle">
   <form class="panel" id="draftForm">
@@ -119,6 +223,25 @@ body.reading .fab{display:none}
 <div class="sheet" id="moveSheet" role="dialog" aria-modal="true" aria-labelledby="moveTitle">
   <div class="panel"><h3 id="moveTitle">Move to…</h3><div id="folders"></div><div class="row" style="margin-top:12px"><button class="act" id="mCancel">Cancel</button></div></div>
 </div>
+
+<div class="sheet" id="menuSheet" role="dialog" aria-modal="true" aria-label="Message actions">
+  <div class="panel menu" id="menu"></div>
+</div>
+
+<button class="chatfab" id="chatfab" aria-label="Ask Claude"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg><span class="badge"></span></button>
+
+<section class="chat" id="chat" role="dialog" aria-modal="true" aria-label="Claude chat">
+  <div class="chathead">
+    <button id="chatClose" aria-label="Close chat">Done</button>
+    <div class="ttl"><b>Claude</b><span id="chatSub">Your mail, on the Mac mini</span></div>
+    <button id="chatNew" aria-label="New chat">New</button>
+  </div>
+  <div class="chatlog" id="chatlog"></div>
+  <form class="composer" id="chatForm">
+    <textarea id="chatInput" rows="1" placeholder="Ask about your mail…" enterkeyhint="send" aria-label="Message"></textarea>
+    <button type="submit" id="chatSend" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
+  </form>
+</section>
 
 <div class="toast" id="toast" role="status"></div>
 <script src="/app.js"></script>

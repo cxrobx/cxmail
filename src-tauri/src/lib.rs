@@ -24,6 +24,8 @@ pub use cxmail_db::db;
 pub use cxmail_email::email;
 pub use cxmail_mcp::mcp;
 pub use cxmail_mcp::remote_send as mcp_remote_send;
+/// CXMail Remote's chat bridge (`cxmail-mcp remote chat`).
+pub use commands::chat::{run_remote_chat, ChatSeed};
 
 use std::collections::HashMap;
 use std::fs;

@@ -43,6 +43,13 @@ DEV = os.environ.get("CXMAIL_REMOTE_DEV") == "1"
 # The only thing here that can send mail: CXMail's own signed binary, through
 # its `remote` subcommands (never an MCP tool). It sends a draft only after a
 # person has reviewed it, and only if it hasn't changed since.
+# T3's own self-updating CLI first: it matches the database the T3 server has
+# migrated, where Homebrew's copy can lag behind it.
+T3_BIN = os.environ.get("CXMAIL_T3_BIN") or next(
+    (p for p in (os.path.expanduser("~/.t3/bin/t3"), "/opt/homebrew/bin/t3") if os.path.exists(p)), "t3")
+# Where a T3 thread starts when the correspondent isn't mapped to a repo in
+# CXMail Settings -> Claude repos. Must be a T3 project.
+T3_HOME_PROJECT = os.environ.get("CXMAIL_T3_HOME_PROJECT", os.path.expanduser("~"))
 SEND_BIN = os.environ.get("CXMAIL_SEND_BIN", "/Applications/CXMail.app/Contents/MacOS/cxmail-mcp")
 
 CATEGORIES = ("primary", "updates", "promotions", "social")
@@ -482,6 +489,7 @@ PENDING = Pending()
 EFFECT = {
     "archive": {"gone": True},
     "move": {"gone": True},
+    "trash": {"gone": True},
     "star": {"starred": True},
     "unstar": {"starred": False},
     "read": {"read": True},
@@ -521,6 +529,201 @@ def run_send_bin(*args):
     return data
 
 
+def claude_prompt(msg, repo):
+    """The desktop's Open in Claude prompt (claude_handoff.rs::build_prompt),
+    minus the scratch folder and pre-fetched attachments a T3 thread has no
+    use for."""
+    lines = [
+        "I'm in a CXMail-spawned Claude session scoped to one specific email, opened "
+        "from CXMail Remote on my phone. Help me think through it: summarize, draft "
+        "replies, whatever I ask.",
+        "",
+    ]
+    if repo.get("path"):
+        lines += ["You are in {} -- the repo CXMail maps this email to ({}). Its CLAUDE.md "
+                  "and code apply.".format(repo["path"], repo.get("source") or "mapped"), ""]
+    else:
+        lines += ["CXMail has no repo mapped for this correspondent, so this started in the "
+                  "home folder. If it belongs to a project, ask me which.", ""]
+    lines += [
+        "Email reference:",
+        "  account_id: {}".format(msg["account"]),
+        "  folder:     {}".format(msg["folder"]),
+        "  uid:        {}".format(msg["uid"]),
+        "  subject:    {}".format(msg["subject"]),
+        "  from:       {} <{}>".format(msg.get("from_name") or "", msg.get("from_email") or ""),
+        "",
+        "Use the `cxmail` MCP server (tool: read_email) with those account_id / folder / uid "
+        "values to load the full body before responding.",
+    ]
+    if msg.get("attachments"):
+        lines += ["", "This email has attachments. If I ask about them, use the cxmail MCP's "
+                  "list_attachments / download_attachment."]
+    lines += ["", "Please do NOT take write actions (send_email, delete, move, flag, archive, "
+              "compose_draft) unless I explicitly ask for them."]
+    return "\n".join(lines)
+
+
+def resolve_repo(account, folder, uid):
+    """Same resolver as the desktop's Open in Claude, via the MCP."""
+    try:
+        out = MCP.call("resolve_project_repo", {"account_id": account, "folder": folder, "uid": uid})
+        data = json.loads(out)
+    except (McpError, ValueError):
+        return {}
+    # "mapped" | "missing" (mapped, but the folder isn't there) | "unmapped"
+    if data.get("status") == "mapped" and os.path.isdir(data.get("repo_path") or ""):
+        return {"path": data["repo_path"], "source": data.get("chosen_by")}
+    return {}
+
+
+def start_t3_thread(msg):
+    repo = resolve_repo(msg["account"], msg["folder"], msg["uid"])
+    title = "Mail: {}".format(msg["subject"])[:80]
+    attempts = [repo["path"]] if repo.get("path") else []
+    attempts.append(T3_HOME_PROJECT)
+    last = ""
+    for project in attempts:
+        try:
+            p = subprocess.run(
+                [T3_BIN, "thread", "start", "--json", "--title", title, project, "-"],
+                input=claude_prompt(msg, repo if project == repo.get("path") else {}),
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise SendError("T3 didn't start a thread: {}".format(e))
+        if p.returncode == 0:
+            try:
+                data = json.loads(p.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                data = {"raw": p.stdout.strip()[-200:]}
+            return {"project": project, "title": title, "thread": data, "mapped": project == repo.get("path")}
+        # A mapped repo that isn't a T3 project: fall back to the home project.
+        last = (p.stderr or p.stdout).strip()[-300:]
+    raise SendError("T3 didn't start a thread: {}".format(last or "unknown error"))
+
+
+class Chat:
+    """One Claude chat at a time, like the desktop panel. The process is
+    CXMail's own `cxmail-mcp remote chat` bridge: the desktop chat's launch,
+    flags and permission gate, over JSON lines. This class only relays lines
+    and holds the transcript's events for the phone to long-poll."""
+
+    MAX_EVENTS = 3000
+    IDLE_STOP = 3600  # seconds without a poll or command before an idle chat is stopped
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.proc = None
+        self.chat_id = 0
+        self.events = []  # (seq, obj)
+        self.seq = 0
+        self.alive = False
+        self.touched = 0.0
+
+    def _push(self, obj):
+        with self.cond:
+            self.seq += 1
+            self.events.append((self.seq, obj))
+            del self.events[:-self.MAX_EVENTS]
+            self.cond.notify_all()
+
+    def _reader(self, proc, chat_id):
+        saw_exit = False
+        for line in proc.stdout:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if str(obj.get("error", "")).startswith("usage:"):
+                obj = {"error": "This CXMail build can't chat from the phone yet. Ship the update on the Mac first."}
+            if obj.get("event", {}).get("type") == "exited":
+                saw_exit = True
+            if self.chat_id == chat_id:
+                self._push(obj)
+        proc.wait()
+        with self.cond:
+            if self.chat_id == chat_id:
+                self.alive = False
+                if not saw_exit:
+                    self.seq += 1
+                    self.events.append((self.seq, {"event": {"type": "exited", "code": proc.returncode, "stderr_tail": ""}}))
+                self.cond.notify_all()
+
+    def start(self, seed):
+        import time
+        self.stop()
+        args = [SEND_BIN, "remote", "chat"] + ([str(x) for x in seed] if seed else [])
+        try:
+            proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        except OSError as e:
+            raise SendError("Couldn't start the chat: {}".format(e))
+        with self.cond:
+            self.chat_id += 1
+            self.proc = proc
+            self.events = []
+            self.alive = True
+            self.touched = time.time()
+            cid = self.chat_id
+        threading.Thread(target=self._reader, args=(proc, cid), daemon=True).start()
+        threading.Thread(target=self._idle_watch, args=(cid,), daemon=True).start()
+        return cid
+
+    def _idle_watch(self, cid):
+        import time
+        while True:
+            time.sleep(60)
+            with self.cond:
+                if self.chat_id != cid or not self.alive:
+                    return
+                idle = time.time() - self.touched
+            if idle > self.IDLE_STOP:
+                self.command({"cmd": "stop"})
+                return
+
+    def command(self, obj):
+        import time
+        with self.cond:
+            proc, alive = self.proc, self.alive
+            self.touched = time.time()
+        if not proc or not alive:
+            raise SendError("No chat is running. Start a new one.")
+        try:
+            proc.stdin.write(json.dumps(obj) + "\n")
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            raise SendError("The chat has ended. Start a new one.")
+
+    def stop(self):
+        with self.cond:
+            proc = self.proc
+        if proc and proc.poll() is None:
+            try:
+                proc.stdin.write(json.dumps({"cmd": "stop"}) + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()  # EOF also stops it
+            except (OSError, ValueError):
+                pass
+
+    def poll(self, chat_id, after, timeout=25):
+        import time
+        deadline = time.time() + timeout
+        with self.cond:
+            self.touched = time.time()
+            while True:
+                if chat_id != self.chat_id:
+                    return {"chat": self.chat_id, "alive": self.alive, "reset": True, "events": [], "seq": 0}
+                fresh = [o for q, o in self.events if q > after]
+                left = deadline - time.time()
+                if fresh or not self.alive or left <= 0:
+                    return {"chat": self.chat_id, "alive": self.alive, "events": fresh, "seq": self.seq}
+                self.cond.wait(left)
+
+
+CHAT = Chat()
+
+
 class PreviewCache:
     """Reviewed drafts, so the review screen's body iframe doesn't refetch."""
 
@@ -551,6 +754,8 @@ ACTIONS = {
     "unstar": lambda m: ("flag_email", dict(_flag(m), flag="unstarred")),
     "read": lambda m: ("flag_email", dict(_flag(m), flag="read")),
     "unread": lambda m: ("flag_email", dict(_flag(m), flag="unread")),
+    # delete_email without permanent=true moves to Trash, which is recoverable.
+    "trash": lambda m: ("delete_email", {"account_id": m["account"], "folder": m["folder"], "uid": m["uid"], "confirmed": True}),
     "move": lambda m: (
         "move_email",
         {"account_id": m["account"], "from_folder": m["folder"], "to_folder": m["to_folder"], "uid": m["uid"]},
@@ -620,7 +825,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype + ("; charset=utf-8" if "charset" not in ctype else ""))
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        if not (extra and "Cache-Control" in extra):
+            self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         for k, v in (extra or {}).items():
@@ -644,6 +850,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("app.js", "text/javascript")
             if url.path == "/icon.svg":
                 return self._static("icon.svg", "image/svg+xml")
+            if url.path in ("/icon-180.png", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"):
+                name = "icon-180.png" if url.path == "/apple-touch-icon.png" else url.path[1:]
+                return self._static(name, "image/png", {"Cache-Control": "max-age=86400"})
             if url.path == "/manifest.webmanifest":
                 return self._static("manifest.webmanifest", "application/manifest+json")
             if url.path == "/api/accounts":
@@ -712,6 +921,13 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 return self._send(200, BODY_WRAP.format(html), "text/html",
                                   {"Content-Security-Policy": body_csp(q.get("images") == "1")})
+            if url.path == "/api/chat/events":
+                try:
+                    chat_id = int(q.get("chat", "0"))
+                    after = int(q.get("after", "0"))
+                except ValueError:
+                    return self._err(400, "chat and after must be numbers")
+                return self._send(200, CHAT.poll(chat_id, after))
             if url.path == "/api/folders":
                 with db() as c:
                     return self._send(200, folders(c, q.get("account", "")))
@@ -777,6 +993,43 @@ class Handler(BaseHTTPRequestHandler):
                     "draft": {"account": args["account_id"], "folder": saved.group(1), "uid": int(saved.group(2))}
                     if saved else None,
                 })
+            if url.path == "/api/claude-thread":
+                ref = (str(data.get("account", "")), str(data.get("folder", "")), int(data.get("uid")))
+                with db() as c:
+                    msg = get_message(c, *ref)
+                if not msg:
+                    return self._err(404, "message not found")
+                try:
+                    return self._send(200, dict(start_t3_thread(msg), ok=True))
+                except SendError as e:
+                    return self._err(502, str(e))
+            if url.path == "/api/chat/start":
+                seed = None
+                if data.get("account"):
+                    seed = (str(data["account"]), str(data.get("folder", "")), int(data.get("uid")))
+                try:
+                    return self._send(200, {"ok": True, "chat": CHAT.start(seed)})
+                except SendError as e:
+                    return self._err(502, str(e))
+            if url.path in ("/api/chat/send", "/api/chat/answer", "/api/chat/interrupt", "/api/chat/stop"):
+                cmd = url.path.rsplit("/", 1)[1]
+                if cmd == "stop":
+                    CHAT.stop()
+                    return self._send(200, {"ok": True})
+                obj = {"cmd": cmd}
+                if cmd == "send":
+                    text = str(data.get("text", ""))
+                    if not text.strip() or len(text) > 50000:
+                        return self._err(400, "message is empty or over 50,000 characters")
+                    obj["text"] = text
+                elif cmd == "answer":
+                    obj.update(request_id=str(data.get("request_id", "")), allow=bool(data.get("allow")),
+                               remember=bool(data.get("remember")))
+                try:
+                    CHAT.command(obj)
+                except SendError as e:
+                    return self._err(409, str(e))
+                return self._send(200, {"ok": True})
             if url.path == "/api/send":
                 ref = (str(data.get("account", "")), str(data.get("folder", "")), int(data.get("uid")))
                 digest = str(data.get("digest", ""))

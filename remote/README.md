@@ -12,6 +12,10 @@ Sending goes through CXMail's own signed binary, after you review the draft.
 | Archive, star, read/unread, move | calls the shared `cxmail-mcp` HTTP server (`127.0.0.1:18704`), which does the IMAP work and tells the app over the bridge socket |
 | Reply, reply all, new message | `compose_draft`, then optionally **Review & send** |
 | Drafts tab, **send** | `cxmail-mcp remote preview-draft` shows every From/To/Cc/Bcc and a SHA-256 of the stored draft; `cxmail-mcp remote send-draft` refetches it, refuses if the bytes changed, sends through the compose window's `smtp::send_email`, then expunges that one draft UID. Send needs two taps |
+| Home Screen app | `apple-touch-icon` PNG, `viewport-fit=cover`, locked zoom, a floating glass tab bar (Inbox · Unread · Drafts · Search · New) like Telly's, a pushed reader with a bottom action toolbar, edge-swipe back and pull to refresh (Safari's own gestures are gone in a standalone app) |
+| Long-press a message (right-click on a Mac) | Open in Claude (T3), Ask Claude in Chat, Reply, Reply all, Archive, Star, Mark read/unread, Move to…, Move to Trash (`delete_email` without `permanent`, so recoverable) |
+| **Open in Claude** | `t3 thread start` in the repo `resolve_project_repo` maps the sender to (the desktop's resolver), else the home project, with the desktop handoff's prompt. Uses `~/.t3/bin/t3` first: Homebrew's copy can lag the T3 server's database |
+| **Claude chat bubble** | `cxmail-mcp remote chat [<account> <folder> <uid>]`: the desktop chat panel's own launch (`chat::assemble_launch`), flags (gotcha #64) and permission gate (`chat::pump_stdout`), spoken as JSON lines. One chat at a time; the phone long-polls `/api/chat/events`. Its sessions live in `claude-chat-remote`, apart from the panel's. Stopped after an hour without a poll, and whenever this server goes away (EOF) |
 
 It needs CXMail running on the same Mac (for sync), the `cxmail-mcp` HTTP LaunchAgent (for changes), and a CXMail build that has the `remote` subcommand (for sending; an older build answers "Ship the update on the Mac first").
 
