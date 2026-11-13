@@ -19,12 +19,28 @@ import urllib.request
 
 TMP = tempfile.mkdtemp()
 FIXTURE = os.path.join(TMP, "cxmail.db")
+# A stand-in for `cxmail-mcp remote ...`: logs its argv, answers like the real one.
+FAKE_BIN = os.path.join(TMP, "fake-cxmail-mcp")
+CALLS = os.path.join(TMP, "calls.log")
+DIGEST = "a" * 64
+with open(FAKE_BIN, "w") as f:
+    f.write("""#!/bin/sh
+echo "$@" >> %s
+case "$2" in
+  preview-draft) echo '{"account_id":"'$3'","folder":"'$4'","uid":'$5',"from":{"name":null,"email":"me@example.com"},"to":[{"name":"Ann","email":"ann@example.org"}],"cc":[],"bcc":[{"name":null,"email":"b@example.org"}],"subject":"Hi","sanitized_html":"<p>body</p>","plain_text":"body","attachments":[],"sendable":true,"blocked_reason":null,"digest":"%s"}' ;;
+  send-draft) if [ "$6" = "%s" ]; then echo '{"message_id":"<x@cxmail.app>","draft_removed":true,"note":null}'; else echo '{"error":"The draft changed after you reviewed it."}'; exit 1; fi ;;
+  silent) exit 1 ;;
+  *) echo '{"error":"usage: cxmail-mcp remote ..."}'; exit 1 ;;
+esac
+""" % (CALLS, DIGEST, DIGEST))
+os.chmod(FAKE_BIN, 0o755)
 os.environ.update(
     {
         "CXMAIL_DB": FIXTURE,
         "CXMAIL_REMOTE_LOGINS": "owner@example.com",
         "CXMAIL_REMOTE_PORT": "0",
         "CXMAIL_MCP_URL": "http://127.0.0.1:9/never",
+        "CXMAIL_SEND_BIN": FAKE_BIN,
     }
 )
 os.environ.pop("CXMAIL_REMOTE_DEV", None)
@@ -61,6 +77,7 @@ def build_fixture():
             ("a1", "INBOX", None, "inbox"),
             ("a1", "[Gmail]/All Mail", "All Mail", "archive"),
             ("a1", "[Gmail]/Trash", "Trash", "trash"),
+            ("a1", "[Gmail]/Drafts", "Drafts", "drafts"),
             ("a2", "INBOX", None, "inbox"),
         ],
     )
@@ -71,6 +88,7 @@ def build_fixture():
         (3, "a1", "[Gmail]/All Mail", 10, "<m1@x>", "Quarterly budget", "ann@example.org", "2026-11-10T09:00:00+00:00", 0, "primary", "r1"),
         (4, "a1", "[Gmail]/All Mail", 5, "<m0@x>", "Re: budget", "bob@example.org", "2026-11-09T09:00:00+00:00", 1, "primary", "r1"),
         (5, "a1", "[Gmail]/Trash", 6, "<m9@x>", "budget junk", "x@example.org", "2026-11-08T09:00:00+00:00", 1, "primary", "r1"),
+        (7, "a1", "[Gmail]/Drafts", 3, "<d1@x>", "Re: budget", "me@example.com", "2026-11-12T10:00:00+00:00", 1, "primary", "r1"),
         (6, "a2", "INBOX", 1, "<h1@x>", "hidden budget", "h@example.org", "2026-11-12T09:00:00+00:00", 0, "primary", None),
     ]
     for (i, a, f, u, mid, s, fr, d, rd, cat, root) in rows:
@@ -280,6 +298,48 @@ class Api(unittest.TestCase):
         self.assertEqual(code, 502)
         self.assertEqual(len(self.j("/api/messages?view=primary")), 1)
 
+    # sending -----------------------------------------------------------------
+    def test_drafts_tab_lists_drafts_only(self):
+        rows = self.j("/api/drafts")
+        self.assertEqual([(r["folder"], r["uid"], r["draft"]) for r in rows], [("[Gmail]/Drafts", 3, True)])
+
+    def test_inbox_search_still_skips_drafts(self):
+        self.assertNotIn("[Gmail]/Drafts", [r["folder"] for r in self.j("/api/messages?q=budget")])
+
+    def test_review_then_send(self):
+        p = self.j("/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3")
+        self.assertEqual([a["email"] for a in p["bcc"]], ["b@example.org"])
+        self.assertNotIn("sanitized_html", p)  # the body comes through the CSP'd endpoint
+        code, headers, raw = self.req("/api/draft-body?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3&digest=" + p["digest"])
+        self.assertEqual(code, 200)
+        self.assertIn(b"<p>body</p>", raw)
+        self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+        out = self.j("/api/send", body={"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": p["digest"]})
+        self.assertTrue(out["ok"] and out["draft_removed"])
+        self.assertEqual(open(CALLS).read().splitlines()[-1], "remote send-draft a1 [Gmail]/Drafts 3 " + DIGEST)
+        self.assertEqual(self.j("/api/drafts"), [])  # gone before the app syncs
+
+    def test_send_refuses_changed_draft_and_bad_input(self):
+        code, _, raw = self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": "b" * 64})
+        self.assertEqual(code, 502)
+        self.assertIn(b"changed", raw)
+        self.assertEqual(len(self.j("/api/drafts")), 1)  # a refused send hides nothing
+        self.assertEqual(self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3})[0], 400)
+        self.assertEqual(self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": DIGEST}, login=None)[0], 403)
+        self.assertEqual(self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": DIGEST},
+                                  headers={"X-CXMail-Remote": "0"})[0], 400)
+
+    def test_old_cxmail_build_says_ship_first(self):
+        with self.assertRaises(server.SendError) as cm:
+            server.run_send_bin("not-a-command")
+        self.assertIn("Ship the update", str(cm.exception))
+        with self.assertRaises(server.SendError) as cm:
+            server.run_send_bin("silent")  # what a pre-`remote` build does
+        self.assertIn("Ship the update", str(cm.exception))
+
+    def test_body_needs_the_reviewed_digest(self):
+        self.assertEqual(self.req("/api/draft-body?account=a1&folder=x&uid=3&digest=nope")[0], 404)
+
     def test_unknown_action_and_bad_move(self):
         self.assertEqual(self.req("/api/action", {"action": "delete", "account": "a1", "folder": "INBOX", "uid": 1})[0], 400)
         self.assertEqual(self.req("/api/action", {"action": "move", "account": "a1", "folder": "INBOX", "uid": 1})[0], 400)
@@ -290,6 +350,7 @@ class Api(unittest.TestCase):
                                    "body": "ok", "reply_folder": "INBOX", "reply_uid": 10})
         tool, args = self.calls[-1]
         self.assertEqual(tool, "compose_draft")
+        self.assertNotIn("send_email", [t for t, _ in self.calls])
         self.assertEqual(args["to"], ["ann@example.org"])
         self.assertEqual((args["reply_to_folder"], args["reply_to_uid"]), ("INBOX", 10))
         self.assertFalse(args["is_html"])

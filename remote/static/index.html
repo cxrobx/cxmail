@@ -59,6 +59,14 @@ body.reading #reader{display:block}
 .imgnote button{color:var(--accent);text-decoration:underline}
 iframe.body{display:block;width:100%;border:0;background:#fff;min-height:200px}
 pre.body{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 16px;font:14px/1.5 ui-monospace,Menlo,monospace;background:var(--card)}
+.rcpts{margin:6px 0 2px;display:grid;gap:6px}
+.rcpt{display:flex;gap:10px;font-size:14px;overflow-wrap:anywhere}
+.rcpt .rlabel{flex:none;width:38px;color:var(--mute)}
+.rcpt.warn .rlabel{color:var(--danger);font-weight:600}
+.addr b{font-weight:600}
+.act.send{min-width:120px}
+.act.send.armed{background:var(--danger);border-color:var(--danger)}
+.act[disabled]{opacity:.5}
 .attach{padding:8px 16px;color:var(--mute);font-size:13.5px}
 .thread h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:20px 16px 6px}
 /* sheets */
@@ -103,8 +111,8 @@ body.reading .fab{display:none}
     <label class="field"><span>Cc</span><input id="dCc" type="text" inputmode="email" autocomplete="off"></label>
     <label class="field"><span>Subject</span><input id="dSubj" type="text"></label>
     <label class="field"><span>Message</span><textarea id="dBody" placeholder="Your signature and the quoted original are added for you."></textarea></label>
-    <p class="note">This saves to Drafts. It is never sent from here: send it from CXMail on the Mac.</p>
-    <div class="row"><button type="button" class="act" id="dCancel">Cancel</button><span style="flex:1"></span><button type="submit" class="act primary" id="dSave">Save draft</button></div>
+    <p class="note">Review &amp; send saves it to Drafts first, then shows every recipient before anything goes out.</p>
+    <div class="row"><button type="button" class="act" id="dCancel">Cancel</button><span style="flex:1"></span><button type="submit" class="act" id="dSave">Save draft</button><button type="submit" class="act primary" id="dReview">Review &amp; send</button></div>
   </form>
 </div>
 

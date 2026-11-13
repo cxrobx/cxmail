@@ -13,7 +13,9 @@ break. See remote/README.md for the LaunchAgent and Tailscale Serve setup.
 
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 import threading
 import urllib.error
@@ -38,6 +40,10 @@ ALLOWED_LOGINS = {
 # Dev mode skips the login check, for a localhost-only instance that agents
 # and tests drive. Never give a dev instance a Serve entry.
 DEV = os.environ.get("CXMAIL_REMOTE_DEV") == "1"
+# The only thing here that can send mail: CXMail's own signed binary, through
+# its `remote` subcommands (never an MCP tool). It sends a draft only after a
+# person has reviewed it, and only if it hasn't changed since.
+SEND_BIN = os.environ.get("CXMAIL_SEND_BIN", "/Applications/CXMail.app/Contents/MacOS/cxmail-mcp")
 
 CATEGORIES = ("primary", "updates", "promotions", "social")
 PAGE = 50
@@ -300,6 +306,28 @@ def get_message(conn, account, folder, uid):
     return msg
 
 
+def list_drafts(conn, account):
+    accts = accounts(conn)
+    ids = [a["id"] for a in accts if (a["id"] == account if account else not a["hidden"])]
+    rows = []
+    for aid in ids:
+        name = folder_of_type(conn, aid, "drafts")
+        if not name:
+            continue
+        rows += [
+            row_summary(r)
+            for r in conn.execute(
+                "SELECT {} FROM messages m WHERE m.account_id = ? AND m.folder_name = ? "
+                "ORDER BY m.date DESC LIMIT {}".format(SUMMARY_COLS, PAGE),
+                (aid, name),
+            ).fetchall()
+        ]
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    for r in rows:
+        r["draft"] = True
+    return rows[:PAGE]
+
+
 def get_html(conn, account, folder, uid):
     r = conn.execute(
         "SELECT sanitized_html FROM message_bodies WHERE account_id = ? AND folder_name = ? AND uid = ?",
@@ -460,6 +488,63 @@ EFFECT = {
     "unread": {"read": False},
 }
 
+class SendError(Exception):
+    pass
+
+
+def run_send_bin(*args):
+    """Run `cxmail-mcp remote ...`; returns its JSON or raises SendError."""
+    try:
+        p = subprocess.run(
+            [SEND_BIN, "remote"] + [str(a) for a in args],
+            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, CXMAIL_MCP_IDLE_GRACE_SECS="0"),
+        )
+    except FileNotFoundError:
+        raise SendError("CXMail isn't installed at {}".format(SEND_BIN))
+    except subprocess.TimeoutExpired:
+        raise SendError("CXMail didn't answer within 2 minutes. Check Drafts and Sent before trying again.")
+    out = (p.stdout or "").strip().splitlines()
+    if not out:
+        # A CXMail build from before the `remote` subcommand starts its stdio
+        # MCP server instead, sees the closed stdin and exits silently.
+        raise SendError("This CXMail build can't send from the phone yet. Ship the update on the Mac first.")
+    try:
+        data = json.loads(out[-1]) if out else {}
+    except ValueError:
+        data = {}
+    if p.returncode != 0 or "error" in data:
+        msg = data.get("error") or (p.stderr or "").strip()[-300:] or "exit {}".format(p.returncode)
+        if msg.startswith("usage:"):
+            msg = "This CXMail build can't send from the phone yet. Ship the update on the Mac first."
+        raise SendError(msg)
+    return data
+
+
+class PreviewCache:
+    """Reviewed drafts, so the review screen's body iframe doesn't refetch."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.items = {}
+
+    def put(self, p):
+        import time
+        with self.lock:
+            now = time.time()
+            self.items = {k: v for k, v in self.items.items() if v[0] > now}
+            self.items[(p["account_id"], p["folder"], p["uid"], p["digest"])] = (now + 900, p)
+
+    def get(self, account, folder, uid, digest):
+        import time
+        with self.lock:
+            hit = self.items.get((account, folder, uid, digest))
+            return hit[1] if hit and hit[0] > time.time() else None
+
+
+PREVIEWS = PreviewCache()
+_SAVED = re.compile(r"Draft saved to (.+?) \(UID (\d+)\)")
+
 ACTIONS = {
     "archive": lambda m: ("archive_email", {"account_id": m["account"], "folder": m["folder"], "uid": m["uid"]}),
     "star": lambda m: ("flag_email", dict(_flag(m), flag="starred")),
@@ -601,6 +686,32 @@ class Handler(BaseHTTPRequestHandler):
                     "text/html",
                     {"Content-Security-Policy": body_csp(q.get("images") == "1")},
                 )
+            if url.path == "/api/drafts":
+                with db() as c:
+                    return self._send(200, PENDING.apply(list_drafts(c, q.get("account"))))
+            if url.path == "/api/draft-preview":
+                ref = self._ref(q)
+                try:
+                    p = run_send_bin("preview-draft", *ref)
+                except SendError as e:
+                    return self._err(502, str(e))
+                PREVIEWS.put(p)
+                p = dict(p)
+                p.pop("sanitized_html", None)
+                return self._send(200, p)
+            if url.path == "/api/draft-body":
+                ref = self._ref(q)
+                p = PREVIEWS.get(ref[0], ref[1], ref[2], q.get("digest", ""))
+                if not p:
+                    return self._err(404, "review expired; reopen the draft")
+                if p.get("sanitized_html"):
+                    html = p["sanitized_html"]
+                else:
+                    html = "<pre>{}</pre>".format(
+                        (p.get("plain_text") or "").replace("&", "&amp;").replace("<", "&lt;")
+                    )
+                return self._send(200, BODY_WRAP.format(html), "text/html",
+                                  {"Content-Security-Policy": body_csp(q.get("images") == "1")})
             if url.path == "/api/folders":
                 with db() as c:
                     return self._send(200, folders(c, q.get("account", "")))
@@ -658,7 +769,25 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get("reply_folder") and data.get("reply_uid") is not None:
                     args["reply_to_folder"] = str(data["reply_folder"])
                     args["reply_to_uid"] = int(data["reply_uid"])
-                return self._send(200, {"ok": True, "result": MCP.call("compose_draft", args)})
+                result = MCP.call("compose_draft", args)
+                saved = _SAVED.search(result)
+                return self._send(200, {
+                    "ok": True,
+                    "result": result,
+                    "draft": {"account": args["account_id"], "folder": saved.group(1), "uid": int(saved.group(2))}
+                    if saved else None,
+                })
+            if url.path == "/api/send":
+                ref = (str(data.get("account", "")), str(data.get("folder", "")), int(data.get("uid")))
+                digest = str(data.get("digest", ""))
+                if not ref[0] or not ref[1] or len(digest) != 64:
+                    return self._err(400, "account, folder, uid and the reviewed digest are required")
+                try:
+                    out = run_send_bin("send-draft", ref[0], ref[1], ref[2], digest)
+                except SendError as e:
+                    return self._err(502, str(e))
+                PENDING.note(ref, gone=True)
+                return self._send(200, dict(out, ok=True))
             return self._err(404, "not found")
         except (ValueError, TypeError) as e:
             return self._err(400, "bad request: {}".format(e))

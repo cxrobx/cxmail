@@ -3,7 +3,7 @@
 
 const $ = (s) => document.querySelector(s);
 const VIEWS = [
-  ["primary", "Primary"], ["unread", "Unread"], ["starred", "Starred"],
+  ["primary", "Primary"], ["unread", "Unread"], ["starred", "Starred"], ["drafts", "Drafts"],
   ["updates", "Updates"], ["promotions", "Promotions"], ["social", "Social"], ["all", "All"],
 ];
 const state = { view: "primary", account: "", q: "", rows: [], accounts: [], done: false, loading: false, current: null };
@@ -44,7 +44,7 @@ function when(iso) {
 const who = (m) => m.from_name || m.from_email || "(unknown)";
 const fmtAddr = (a) => (a.name ? a.name + " <" + a.email + ">" : a.email);
 const refQ = (m) => "account=" + encodeURIComponent(m.account) + "&folder=" + encodeURIComponent(m.folder) + "&uid=" + m.uid;
-const route = (m) => "#/m/" + encodeURIComponent(m.account) + "/" + encodeURIComponent(m.folder) + "/" + m.uid;
+const route = (m) => (m.draft ? "#/send/" : "#/m/") + encodeURIComponent(m.account) + "/" + encodeURIComponent(m.folder) + "/" + m.uid;
 
 // ─── list ────────────────────────────────────────────────
 function renderTabs() {
@@ -86,7 +86,7 @@ async function load(reset) {
   if (!reset && state.rows.length) p.set("before", state.rows[state.rows.length - 1].date);
   let err = null;
   try {
-    const rows = await api("/api/messages?" + p);
+    const rows = await api((!state.q && state.view === "drafts" ? "/api/drafts?" : "/api/messages?") + p);
     state.rows = reset ? rows : state.rows.concat(rows);
     state.done = rows.length < 50;
   } catch (e) { err = e.message; }
@@ -171,6 +171,64 @@ async function act(action, extra) {
   }
 }
 
+// ─── review & send ───────────────────────────────────────
+async function openReview(account, folder, uid) {
+  document.body.classList.add("reading");
+  const box = $("#reader");
+  box.replaceChildren(h("div", { class: "status" }, "Fetching the draft from the server…"));
+  window.scrollTo(0, 0);
+  let p;
+  try { p = await api("/api/draft-preview?account=" + encodeURIComponent(account) + "&folder=" + encodeURIComponent(folder) + "&uid=" + uid); }
+  catch (e) { box.replaceChildren(h("div", { class: "rhead" }, backBar()), h("div", { class: "banner" }, e.message)); return; }
+  renderReview(p, false);
+}
+
+function rcptBlock(label, list, warn) {
+  if (!list.length) return null;
+  return h("div", { class: "rcpt" + (warn ? " warn" : "") }, h("span", { class: "rlabel" }, label),
+    h("div", {}, list.map((a) => h("div", { class: "addr" }, a.name ? a.name + " " : "", h("b", {}, a.email)))));
+}
+
+function renderReview(p, images) {
+  const box = $("#reader");
+  const total = p.to.length + p.cc.length + p.bcc.length;
+  let armed = false, armT;
+  const send = h("button", { class: "act primary send", disabled: !p.sendable }, "Send");
+  send.addEventListener("click", async () => {
+    if (!armed) {
+      armed = true; send.textContent = "Tap again to send to " + total + (total === 1 ? " person" : " people");
+      send.classList.add("armed");
+      armT = setTimeout(() => { armed = false; send.textContent = "Send"; send.classList.remove("armed"); }, 4000);
+      return;
+    }
+    clearTimeout(armT); send.disabled = true; send.textContent = "Sending…";
+    try {
+      const r = await api("/api/send", { account: p.account_id, folder: p.folder, uid: p.uid, digest: p.digest });
+      toast(r.draft_removed ? "Sent" : (r.note || "Sent"));
+      state.rows = []; location.hash = "#/";
+    } catch (e) {
+      send.disabled = false; send.textContent = "Send"; send.classList.remove("armed"); armed = false;
+      toast("Not sent: " + e.message);
+    }
+  });
+  const head = h("div", { class: "rhead" },
+    h("div", { class: "row" }, backBar(), h("span", { style: "flex:1" }), h("span", { class: "meta" }, "Review before sending")),
+    h("h1", {}, p.subject || "(no subject)"),
+    h("div", { class: "rcpts" },
+      rcptBlock("From", [p.from]),
+      rcptBlock("To", p.to), rcptBlock("Cc", p.cc), rcptBlock("Bcc", p.bcc, true)),
+    p.blocked_reason ? h("div", { class: "banner" }, p.blocked_reason) : null,
+    h("div", { class: "actions" }, send));
+  const parts = [head];
+  if (!images) parts.push(h("div", { class: "imgnote" }, "Remote images are blocked. ", h("button", { onclick: () => renderReview(p, true) }, "Show images")));
+  const f = h("iframe", { class: "body", title: "Draft body", sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer",
+    src: "/api/draft-body?account=" + encodeURIComponent(p.account_id) + "&folder=" + encodeURIComponent(p.folder) + "&uid=" + p.uid + "&digest=" + p.digest + (images ? "&images=1" : "") });
+  f.addEventListener("load", () => { try { f.style.height = Math.max(200, f.contentDocument.documentElement.scrollHeight) + "px"; } catch (e) { f.style.height = "70vh"; } });
+  parts.push(f);
+  if (p.attachments.length) parts.push(h("div", { class: "attach" }, "📎 ", p.attachments.join(", ")));
+  box.replaceChildren(...parts);
+}
+
 // ─── move ────────────────────────────────────────────────
 async function openMove() {
   const m = state.current; const list = $("#folders");
@@ -208,17 +266,24 @@ function openDraft(kind) {
   setTimeout(() => (m ? $("#dBody") : $("#dTo")).focus(), 50);
 }
 const splitAddrs = (s) => s.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
+let draftThenReview = false;
+$("#dReview").addEventListener("click", () => { draftThenReview = true; });
+$("#dSave").addEventListener("click", () => { draftThenReview = false; });
 $("#draftForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const btn = $("#dSave"); btn.disabled = true; btn.textContent = "Saving…";
+  const review = draftThenReview;
+  const btn = review ? $("#dReview") : $("#dSave"); const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Saving…";
   try {
     const body = { account: $("#dAcct").value, to: splitAddrs($("#dTo").value), cc: splitAddrs($("#dCc").value),
       subject: $("#dSubj").value, body: $("#dBody").value };
     if (draftCtx) { body.reply_folder = draftCtx.folder; body.reply_uid = draftCtx.uid; }
-    await api("/api/draft", body);
-    closeSheets(); toast("Saved to Drafts. Send it from CXMail on the Mac.");
+    const res = await api("/api/draft", body);
+    closeSheets();
+    if (review && res.draft) location.hash = "#/send/" + encodeURIComponent(res.draft.account) + "/" + encodeURIComponent(res.draft.folder) + "/" + res.draft.uid;
+    else toast(review ? "Saved to Drafts. Open it under Drafts to send." : "Saved to Drafts.");
   } catch (e) { toast("Not saved: " + e.message); }
-  btn.disabled = false; btn.textContent = "Save draft";
+  btn.disabled = false; btn.textContent = label;
 });
 
 function closeSheets() { document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("open")); }
@@ -235,9 +300,10 @@ $("#refresh").addEventListener("click", () => load(true));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !document.body.classList.contains("reading")) load(true); });
 
 function onRoute() {
-  const m = location.hash.match(/^#\/m\/([^/]+)\/([^/]+)\/(\d+)$/);
+  const m = location.hash.match(/^#\/(m|send)\/([^/]+)\/([^/]+)\/(\d+)$/);
   closeSheets();
-  if (m) return openMessage(decodeURIComponent(m[1]), decodeURIComponent(m[2]), Number(m[3]));
+  if (m && m[1] === "send") return openReview(decodeURIComponent(m[2]), decodeURIComponent(m[3]), Number(m[4]));
+  if (m) return openMessage(decodeURIComponent(m[2]), decodeURIComponent(m[3]), Number(m[4]));
   document.body.classList.remove("reading"); state.current = null;
   if (!state.rows.length) load(true); else renderList();
 }

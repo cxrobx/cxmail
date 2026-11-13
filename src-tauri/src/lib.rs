@@ -23,6 +23,7 @@ pub use cxmail_core::{error, keychain, secrets, LockExt};
 pub use cxmail_db::db;
 pub use cxmail_email::email;
 pub use cxmail_mcp::mcp;
+pub use cxmail_mcp::remote_send as mcp_remote_send;
 
 use std::collections::HashMap;
 use std::fs;

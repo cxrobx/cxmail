@@ -5,6 +5,11 @@
 //!   cxmail-mcp --http <port> one shared streamable-HTTP server at
 //!                            http://127.0.0.1:<port>/mcp, loopback only, a fresh
 //!                            handler per MCP session (for a LaunchAgent)
+//!   cxmail-mcp remote preview-draft <account_id> <folder> <uid>
+//!   cxmail-mcp remote send-draft <account_id> <folder> <uid> <digest>
+//!                            CXMail Remote's send path (`remote/`): one JSON
+//!                            object on stdout, exit 1 with {"error"} on failure.
+//!                            NOT MCP tools, on purpose: the MCP never sends.
 //! Register with Claude Code via the repo-root `.mcp.json`:
 //!   { "mcpServers": { "cxmail": { "command": "./src-tauri/target/release/cxmail-mcp" } } }
 //! or globally with: claude mcp add cxmail /abs/path/to/cxmail-mcp
@@ -76,6 +81,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let db_path = db_path.to_string_lossy().to_string();
+
+    if std::env::args().nth(1).as_deref() == Some("remote") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let (code, out) = run_remote(&db_path, &args).await;
+        println!("{out}");
+        std::process::exit(code);
+    }
 
     if let Some(port) = http_port_from_args()? {
         // No orphan watchdog here: under launchd our parent IS pid 1, and a
@@ -248,4 +260,28 @@ async fn loopback_only(
         return (StatusCode::FORBIDDEN, "cxmail-mcp: loopback clients only").into_response();
     }
     next.run(req).await
+}
+
+/// `cxmail-mcp remote …` — see the module docs. Returns (exit code, JSON).
+async fn run_remote(db_path: &str, args: &[String]) -> (i32, String) {
+    use cxmail_lib::mcp_remote_send as rs;
+    let err = |m: String| (1, serde_json::json!({ "error": m }).to_string());
+    let uid = |s: Option<&String>| s.and_then(|s| s.parse::<u32>().ok());
+    match args.first().map(String::as_str) {
+        Some("preview-draft") if args.len() == 4 => match uid(args.get(3)) {
+            Some(u) => match rs::preview_draft(db_path, &args[1], &args[2], u).await {
+                Ok(p) => (0, serde_json::to_string(&p).unwrap_or_default()),
+                Err(e) => err(e.to_string()),
+            },
+            None => err("uid must be a number".into()),
+        },
+        Some("send-draft") if args.len() == 5 => match uid(args.get(3)) {
+            Some(u) => match rs::send_draft(db_path, &args[1], &args[2], u, &args[4]).await {
+                Ok(o) => (0, serde_json::to_string(&o).unwrap_or_default()),
+                Err(e) => err(e.to_string()),
+            },
+            None => err("uid must be a number".into()),
+        },
+        _ => err("usage: cxmail-mcp remote preview-draft <account> <folder> <uid> | send-draft <account> <folder> <uid> <digest>".into()),
+    }
 }

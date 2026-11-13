@@ -2,6 +2,7 @@
 
 A thin web client that puts the Mac's CXMail on a phone, over Tailscale only.
 It is not a second mail client: there is no sync, no IMAP and no credentials here.
+Sending goes through CXMail's own signed binary, after you review the draft.
 
 | Does | How |
 |---|---|
@@ -9,9 +10,10 @@ It is not a second mail client: there is no sync, no IMAP and no credentials her
 | Search | FTS5, with a line-for-line port of `build_match_expr` (gotcha #26; `test_server.py` pins parity) |
 | Read a message and its thread | the stored ammonia-sanitised HTML, served with a no-script CSP into a sandboxed iframe; remote images off unless the sender is in `trusted_image_senders` or you tap *Show images* |
 | Archive, star, read/unread, move | calls the shared `cxmail-mcp` HTTP server (`127.0.0.1:18704`), which does the IMAP work and tells the app over the bridge socket |
-| Reply, reply all, new message | `compose_draft`. **It never sends.** Drafts are sent from CXMail on the Mac |
+| Reply, reply all, new message | `compose_draft`, then optionally **Review & send** |
+| Drafts tab, **send** | `cxmail-mcp remote preview-draft` shows every From/To/Cc/Bcc and a SHA-256 of the stored draft; `cxmail-mcp remote send-draft` refetches it, refuses if the bytes changed, sends through the compose window's `smtp::send_email`, then expunges that one draft UID. Send needs two taps |
 
-It needs CXMail running on the same Mac (for sync) and the `cxmail-mcp` HTTP LaunchAgent (for changes).
+It needs CXMail running on the same Mac (for sync), the `cxmail-mcp` HTTP LaunchAgent (for changes), and a CXMail build that has the `remote` subcommand (for sending; an older build answers "Ship the update on the Mac first").
 
 ## Run
 
@@ -27,10 +29,11 @@ Standard-library Python only (`/usr/bin/python3`, 3.9): no venv, nothing to brea
 
 - Bound to `127.0.0.1`; reachable only through Tailscale Serve.
 - Every request must carry a `Tailscale-User-Login` in `CXMAIL_REMOTE_LOGINS` (set by `install.sh` to this Mac's own Tailscale user). Serve adds that header; a request without it (a tagged device, a direct local hit) gets 403. The server refuses to start with the list empty.
+- **The MCP still cannot send.** The send path is two subcommands of the signed `cxmail-mcp` binary, not MCP tools, so an agent working through the MCP has no send (`send_email` stays refused). A process running as you could run the binary directly, as it could drive the app itself: the boundary is the MCP surface, not the user account. The subcommands only send a message from the account's Drafts folder, and only if it is byte-for-byte what you reviewed: a draft edited anywhere since gets refused. The Keychain trusts the binary by its signature, which is why it has to ship inside the app (`/ship`).
 - POSTs need `X-CXMail-Remote: 1` and a JSON body, which a cross-site form can't send without a preflight this server never answers.
 - `CXMAIL_REMOTE_DEV=1` turns the login check off for a localhost-only instance that agents and tests drive. Never give one a Serve entry, and point its `CXMAIL_MCP_URL` at a dead port unless you mean to change real mail (opening a message marks it read).
 
 ## Not here, on purpose
 
-- **Sending.** Needs the approval design in `specs/mcp-send-approval-bridge.md` and a spec review first.
-- **Attachments** (names only), **delete**, **compose formatting**.
+- **Sending drafts with attachments** (refused with "send it from the Mac"), opening attachments (names only), **delete**, **compose formatting**.
+- **Undo send.** Two taps is the guard; there is no delay window.
