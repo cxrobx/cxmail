@@ -47,6 +47,7 @@ entry there, then add its one line here.
 - **#56** Draft attachment bytes are cached in `draft_attachment_blobs` (empty = not cached); spawn the LOGOUT, don't await it.
 - **#57** `edit_draft` order: claim → preflight → APPEND → retire old UID with `UID EXPUNGE`. Drafts are addressed by `draft_id` + `expected_uid`; `drafts.link` is forward-only per `(uidvalidity, folder)`.
 - **#58** MCP draft prose comes from the calling agent; `instruction` → `agy` is a separate authorship path with a test-pinned containment argv. Sign `cxmail-mcp` with its default identifier.
+- **#67** Send never writes a `Bcc:` header (mail-send writes the builder verbatim): Bcc goes in the envelope only via `smtp::envelope_rcpts`; drafts keep theirs.
 - **#64** In-app chat security is `--tools` + `--permission-mode manual` + `--strict-mcp-config`; `--allowedTools` is additive; CXTasks writes always ask.
 
 ## Database

@@ -1354,6 +1354,18 @@ Pattern: `commands/claude_handoff.rs::{herdr_host, handoff_claude_cli, split_for
 
 ---
 
+### 67. mail-send writes the builder's `Bcc:` header verbatim — Bcc goes in the SMTP envelope only
+
+**Symptom:** none visible from our side. Every send through `smtp::send_email_with_message_id` (the compose window, scheduled send, CXMail Remote) carried a `Bcc:` header naming every Bcc recipient, so anyone who got the message could read who was Bcc'd, unless the receiving server happened to strip it.
+
+**Why:** `mail-send`'s `IntoMessage for MessageBuilder` reads To, Cc and Bcc to build the envelope, then writes the builder's headers as they are (`self.write_to_vec()`), `Bcc:` included. Found 2026-11-12 by a test that rendered the message.
+
+**Guard:** the send path never calls `.bcc(...)` on the builder. It builds `mail_send::smtp::message::Message::new(from, envelope_rcpts(email), body)`, and `smtp::envelope_rcpts` (To + Cc + Bcc, trimmed, de-duplicated) is the only place Bcc recipients appear. **Drafts are the opposite:** a draft must keep its `Bcc:` header (compose_draft, save_draft), or reopening it loses those recipients. Pinned by `smtp::tests::{envelope_carries_bcc_and_dedupes, send_path_never_writes_a_bcc_header}`. Checked live: a self-addressed send with a Bcc to another own account arrived with no `Bcc:` header.
+
+Pattern: `crates/cxmail-email/src/email/smtp.rs::{envelope_rcpts, send_email_with_message_id}`.
+
+---
+
 ## Lifecycle Management
 
 - **SUPERSEDED**: When a gotcha is resolved, mark it: `## #N: [Title] ~~SUPERSEDED~~`

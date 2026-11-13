@@ -55,6 +55,11 @@ path = "src/bin/helper.rs"
 # ~900 crates), so they carry none.
 [profile.dev.package."*"]
 debug = false
+# `debug = false` makes Cargo default `strip = "debuginfo"`, and a package
+# override outranks `build-override`, so without this proc-macros are still
+# stripped in dev and macOS 27 refuses them (`can't find crate for
+# rquickjs_macro`). Dev builds only; release strips via its own profile.
+strip = "none"
 
 # Our own code keeps line tables — enough for a backtrace to name a file and
 # line, which is what this project actually debugs with (logs, `tauri dev`,

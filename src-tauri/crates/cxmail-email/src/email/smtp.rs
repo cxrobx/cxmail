@@ -80,6 +80,21 @@ pub fn strip_message_id_brackets(id: &str) -> &str {
 }
 
 /// Send an email via SMTP for the given account. Returns the generated Message-ID.
+/// Every address the message is delivered to: To, Cc and Bcc, trimmed and
+/// de-duplicated case-insensitively, in that order. The SMTP envelope is the
+/// only place Bcc recipients appear (see `send_email_with_message_id`).
+pub fn envelope_rcpts(email: &OutgoingEmail) -> Vec<&str> {
+    let mut seen = std::collections::HashSet::new();
+    email
+        .to
+        .iter()
+        .chain(&email.cc)
+        .chain(&email.bcc)
+        .map(|r| r.email.trim())
+        .filter(|e| !e.is_empty() && seen.insert(e.to_ascii_lowercase()))
+        .collect()
+}
+
 pub async fn send_email(account: &Account, email: &OutgoingEmail) -> Result<String, AppError> {
     send_email_with_message_id(account, email, None).await
 }
@@ -137,10 +152,11 @@ pub async fn send_email_with_message_id(
     if !email.cc.is_empty() {
         message = message.cc(to_address_list(&email.cc));
     }
-    if !email.bcc.is_empty() {
-        message = message.bcc(to_address_list(&email.bcc));
-    }
-
+    // Bcc is deliberately NOT written as a header. mail-send's
+    // `IntoMessage for MessageBuilder` reads To/Cc/Bcc for the envelope but
+    // then writes the builder verbatim, `Bcc:` line included, so every
+    // recipient could see who was Bcc'd unless the server happened to strip
+    // it. Bcc recipients travel in the SMTP envelope only (`envelope_rcpts`).
     message = message.subject(&email.subject);
     let styled_html = super::inline_styles::apply_inline_font_styles(&email.html_body);
     message = message.html_body(&styled_html);
@@ -187,7 +203,13 @@ pub async fn send_email_with_message_id(
         .connect()
         .await
         .map_err(|e| AppError::Imap(format!("SMTP connection failed: {}", e)))?
-        .send(message)
+        .send(mail_send::smtp::message::Message::new(
+            email.from_email.as_str(),
+            envelope_rcpts(email),
+            message
+                .write_to_vec()
+                .map_err(|e| AppError::General(format!("Build message failed: {}", e)))?,
+        ))
         .await
         .map_err(|e| AppError::Imap(format!("SMTP send failed: {}", e)))?;
 
@@ -311,6 +333,48 @@ async fn get_smtp_transport(account: &Account) -> Result<SmtpTransport, AppError
 #[cfg(test)]
 mod tests {
     use super::strip_message_id_brackets;
+
+    fn rcpt(e: &str) -> super::EmailRecipient {
+        super::EmailRecipient { name: None, email: e.into() }
+    }
+
+    #[test]
+    fn envelope_carries_bcc_and_dedupes() {
+        let email = super::OutgoingEmail {
+            from_email: "me@example.com".into(),
+            from_name: None,
+            to: vec![rcpt("ann@example.org"), rcpt(" ")],
+            cc: vec![rcpt("ANN@example.org"), rcpt("bob@example.org")],
+            bcc: vec![rcpt("secret@example.org")],
+            subject: "s".into(),
+            html_body: "<p>x</p>".into(),
+            plain_body: None,
+            in_reply_to: None,
+            references: None,
+            track_opens: None,
+            attachments: vec![],
+        };
+        assert_eq!(
+            super::envelope_rcpts(&email),
+            ["ann@example.org", "bob@example.org", "secret@example.org"]
+        );
+    }
+
+    /// The send path must never hand Bcc to the builder: mail-send writes the
+    /// builder's headers verbatim, so a `.bcc(...)` there shows every Bcc
+    /// recipient to everyone. (Drafts are different: they keep Bcc.)
+    #[test]
+    fn send_path_never_writes_a_bcc_header() {
+        let src = include_str!("smtp.rs");
+        let start = src.find("pub async fn send_email_with_message_id").unwrap();
+        let end = start + src[start..].find("\n}\n").unwrap();
+        let code: String = src[start..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect();
+        assert!(!code.contains(".bcc("), "send_email_with_message_id writes a Bcc header");
+        assert!(code.contains("envelope_rcpts(email)"), "the envelope must carry every recipient");
+    }
 
     #[test]
     fn strips_single_brackets() {
