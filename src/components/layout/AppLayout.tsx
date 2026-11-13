@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onOpenUrl, getCurrent } from "@tauri-apps/plugin-deep-link";
 import { parseMailto, plainBodyToComposeHtml } from "@/lib/mailto";
+import { parseDraftLink, openDraftLink } from "@/lib/draftLink";
+import { openDraftForEdit } from "@/lib/draftCompose";
 import Sidebar from "./Sidebar";
 import StatusBar from "./StatusBar";
 import MessageList from "@/components/mail/MessageList";
@@ -56,6 +58,45 @@ function mcpActivityToastMessage(env: McpActivity): string {
     case "update_group": return "Group updated by Claude";
     case "delete_group": return "Group deleted by Claude";
     default: return "Updated by Claude";
+  }
+}
+
+/** Show, unminimize and focus the main window (deep links, agent requests). */
+async function surfaceMainWindow(why: string): Promise<void> {
+  try {
+    const win = getCurrentWindow();
+    await win.show();
+    await win.unminimize();
+    await win.setFocus();
+  } catch (e) {
+    console.error(`${why}: failed to surface window`, e);
+  }
+}
+
+/** De-dupe draft-link deliveries, for the same warm/cold double-fire as mailto. */
+let lastDraftLink = { url: "", at: 0 };
+
+/** `cxmail://draft/…` — open that draft's compose window (T639). */
+async function handleDraftLinkUrl(url: string): Promise<void> {
+  const link = parseDraftLink(url);
+  if (!link) {
+    console.error("cxmail link: not a draft link", url);
+    return;
+  }
+  const now = Date.now();
+  if (url === lastDraftLink.url && now - lastDraftLink.at < 1500) return;
+  lastDraftLink = { url, at: now };
+  await surfaceMainWindow("cxmail link");
+  const opened = await openDraftLink(link).catch((e) => {
+    console.error("cxmail link: open failed", e);
+    return null;
+  });
+  if (!opened) {
+    useUIStore.getState().addToast({
+      message: "That draft isn't on this Mac yet",
+      type: "error",
+      duration: 4000,
+    });
   }
 }
 
@@ -174,20 +215,17 @@ export default function AppLayout() {
   // Surfaces the window, then opens a prefilled compose. Stable (empty deps) so
   // the wiring effect below subscribes exactly once.
   const handleMailtoUrl = useCallback(async (url: string) => {
+    if (url && /^cxmail:/i.test(url)) {
+      await handleDraftLinkUrl(url);
+      return;
+    }
     if (!url || !/^mailto:/i.test(url)) return;
     const now = Date.now();
     if (url === lastMailtoRef.current.url && now - lastMailtoRef.current.at < 1500) return;
     lastMailtoRef.current = { url, at: now };
 
     const parsed = parseMailto(url);
-    try {
-      const win = getCurrentWindow();
-      await win.show();
-      await win.unminimize();
-      await win.setFocus();
-    } catch (e) {
-      console.error("mailto: failed to surface window", e);
-    }
+    await surfaceMainWindow("mailto");
     useMailStore.getState().openComposeWith({
       to: parsed.to,
       cc: parsed.cc,
@@ -411,6 +449,22 @@ export default function AppLayout() {
       // reload + row-flash listeners. See src-tauri/src/mcp/bridge.rs.
       const u10 = await listen<McpActivity>("mcp-activity", (event) => {
         const env = event.payload;
+        if (env.kind === "open-draft") {
+          // An agent asking to put a draft on screen (MCP open_draft). The MCP
+          // already resolved it against this Mac's DB.
+          void (async () => {
+            await surfaceMainWindow("open-draft");
+            const opened = await openDraftForEdit(env.account_id, env.folder, env.uid);
+            if (!opened) {
+              useUIStore.getState().addToast({
+                message: "Couldn't open the draft Claude asked for",
+                type: "error",
+                duration: 4000,
+              });
+            }
+          })();
+          return;
+        }
         window.dispatchEvent(new CustomEvent("cxmail:refresh-messages"));
         window.dispatchEvent(new CustomEvent("cxmail:mcp-activity", { detail: env }));
         if (env.kind.startsWith("draft-")) {

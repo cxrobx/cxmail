@@ -327,6 +327,13 @@ export const api = {
       invoke<void>("cancel_send", { sendId }),
     saveDraft: (accountId: string, email: OutgoingEmail) =>
       invoke<SavedDraftRef>("save_draft", { accountId, email }),
+    /** Where a `cxmail://draft/…` link points on this Mac; null = not known here (yet). */
+    resolveDraftLink: (target: { draftId: string } | { accountId: string; uid: number }) =>
+      invoke<{ account_id: string; folder: string; uid: number } | null>("resolve_draft_link", {
+        draftId: "draftId" in target ? target.draftId : null,
+        accountId: "accountId" in target ? target.accountId : null,
+        uid: "uid" in target ? target.uid : null,
+      }),
     editDraft: (accountId: string, folder: string, uid: number, email: OutgoingEmail) =>
       invoke<SavedDraftRef>("edit_draft", { accountId, folder, uid, email }),
     downloadAttachment: (

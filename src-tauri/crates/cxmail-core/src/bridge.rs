@@ -43,7 +43,9 @@ pub struct Envelope {
     /// Schema version. Bump when the shape changes so readers can branch on it.
     pub v: u32,
     /// `"draft-created" | "draft-updated" | "email-mutated" | "calendar" |
-    /// "calendar-approval-request"`.
+    /// "calendar-approval-request" | "open-draft"`. `open-draft` is the one
+    /// REQUEST rather than a hint: an agent asking the app to put that draft's
+    /// compose window on screen (MCP `open_draft`).
     pub kind: String,
     pub account_id: String,
     pub folder: String,
@@ -102,15 +104,40 @@ impl Envelope {
 /// nothing is accepting (e.g. the app crashed without cleanup); a stale path usually
 /// fails fast with ECONNREFUSED, and the timeout is the backstop.
 pub async fn notify(env: &Envelope) {
+    match deliver(env).await {
+        Ok(()) => {}
+        Err(DeliveryError::NotRunning(msg)) => log::debug!("mcp bridge: {msg}"),
+        Err(DeliveryError::Broken(msg)) => log::warn!("mcp bridge: {msg}"),
+    }
+}
+
+/// Why [`deliver`] did not hand the envelope over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryError {
+    /// Nothing is listening on the socket: the app is not running (or another
+    /// instance owns the socket and this one never bound it).
+    NotRunning(String),
+    /// The app accepted the connection but the write broke, or the envelope
+    /// could not be serialized.
+    Broken(String),
+}
+
+impl std::fmt::Display for DeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeliveryError::NotRunning(m) | DeliveryError::Broken(m) => f.write_str(m),
+        }
+    }
+}
+
+/// [`notify`] for callers that must know whether the app got the message — an
+/// `open-draft` request is the whole point of its tool call, so "the app isn't
+/// running" has to reach the caller instead of a debug log.
+pub async fn deliver(env: &Envelope) -> Result<(), DeliveryError> {
     let path = socket_path();
 
-    let mut payload = match serde_json::to_vec(env) {
-        Ok(v) => v,
-        Err(e) => {
-            log::debug!("mcp bridge: serialize failed: {e}");
-            return;
-        }
-    };
+    let mut payload = serde_json::to_vec(env)
+        .map_err(|e| DeliveryError::Broken(format!("serialize failed: {e}")))?;
     payload.push(b'\n');
 
     let mut stream = match tokio::time::timeout(
@@ -121,28 +148,29 @@ pub async fn notify(env: &Envelope) {
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            log::debug!(
-                "mcp bridge: connect {} failed (app not running?): {e}",
+            return Err(DeliveryError::NotRunning(format!(
+                "connect {} failed (app not running?): {e}",
                 path.display()
-            );
-            return;
+            )))
         }
         Err(_) => {
-            log::debug!("mcp bridge: connect {} timed out", path.display());
-            return;
+            return Err(DeliveryError::NotRunning(format!(
+                "connect {} timed out",
+                path.display()
+            )))
         }
     };
 
-    if let Err(e) = stream.write_all(&payload).await {
-        // The app accepted the connection but the handoff broke — worth surfacing
-        // (unlike the benign "app not running" connect failure above, which stays debug).
-        log::warn!("mcp bridge: write to app failed after connect: {e}");
-        return;
-    }
-    if let Err(e) = stream.flush().await {
-        log::warn!("mcp bridge: flush to app failed after connect: {e}");
-        return;
-    }
+    // The app accepted the connection but the handoff broke — worth surfacing
+    // (unlike the benign "app not running" connect failure above).
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|e| DeliveryError::Broken(format!("write to app failed after connect: {e}")))?;
+    stream
+        .flush()
+        .await
+        .map_err(|e| DeliveryError::Broken(format!("flush to app failed after connect: {e}")))?;
     // Dropping `stream` closes the write half; the app's reader sees EOF.
     // INFO (not debug) so the positive delivery signal is visible in the MCP
     // stderr logs at the default `cxmail=info` filter — this is the line that
@@ -151,6 +179,7 @@ pub async fn notify(env: &Envelope) {
         "mcp bridge: delivered {} (tool={:?}, uid={}, old_uid={:?}) to app",
         env.kind, env.tool, env.uid, env.old_uid
     );
+    Ok(())
 }
 
 #[cfg(test)]

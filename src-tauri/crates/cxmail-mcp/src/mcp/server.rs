@@ -161,6 +161,18 @@ pub struct ComposeDraftParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct OpenDraftParams {
+    #[schemars(
+        description = "PREFERRED: the draft's stable `draft_id`, as returned by compose_draft / edit_draft. Survives every re-save, so it still finds the draft after edit_draft or the compose window's autosave minted a new UID. Pass either this or `account_id` + `uid`."
+    )]
+    pub draft_id: Option<String>,
+    #[schemars(description = "With `uid`, for a draft that has no draft_id: the account ID it lives in.")]
+    pub account_id: Option<String>,
+    #[schemars(description = "With `account_id`: the draft's current UID in that account's Drafts folder.")]
+    pub uid: Option<u32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct EditDraftParams {
     #[schemars(description = "Account ID")]
     pub account_id: String,
@@ -1999,6 +2011,121 @@ fn stale_draft_error(uid: u32, folder: &str, email: &str, local_row_present: boo
         ),
         None,
     )
+}
+
+/// How long `open_draft` keeps looking for a draft that has not reached the
+/// local DB yet, as attempts × interval.
+const OPEN_DRAFT_ATTEMPTS: u32 = 4;
+const OPEN_DRAFT_RETRY: Duration = Duration::from_millis(750);
+
+/// How `open_draft` was addressed.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenTarget {
+    ById(String),
+    ByUid { account_id: String, uid: u32 },
+}
+
+fn resolve_open_target(
+    draft_id: Option<&str>,
+    account_id: Option<&str>,
+    uid: Option<u32>,
+) -> Result<OpenTarget, McpError> {
+    let draft_id = draft_id.map(str::trim).filter(|s| !s.is_empty());
+    let account_id = account_id.map(str::trim).filter(|s| !s.is_empty());
+    match (draft_id, account_id, uid) {
+        (Some(id), None, None) => Ok(OpenTarget::ById(id.to_string())),
+        (None, Some(acct), Some(uid)) => Ok(OpenTarget::ByUid {
+            account_id: acct.to_string(),
+            uid,
+        }),
+        (Some(_), _, _) => Err(McpError::invalid_params(
+            "Pass either `draft_id` (preferred) or `account_id` + `uid`, not both. Nothing was opened.",
+            None,
+        )),
+        _ => Err(McpError::invalid_params(
+            "open_draft needs the draft: pass `draft_id` (as returned by compose_draft / edit_draft) or both `account_id` and `uid`. Nothing was opened.",
+            None,
+        )),
+    }
+}
+
+/// The `cxmail://` link that opens a draft — by its stable id when it has one,
+/// else by account + UID. Resolved against the local DB of whichever Mac opens
+/// it, so the id form is the one that travels between machines.
+pub(crate) fn draft_link(draft_id: Option<&str>, account_id: &str, uid: u32) -> String {
+    match draft_id {
+        Some(id) => format!("cxmail://draft/{}", link_segment(id)),
+        None => format!("cxmail://draft/{}/{}", link_segment(account_id), uid),
+    }
+}
+
+/// Percent-encode everything but RFC 3986 unreserved characters. Ids are UUIDs
+/// in practice; this only keeps a stray `/` or space from splitting the path.
+fn link_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// The line compose_draft / edit_draft append so the agent can hand the draft
+/// straight on.
+fn open_draft_note(draft_id: &str) -> String {
+    format!(
+        "\n\nTo show it to the user: call open_draft with draft_id \"{draft_id}\" (opens it in compose with CXMail in front), or give them the link {}",
+        draft_link(Some(draft_id), "", 0)
+    )
+}
+
+/// The CXMail bundle to activate: the `.app` this binary runs from (the
+/// installed MCP lives in `CXMail.app/Contents/MacOS/`), else the installed
+/// copy. Never by bundle id or name — LaunchServices also knows the build
+/// output's bundle and has picked it before (`/ship` step 4).
+fn app_bundle_path() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| bundle_of(&exe))
+        .unwrap_or_else(|| PathBuf::from("/Applications/CXMail.app"))
+}
+
+/// `…/X.app/Contents/MacOS/bin` → `…/X.app`; None outside a bundle.
+fn bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let is_bundle = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app"
+        // A loose dev binary under the build's bundle dir is not the live app.
+        && !app.components().any(|c| c.as_os_str() == "target");
+    is_bundle.then(|| app.to_path_buf())
+}
+
+/// Bring CXMail to the front through LaunchServices (`open <bundle>`), or open
+/// `url` with it, which also launches it if needed. True when `open` succeeded.
+async fn activate_app(url: Option<&str>) -> bool {
+    let bundle = app_bundle_path();
+    let mut cmd = tokio::process::Command::new("/usr/bin/open");
+    match url {
+        Some(u) => cmd.arg("-a").arg(&bundle).arg(u),
+        None => cmd.arg(&bundle),
+    };
+    match tokio::time::timeout(Duration::from_secs(10), cmd.status()).await {
+        Ok(Ok(status)) => status.success(),
+        Ok(Err(e)) => {
+            log::warn!("open_draft: `open {}` failed: {e}", bundle.display());
+            false
+        }
+        Err(_) => {
+            log::warn!("open_draft: `open {}` timed out", bundle.display());
+            false
+        }
+    }
 }
 
 /// How `edit_draft` was addressed — exactly one of `draft_id` / `uid`.
@@ -4329,9 +4456,10 @@ impl CxMailMcp {
             format!(" with {} attachments", attachments_count)
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}{}{}",
+            "Draft saved to {} (UID {}) for {}{} — draft_id {} (address later edits by draft_id; the UID changes on every save){}{}{}{}{}{}{}{}",
             drafts_folder, uid, account.email, suffix, draft_id, quote_note, layout_note,
-            dash_note, weekday_note, pinned_note, writer_note, from_note
+            dash_note, weekday_note, pinned_note, writer_note, from_note,
+            open_draft_note(&draft_id)
         ))]))
     }
 
@@ -4846,7 +4974,7 @@ impl CxMailMcp {
             String::new()
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}{}",
+            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}{}{}",
             old_uid,
             new_uid,
             drafts_folder,
@@ -4861,8 +4989,115 @@ impl CxMailMcp {
             weekday_note,
             pinned_note,
             writer_note,
-            from_note
+            from_note,
+            open_draft_note(&draft_id)
         ))]))
+    }
+
+    #[tool(
+        name = "open_draft",
+        description = "Put a draft on screen for the user: opens that exact draft in CXMail's compose window and brings CXMail to the front, so they can review and send it themselves. Call it right after compose_draft / edit_draft when the user wants to see the draft (\"open it\", \"show me\", \"focus it\"). Address the draft by its `draft_id` (preferred — it survives re-saves) or by `account_id` + `uid`. If CXMail is not running it is launched and opens the draft once it is up. Errors when the draft is not known on this machine. Sends nothing and changes nothing."
+    )]
+    async fn open_draft(
+        &self,
+        Parameters(params): Parameters<OpenDraftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = resolve_open_target(
+            params.draft_id.as_deref(),
+            params.account_id.as_deref(),
+            params.uid,
+        )?;
+
+        // Resolve to (account, folder, current uid). A draft another writer
+        // saved moments ago can lag into the local DB, so a miss is retried
+        // briefly before it becomes an error.
+        let mut resolved = None;
+        for attempt in 0..OPEN_DRAFT_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(OPEN_DRAFT_RETRY).await;
+            }
+            let conn = self.open_db()?;
+            resolved = match &target {
+                OpenTarget::ById(id) => db::drafts::get(&conn, id)
+                    .map_err(|e| McpError::internal_error(format!("{e}"), None))?
+                    .map(|r| (r.account_id, r.folder_name, r.current_uid, Some(r.draft_id))),
+                OpenTarget::ByUid { account_id, uid } => {
+                    let account = self.get_account(&conn, account_id)?;
+                    let folder = db::folders::folder_for_account(
+                        &conn,
+                        &account.id,
+                        &account.provider,
+                        "drafts",
+                    );
+                    let row = db::drafts::find_by_uid(&conn, account_id, &folder, *uid)
+                        .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                    match row {
+                        Some(r) => Some((r.account_id, r.folder_name, r.current_uid, Some(r.draft_id))),
+                        None => {
+                            // A draft with no CXMail identity (saved by another
+                            // client) is still openable by its UID, as long as
+                            // the message is in the local cache.
+                            let cached: bool = conn
+                                .query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM messages WHERE account_id = ?1 AND folder_name = ?2 AND uid = ?3)",
+                                    rusqlite::params![account_id, folder, uid],
+                                    |r| r.get(0),
+                                )
+                                .unwrap_or(false);
+                            cached.then(|| (account_id.clone(), folder, *uid, None))
+                        }
+                    }
+                }
+            };
+            if resolved.is_some() {
+                break;
+            }
+        }
+        let Some((account_id, folder, uid, draft_id)) = resolved else {
+            return Err(McpError::invalid_params(
+                match &target {
+                    OpenTarget::ById(id) => format!(
+                        "No draft with draft_id \"{id}\" on this machine — nothing was opened. It may not have synced here yet, or it was edited in another client (which drops the identity). Find it with search_emails in the Drafts folder and pass its account_id + uid."
+                    ),
+                    OpenTarget::ByUid { account_id, uid } => format!(
+                        "No draft with UID {uid} in account {account_id}'s Drafts folder on this machine — nothing was opened. The UID may be stale (every save mints a new one); search the Drafts folder for the newest UID, or pass the draft_id."
+                    ),
+                },
+                None,
+            ));
+        };
+
+        let link = draft_link(draft_id.as_deref(), &account_id, uid);
+        let env = Envelope::new("open-draft", &account_id, &folder, uid).with_tool("open_draft");
+        match cxmail_core::bridge::deliver(&env).await {
+            Ok(()) => {
+                // The app opens the compose window itself, but a background
+                // app cannot take focus on its own under macOS's cooperative
+                // activation — LaunchServices can, so ask it to.
+                activate_app(None).await;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Opened the draft (UID {uid} in {folder}) in CXMail's compose window and brought CXMail to the front. Link for the user: {link}"
+                ))]))
+            }
+            Err(cxmail_core::bridge::DeliveryError::NotRunning(_)) => {
+                // Not running: the deep link launches it, and the app reads the
+                // launch URL on start-up (AppLayout's cold-start getCurrent()).
+                if activate_app(Some(&link)).await {
+                    Ok(CallToolResult::success(vec![Content::text(format!(
+                        "CXMail was not running — launched it with {link}; the draft opens in compose once the app has started (a few seconds)."
+                    ))]))
+                } else {
+                    Err(McpError::internal_error(
+                        format!("CXMail is not running and could not be launched (`open {link}` failed). Ask the user to open CXMail, then call open_draft again."),
+                        None,
+                    ))
+                }
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("CXMail is running but did not take the request: {e}. Nothing was opened; retry once, and if it fails again ask the user to open the draft from the Drafts folder ({link})."),
+                None,
+            )),
+        }
     }
 
     #[tool(
@@ -7018,6 +7253,63 @@ impl ServerHandler for CxMailMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── open_draft (T639) ───────────────────────────────────────────────
+
+    #[test]
+    fn open_target_prefers_draft_id_and_trims() {
+        assert_eq!(
+            resolve_open_target(Some("  abc "), None, None).unwrap(),
+            OpenTarget::ById("abc".into())
+        );
+        assert_eq!(
+            resolve_open_target(None, Some("acct"), Some(7)).unwrap(),
+            OpenTarget::ByUid { account_id: "acct".into(), uid: 7 }
+        );
+    }
+
+    #[test]
+    fn open_target_refuses_both_or_neither_or_half() {
+        assert!(resolve_open_target(Some("abc"), Some("acct"), Some(7)).is_err());
+        assert!(resolve_open_target(Some("abc"), None, Some(7)).is_err());
+        assert!(resolve_open_target(None, None, None).is_err());
+        assert!(resolve_open_target(Some("   "), None, None).is_err());
+        assert!(resolve_open_target(None, Some("acct"), None).is_err());
+        assert!(resolve_open_target(None, None, Some(7)).is_err());
+    }
+
+    /// The frontend's `parseDraftLink` reads exactly these two shapes.
+    #[test]
+    fn draft_link_shapes() {
+        assert_eq!(
+            draft_link(Some("0278e6ec-4dd4-4661-bd7e-b1cf34edb637"), "ignored", 9),
+            "cxmail://draft/0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
+        );
+        assert_eq!(draft_link(None, "acct-1", 1067), "cxmail://draft/acct-1/1067");
+        assert_eq!(draft_link(Some("a/b c"), "", 0), "cxmail://draft/a%2Fb%20c");
+    }
+
+    #[test]
+    fn bundle_of_finds_the_installed_app_only() {
+        assert_eq!(
+            bundle_of(Path::new("/Applications/CXMail.app/Contents/MacOS/cxmail-mcp")),
+            Some(PathBuf::from("/Applications/CXMail.app"))
+        );
+        assert_eq!(bundle_of(Path::new("/x/src-tauri/target/release/cxmail-mcp")), None);
+        assert_eq!(
+            bundle_of(Path::new(
+                "/x/src-tauri/target/release/bundle/macos/CXMail.app/Contents/MacOS/cxmail-mcp"
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn compose_results_carry_the_open_hint() {
+        let note = open_draft_note("abc");
+        assert!(note.contains("open_draft"), "{note}");
+        assert!(note.contains("cxmail://draft/abc"), "{note}");
+    }
 
     // ── shared HTTP server: the process cwd is never the caller's ──
 

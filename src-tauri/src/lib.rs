@@ -206,6 +206,7 @@ pub fn run() {
             commands::messages::search_contacts,
             commands::compose::send_email,
             commands::compose::save_draft,
+            commands::compose::resolve_draft_link,
             commands::compose::edit_draft,
             commands::compose::download_attachment,
             commands::compose::fetch_outgoing_attachments,

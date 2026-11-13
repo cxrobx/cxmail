@@ -676,7 +676,9 @@ export interface McpActivity {
     | "draft-updated"
     | "email-mutated"
     | "calendar"
-    | "calendar-approval-request";
+    | "calendar-approval-request"
+    /** A request, not a hint: an agent asking to put this draft on screen. */
+    | "open-draft";
   account_id: string;
   folder: string;
   uid: number;

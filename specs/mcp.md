@@ -53,14 +53,28 @@ list_accounts() → Account[]
 
 ```
 compose_draft(to: string[], subject: string, body: string, account_id?: string) → Draft
-  - Creates draft in IMAP Drafts folder
-  - Opens compose UI in the app with the draft loaded
+  - Creates draft in IMAP Drafts folder; the running app's Drafts list refreshes
+    (bridge `draft-created`), but no compose window opens — that is open_draft
   - Does NOT send — user reviews first
+  - Result ends with the open_draft hint and the draft's `cxmail://draft/<draft_id>` link
 
 edit_draft(draft_id: string, ...fields) → Draft
-  - Updates an existing draft (recipients, subject, body, cc/bcc)
-  - Opens compose UI
+  - Updates an existing draft (recipients, subject, body, cc/bcc); an open
+    compose window for it reloads (bridge `draft-updated`)
   - (There is no reply_draft tool — use compose_draft to create, edit_draft to revise)
+
+open_draft(draft_id?: string, account_id?: string, uid?: number) → text
+  - Opens that exact draft in the compose window and brings CXMail to the front
+  - draft_id (stable across saves and across Macs) or account_id + uid
+  - Resolves against this Mac's DB (retries ~3 s for a draft still syncing in),
+    then sends bridge `open-draft` and activates the app by bundle PATH
+    (never `open -b`: LaunchServices also knows the build output's bundle)
+  - App not running → `open -a <bundle> cxmail://draft/<id>`, which launches it;
+    the cold-start deep-link read opens the draft
+  - Unknown draft → error, nothing opened
+
+Deep link: `cxmail://draft/<draft_id>` or `cxmail://draft/<account_id>/<uid>`
+(`src/lib/draftLink.ts`, resolved by the `resolve_draft_link` command).
 ```
 
 #### Reply threading & quoted history

@@ -305,6 +305,54 @@ fn resolve_drafts_folder(state: &AppState, account_id: &str, provider: &str) -> 
     db::folders::folder_for_account(&conn, account_id, provider, "drafts")
 }
 
+/// Where a `cxmail://draft/…` link points, resolved against THIS Mac's DB.
+#[derive(Debug, Serialize)]
+pub struct DraftLocation {
+    pub account_id: String,
+    pub folder: String,
+    pub uid: u32,
+}
+
+/// Resolve a `cxmail://draft/…` deep link to the draft's current revision.
+/// Either `draft_id` (stable across saves, and across Macs — account ids are
+/// per machine) or `account_id` + `uid`. `Ok(None)` = not known here (yet):
+/// the caller retries, since a draft saved moments ago can lag into the DB.
+#[tauri::command]
+pub async fn resolve_draft_link(
+    state: State<'_, AppState>,
+    draft_id: Option<String>,
+    account_id: Option<String>,
+    uid: Option<u32>,
+) -> Result<Option<DraftLocation>, AppError> {
+    let clean = |v: Option<String>| {
+        v.map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s.len() <= 128)
+    };
+    let conn = state.db.safe_lock();
+    match (clean(draft_id), clean(account_id), uid) {
+        (Some(id), None, None) => Ok(db::drafts::get(&conn, &id)?.map(|r| DraftLocation {
+            account_id: r.account_id,
+            folder: r.folder_name,
+            uid: r.current_uid,
+        })),
+        (None, Some(acct), Some(uid)) => {
+            let Some(account) = db::accounts::get_by_id(&conn, &acct)? else {
+                return Ok(None);
+            };
+            let folder =
+                db::folders::folder_for_account(&conn, &account.id, &account.provider, "drafts");
+            Ok(Some(DraftLocation {
+                account_id: account.id,
+                folder,
+                uid,
+            }))
+        }
+        _ => Err(AppError::General(
+            "a draft link names a draft_id, or an account id and a UID".to_string(),
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn save_draft(
     state: State<'_, AppState>,
