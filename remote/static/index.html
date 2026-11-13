@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151515" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="CXMail">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<title>CXMail Remote</title>
+<style>
+:root{--bg:#f7f6f2;--card:#fff;--ink:#1b1b1b;--mute:#6b6b66;--line:#e4e2db;--accent:#2f6fde;--unread:#2f6fde;--danger:#c0392b;--chip:#eceae3}
+@media (prefers-color-scheme:dark){:root{--bg:#151515;--card:#1f1f1f;--ink:#e9e8e3;--mute:#9a9992;--line:#2d2d2b;--accent:#6b9cff;--unread:#6b9cff;--chip:#2a2a28}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 -apple-system,system-ui,sans-serif;-webkit-text-size-adjust:100%}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:none;border:0;cursor:pointer;padding:0}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 8px) 16px 0;border-bottom:1px solid var(--line)}
+.row{display:flex;gap:8px;align-items:center}
+.search{flex:1;min-width:0;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
+.iconbtn{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;border:1px solid var(--line);background:var(--card);flex:none}
+.iconbtn svg{width:18px;height:18px}
+select.acct{max-width:40%;padding:9px 8px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:10px 0;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;padding:6px 12px;border-radius:999px;background:var(--chip);color:var(--mute)}
+.tab[aria-pressed=true]{background:var(--ink);color:var(--bg)}
+main{padding:0 0 calc(env(safe-area-inset-bottom) + 80px)}
+.msg{display:block;width:100%;color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent;text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+.msg .top{display:flex;gap:8px;align-items:baseline}
+.msg .from{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg .date{flex:none;color:var(--mute);font-size:13px}
+.msg .subj{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.msg .snip{color:var(--mute);font-size:13.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.msg.unread .from,.msg.unread .subj{font-weight:650}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;align-self:center;background:transparent}
+.msg.unread .dot{background:var(--unread)}
+.star{color:#e0a800}
+.more{display:block;margin:16px auto;padding:10px 18px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
+.empty,.status{padding:32px 16px;text-align:center;color:var(--mute)}
+.banner{margin:12px 16px;padding:10px 12px;border-radius:10px;background:#fdecea;color:#7d1d14}
+@media (prefers-color-scheme:dark){.banner{background:#3a1a17;color:#f3b6ae}}
+/* reader */
+#reader{display:none}
+body.reading #list,body.reading #listhead{display:none}
+body.reading #reader{display:block}
+.rhead{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 8px) 16px 8px;border-bottom:1px solid var(--line)}
+.rhead h1{font-size:19px;line-height:1.3;margin:10px 0 6px}
+.meta{color:var(--mute);font-size:13.5px;overflow-wrap:anywhere}
+.meta b{color:var(--ink);font-weight:600}
+.actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.act{padding:7px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);font-size:14px}
+.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.imgnote{margin:8px 16px 0;font-size:13px;color:var(--mute)}
+.imgnote button{color:var(--accent);text-decoration:underline}
+iframe.body{display:block;width:100%;border:0;background:#fff;min-height:200px}
+pre.body{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px 16px;font:14px/1.5 ui-monospace,Menlo,monospace;background:var(--card)}
+.attach{padding:8px 16px;color:var(--mute);font-size:13.5px}
+.thread h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);margin:20px 16px 6px}
+/* sheets */
+.sheet{position:fixed;inset:0;z-index:20;display:none;background:rgba(0,0,0,.35)}
+.sheet.open{display:flex;align-items:flex-end}
+.panel{width:100%;max-height:92vh;overflow:auto;background:var(--bg);border-radius:16px 16px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom) + 16px)}
+.panel h3{margin:0 0 12px;font-size:17px}
+.field{display:block;margin-bottom:10px}
+.field span{display:block;font-size:12.5px;color:var(--mute);margin-bottom:4px}
+.field input,.field textarea,.field select{width:100%;padding:9px 11px;border-radius:10px;border:1px solid var(--line);background:var(--card)}
+.field textarea{min-height:200px;resize:vertical}
+.note{font-size:13px;color:var(--mute);margin:4px 0 12px}
+.folder{display:block;width:100%;text-align:left;padding:12px;border-bottom:1px solid var(--line)}
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 20px);transform:translateX(-50%);z-index:30;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px;max-width:calc(100% - 32px);display:none}
+.toast.show{display:block}
+.fab{position:fixed;right:16px;bottom:calc(env(safe-area-inset-bottom) + 16px);z-index:6;width:54px;height:54px;border-radius:16px;background:var(--accent);color:#fff;display:grid;place-items:center;box-shadow:0 4px 14px rgba(0,0,0,.2)}
+body.reading .fab{display:none}
+.fab svg{width:22px;height:22px}
+@media (min-width:760px){main,#reader{max-width:760px;margin:0 auto}}
+</style>
+</head>
+<body>
+<header id="listhead">
+  <div class="row">
+    <input id="q" class="search" type="search" placeholder="Search mail" autocomplete="off" enterkeyhint="search" aria-label="Search mail">
+    <select id="acct" class="acct" aria-label="Account"><option value="">All accounts</option></select>
+    <button id="refresh" class="iconbtn" aria-label="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></button>
+  </div>
+  <nav class="tabs" id="tabs" aria-label="Views"></nav>
+</header>
+<main id="list"></main>
+
+<section id="reader" aria-live="polite"></section>
+
+<button class="fab" id="compose" aria-label="New draft"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+
+<div class="sheet" id="draftSheet" role="dialog" aria-modal="true" aria-labelledby="draftTitle">
+  <form class="panel" id="draftForm">
+    <h3 id="draftTitle">New draft</h3>
+    <label class="field"><span>From account</span><select id="dAcct" required></select></label>
+    <label class="field"><span>To (comma-separated)</span><input id="dTo" type="text" inputmode="email" autocomplete="off" required></label>
+    <label class="field"><span>Cc</span><input id="dCc" type="text" inputmode="email" autocomplete="off"></label>
+    <label class="field"><span>Subject</span><input id="dSubj" type="text"></label>
+    <label class="field"><span>Message</span><textarea id="dBody" placeholder="Your signature and the quoted original are added for you."></textarea></label>
+    <p class="note">This saves to Drafts. It is never sent from here: send it from CXMail on the Mac.</p>
+    <div class="row"><button type="button" class="act" id="dCancel">Cancel</button><span style="flex:1"></span><button type="submit" class="act primary" id="dSave">Save draft</button></div>
+  </form>
+</div>
+
+<div class="sheet" id="moveSheet" role="dialog" aria-modal="true" aria-labelledby="moveTitle">
+  <div class="panel"><h3 id="moveTitle">Move to…</h3><div id="folders"></div><div class="row" style="margin-top:12px"><button class="act" id="mCancel">Cancel</button></div></div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="/app.js"></script>
+</body>
+</html>
