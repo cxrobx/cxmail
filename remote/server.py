@@ -122,12 +122,13 @@ def row_summary(r):
         "starred": bool(r["is_flagged"]),
         "attachments": bool(r["has_attachments"]),
         "category": r["category"],
+        "recipients": [a.get("name") or a.get("email") for a in addr_list(r["to_list"])],
     }
 
 
 SUMMARY_COLS = (
     "m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email, "
-    "m.date, m.snippet, m.is_read, m.is_flagged, m.has_attachments, m.category"
+    "m.date, m.snippet, m.is_read, m.is_flagged, m.has_attachments, m.category, m.to_list"
 )
 
 
@@ -141,8 +142,15 @@ def list_messages(conn, view, account, before):
         return []
     inbox_pairs = []
     for aid in ids:
-        name = folder_of_type(conn, aid, "inbox") or "INBOX"
+        if view == "sent":
+            name = folder_of_type(conn, aid, "sent")
+            if not name:
+                continue
+        else:
+            name = folder_of_type(conn, aid, "inbox") or "INBOX"
         inbox_pairs.append((aid, name))
+    if not inbox_pairs:
+        return []
     where = ["(" + " OR ".join(["(m.account_id = ? AND m.folder_name = ?)"] * len(inbox_pairs)) + ")"]
     args = [x for pair in inbox_pairs for x in pair]
     if view == "primary":

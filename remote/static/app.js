@@ -5,8 +5,8 @@
 const $ = (s) => document.querySelector(s);
 // Inbox chips. The bottom tabs pick the section; chips only show on Inbox.
 const CHIPS = [["primary", "Primary"], ["starred", "Starred"], ["updates", "Updates"], ["promotions", "Promotions"], ["social", "Social"], ["all", "All"]];
-const TABS = [["inbox", "Inbox", "inbox"], ["unread", "Unread", "unread"], ["drafts", "Drafts", "drafts"], ["search", "Search", "search"], ["new", "New", "compose"]];
-const TITLES = { inbox: "Inbox", unread: "Unread", drafts: "Drafts", search: "Search" };
+const TABS = [["inbox", "Inbox", "inbox"], ["unread", "Unread", "unread"], ["drafts", "Drafts", "drafts"], ["sent", "Sent", "send"], ["search", "Search", "search"]];
+const TITLES = { inbox: "Inbox", unread: "Unread", drafts: "Drafts", sent: "Sent", search: "Search" };
 
 // Lucide-style 24px stroke icons.
 const ICONS = {
@@ -81,7 +81,7 @@ function when(iso) {
   if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: "short", day: "numeric" });
   return d.toLocaleDateString([], { year: "2-digit", month: "numeric", day: "numeric" });
 }
-const who = (m) => m.from_name || m.from_email || "(unknown)";
+const who = (m) => (state.tab === "sent" && m.recipients && m.recipients.length ? "To: " + m.recipients.join(", ") : null) || m.from_name || m.from_email || "(unknown)";
 const fmtAddr = (a) => (a.name ? a.name + " <" + a.email + ">" : a.email);
 const refQ = (m) => "account=" + encodeURIComponent(m.account) + "&folder=" + encodeURIComponent(m.folder) + "&uid=" + m.uid;
 const route = (m) => (m.draft ? "#/send/" : "#/m/") + encodeURIComponent(m.account) + "/" + encodeURIComponent(m.folder) + "/" + m.uid;
@@ -120,6 +120,7 @@ function selectTab(id) {
 function currentView() {
   if (state.tab === "unread") return "unread";
   if (state.tab === "drafts") return "drafts";
+  if (state.tab === "sent") return "sent";
   return state.chip;
 }
 
@@ -706,7 +707,7 @@ let qT;
 $("#q").addEventListener("focus", () => { if (state.tab !== "search") { state.tab = "search"; renderChrome(); } });
 $("#q").addEventListener("input", (e) => { clearTimeout(qT); qT = setTimeout(() => { state.q = e.target.value.trim(); load(true); }, 300); });
 $("#acct").addEventListener("change", (e) => { state.account = e.target.value; save(); load(true); });
-$("#refresh").addEventListener("click", () => load(true));
+$("#refresh").addEventListener("click", () => { haptic(); openDraft(null); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !document.body.classList.contains("reading")) load(true); });
 
 function onRoute() {
