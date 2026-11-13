@@ -190,6 +190,7 @@ function menuItem(ic, label, onclick, cls) {
   return h("button", { class: "mi" + (cls ? " " + cls : ""), onclick: () => { closeSheets(); onclick(); } }, icon(ic), label);
 }
 function openMenu(m) {
+  try { getSelection().removeAllRanges(); } catch {}
   const box = $("#menu");
   const multi = m.to ? m.to.length + m.cc.length > 1 : true;
   box.replaceChildren(...[
