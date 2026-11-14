@@ -2822,6 +2822,26 @@ pub struct CxMailMcp {
 }
 
 impl CxMailMcp {
+    /// Read the Drafts folder's draft ids straight from the server (T666), for
+    /// a `draft_id` this Mac has no row for yet. `None` on any failure: the
+    /// caller then reports the draft unknown, exactly as before.
+    async fn scan_drafts_folder(
+        &self,
+        account: &db::accounts::Account,
+        folder: &str,
+    ) -> Option<crate::email::draft_revisions::DraftScan> {
+        let mut session = match imap::connect_for_account(account).await {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("MCP draft scan: IMAP connect failed: {e}");
+                return None;
+            }
+        };
+        let scan = crate::email::draft_revisions::scan(&mut session, folder).await;
+        let _ = imap::disconnect(session, &account.email).await;
+        scan.map_err(|e| log::warn!("MCP draft scan of {folder} failed: {e}")).ok()
+    }
+
     fn open_db(&self) -> Result<rusqlite::Connection, McpError> {
         let conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| McpError::internal_error(format!("DB open failed: {}", e), None))?;
@@ -4639,9 +4659,23 @@ impl CxMailMcp {
                 draft_id,
                 expected_uid,
             } => {
-                let row = db::drafts::get(&conn, draft_id)
-                    .map_err(|e| McpError::internal_error(format!("{e}"), None))?
-                    .ok_or_else(|| unknown_draft_error(draft_id))?;
+                let mut row = db::drafts::get(&conn, draft_id)
+                    .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                if row.is_none() {
+                    // T666: another machine may have started this draft, and
+                    // this Mac has not synced it yet. Ask the server once.
+                    if let Some(scan) = self.scan_drafts_folder(&account, drafts_folder).await {
+                        crate::email::draft_revisions::link_scan(
+                            &conn,
+                            &params.account_id,
+                            drafts_folder,
+                            &scan,
+                        );
+                        row = db::drafts::get(&conn, draft_id)
+                            .map_err(|e| McpError::internal_error(format!("{e}"), None))?;
+                    }
+                }
+                let row = row.ok_or_else(|| unknown_draft_error(draft_id))?;
                 if row.account_id != params.account_id {
                     return Err(McpError::invalid_params(
                         format!(
@@ -4708,7 +4742,10 @@ impl CxMailMcp {
         let signature = signature_for_send_as(&conn, &params.account_id, &from_addr);
 
         // ── IMAP — releases the claim on any failure ────────────────────
-        let imap_outcome: Result<(u32, u32, Result<(), String>, String), McpError> = async {
+        let imap_outcome: Result<
+            (u32, u32, Result<(), String>, String, u32, Vec<u32>),
+            McpError,
+        > = async {
             let mut session = imap::connect_for_account(&account)
                 .await
                 .map_err(|e| McpError::internal_error(format!("IMAP connect failed: {}", e), None))?;
@@ -4735,20 +4772,57 @@ impl CxMailMcp {
                     ));
                 }
             }
-            let on_server = imap::uid_exists(&mut session, &old_folder, old_uid)
+            // T666: the SERVER says which revision is current. This Mac's row
+            // lags whatever another machine saved since (a compose window's
+            // autosave on another Mac, say), so an edit addressed by draft_id
+            // alone follows the newest tagged revision, and one that named a
+            // specific revision is refused if the server has moved past it.
+            let scan = crate::email::draft_revisions::scan(&mut session, &old_folder)
                 .await
                 .map_err(|e| {
                     McpError::internal_error(format!("Draft preflight failed: {}", e), None)
                 })?;
-            if !on_server {
-                let _ = imap::disconnect(session, &account.email).await;
-                return Err(stale_draft_error(
-                    old_uid,
-                    &old_folder,
-                    &account.email,
-                    local_row_present,
-                ));
-            }
+            let revisions = scan.revisions(&draft_id).to_vec();
+            let follow_newest = matches!(
+                edit_target,
+                EditTarget::ById { expected_uid: None, .. }
+            );
+            use crate::email::draft_revisions::Resolution;
+            let target_uid = match crate::email::draft_revisions::resolve(
+                &revisions,
+                old_uid,
+                follow_newest,
+            ) {
+                Resolution::Write(u) => u,
+                Resolution::Moved { current } => {
+                    let _ = imap::disconnect(session, &account.email).await;
+                    return Err(McpError::invalid_params(
+                        format!(
+                            "Draft {draft_id}: UID {old_uid} is no longer its current revision on the server (now UID {current}, saved since, possibly from another machine) — nothing was changed. Read UID {current}, then retry with expected_uid {current}, or pass draft_id alone to edit the newest revision."
+                        ),
+                        None,
+                    ));
+                }
+                Resolution::Unknown => {
+                    // No revision carries the header (a pre-v60 draft, or one
+                    // another client rebuilt): the existence check is all there is.
+                    let on_server = imap::uid_exists(&mut session, &old_folder, old_uid)
+                        .await
+                        .map_err(|e| {
+                            McpError::internal_error(format!("Draft preflight failed: {}", e), None)
+                        })?;
+                    if !on_server {
+                        let _ = imap::disconnect(session, &account.email).await;
+                        return Err(stale_draft_error(
+                            old_uid,
+                            &old_folder,
+                            &account.email,
+                            local_row_present,
+                        ));
+                    }
+                    old_uid
+                }
+            };
 
             // Build the new revision — nothing on the server has been touched yet.
             let mut html_body = match params.layout.as_deref() {
@@ -4859,22 +4933,23 @@ impl CxMailMcp {
             // Retire the old revision, in the folder it lived in. `UID EXPUNGE`
             // removes exactly this UID; a mailbox-wide EXPUNGE would also purge
             // anything another client had marked `\\Deleted` there.
-            let old_removed: Result<(), String> =
-                match imap::select_folder(&mut session, &old_folder).await {
-                    Ok(_) => match imap::store_flags(&mut session, old_uid, true, "\\Deleted").await
-                    {
-                        Ok(()) => imap::uid_expunge(&mut session, old_uid)
-                            .await
-                            .map_err(|e| e.to_string()),
-                        Err(e) => Err(e.to_string()),
-                    },
-                    Err(e) => Err(e.to_string()),
-                };
+            // T666: with it, every older revision of this draft a cross-machine
+            // race left behind, so Drafts ends with one copy. Never anything at
+            // or above `new_uid`: that is a newer writer's.
+            let to_retire =
+                crate::email::draft_revisions::superseded(&revisions, target_uid, new_uid);
+            let retired =
+                crate::email::draft_revisions::retire(&mut session, &old_folder, &to_retire).await;
+            let old_removed: Result<(), String> = if retired.contains(&target_uid) {
+                Ok(())
+            } else {
+                Err("UID STORE/EXPUNGE refused (see the log)".to_string())
+            };
             let _ = imap::disconnect(session, &account.email).await;
-            Ok((new_uid, uidvalidity, old_removed, raw))
+            Ok((new_uid, uidvalidity, old_removed, raw, target_uid, retired))
         }
         .await;
-        let (new_uid, uidvalidity, old_removed, raw) = match imap_outcome {
+        let (new_uid, uidvalidity, old_removed, raw, target_uid, retired) = match imap_outcome {
             Ok(v) => v,
             Err(e) => {
                 if claimed {
@@ -4915,7 +4990,7 @@ impl CxMailMcp {
         let dup_note = match &old_removed {
             Ok(()) => {
                 if let Err(e) =
-                    db::messages::delete_uids(&conn, &params.account_id, &old_folder, &[old_uid])
+                    db::messages::delete_uids(&conn, &params.account_id, &old_folder, &retired)
                 {
                     log::warn!(
                         "MCP edit_draft: local DB delete of old UID {} failed: {}",
@@ -4927,11 +5002,11 @@ impl CxMailMcp {
             Err(reason) => {
                 log::warn!(
                     "MCP edit_draft: new revision UID {} is on the server but the old UID {} was not removed: {}",
-                    new_uid, old_uid, reason
+                    new_uid, target_uid, reason
                 );
                 format!(
                     "\n\n⚠ The previous revision (UID {}) could not be removed: {}. Both revisions are now in {} — once the new draft looks right, delete UID {} with delete_email.",
-                    old_uid, reason, old_folder, old_uid
+                    target_uid, reason, old_folder, target_uid
                 )
             }
         };
@@ -4965,6 +5040,15 @@ impl CxMailMcp {
         } else {
             format!(" with {} attachments", attachments_count)
         };
+        // T666: say so when the server's newest revision was not the one this
+        // Mac's cache named — another machine saved in between.
+        let retarget_note = if target_uid != old_uid {
+            format!(
+                "\n\nℹ This Mac's cache named UID {old_uid}, but the server's newest revision of this draft was UID {target_uid} (saved since, likely from another machine); the edit replaced UID {target_uid}."
+            )
+        } else {
+            String::new()
+        };
         let deprecation_note = if addressed_by_uid {
             format!(
                 "\n\nℹ `uid` is deprecated for edit_draft — address this draft as draft_id \"{}\" from now on. A UID names one revision and goes stale on every save; the draft_id does not.",
@@ -4974,14 +5058,15 @@ impl CxMailMcp {
             String::new()
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}{}{}",
-            old_uid,
+            "Draft UID {} replaced with UID {} in {} for {}{} — draft_id {}{}{}{}{}{}{}{}{}{}{}{}",
+            target_uid,
             new_uid,
             drafts_folder,
             account.email,
             suffix,
             draft_id,
             dup_note,
+            retarget_note,
             deprecation_note,
             quote_note,
             layout_note,
@@ -7544,13 +7629,20 @@ mod tests {
         let connect = body
             .find("imap::connect_for_account(")
             .expect("IMAP connect is present");
+        // T666: the preflight asks the server for the draft's revisions
+        // (newest wins); the bare existence check is its fallback for drafts
+        // with no identity header. Both must precede the APPEND.
         let preflight = body
+            .find("draft_revisions::scan(")
+            .expect("server-revision preflight is present");
+        let fallback = body
             .find("imap::uid_exists(")
-            .expect("stale-UID preflight is present");
+            .expect("existence-check fallback is present");
         let append = body.find(".append(").expect("APPEND is present");
         let delete = body
-            .find("\"\\\\Deleted\"")
-            .expect("old-UID delete is present");
+            .find("draft_revisions::retire(")
+            .expect("old-revision retire is present");
+        assert!(fallback < append, "the existence fallback must run before the APPEND");
         assert!(
             claim < connect,
             "the claim (compare-and-set on current_uid) must be taken before any IMAP work"
@@ -7760,9 +7852,15 @@ mod tests {
     fn edit_draft_expunges_only_the_old_uid() {
         let body = edit_draft_source();
         assert!(
-            body.contains("imap::uid_expunge("),
-            "the old revision is removed with a targeted UID EXPUNGE"
+            body.contains("draft_revisions::retire("),
+            "the old revision is removed through draft_revisions::retire"
         );
+        // ...which retires each UID with a targeted UID EXPUNGE.
+        let retire_src = include_str!("../../../cxmail-email/src/email/draft_revisions.rs");
+        let retire_fn = &retire_src[retire_src.find("pub async fn retire(").unwrap()..];
+        let retire_fn = &retire_fn[..retire_fn.find("\n}\n").unwrap()];
+        assert!(retire_fn.contains("imap::uid_expunge("), "retire uses UID EXPUNGE");
+        assert!(!retire_fn.contains("imap::expunge("), "retire never runs a mailbox-wide EXPUNGE");
         assert!(
             !body.contains("imap::expunge("),
             "a mailbox-wide EXPUNGE would also purge whatever another client marked \\Deleted"

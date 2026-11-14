@@ -56,6 +56,7 @@ import AIWritingMenu from "./AIWritingMenu";
 import LinkButton from "./LinkButton";
 import { ComposeShortcuts, isLinkShortcut } from "@/lib/composeShortcuts";
 import { isEmptyEditorHtml, placeSignature, recoverForeignDraftHtml } from "@/lib/draftRecovery";
+import { draftConflictTarget } from "@/lib/draftConflict";
 import AIAssistPanel, { type AssistLaunch } from "./AIAssistPanel";
 import type { DraftSnapshot } from "@/lib/draftValidation";
 import FollowupPopover from "./FollowupPopover";
@@ -694,6 +695,29 @@ export default function ComposeModal({
           setSaveStatus("saved");
           setLastSavedAt(new Date());
         } catch (e) {
+          // T666: the server holds a newer revision than this window (saved on
+          // another device, or by Claude). Nothing was written. Hand it to the
+          // listener a live update uses: adopt the newer UID, then show the
+          // Reload / Keep mine banner, since this window has unsaved edits.
+          const moved = draftConflictTarget(e);
+          const ctx = draftContextStateRef.current;
+          if (moved !== null && ctx) {
+            // Still an error to a caller that asked (Save Draft, pop-out): it
+            // must not close the window on edits that were never saved.
+            savedError = e;
+            setSaveStatus("idle");
+            const env: McpActivity = {
+              v: 1,
+              kind: "draft-updated",
+              account_id: accountId,
+              folder: ctx.folder,
+              uid: moved,
+              old_uid: ctx.uid,
+              tool: "another-device",
+            };
+            window.dispatchEvent(new CustomEvent("cxmail:draft-updated", { detail: env }));
+            return;
+          }
           savedError = e;
           setSaveStatus("error");
           if (!throwOnError) {
@@ -860,6 +884,32 @@ export default function ComposeModal({
     return () => window.removeEventListener("cxmail:draft-updated", onDraftUpdated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyMcpReload]);
+
+  // T666: while this window holds a saved draft, watch the account's Drafts
+  // folder for revisions saved on another device. The backend shares one IDLE
+  // connection per account across windows and closes it with the last lease;
+  // a newer revision arrives as the same `draft-updated` event the listener
+  // above handles.
+  const hasSavedDraft = draftContextState !== null;
+  useEffect(() => {
+    if (!hasSavedDraft || !resolvedAccountId) return;
+    let lease: number | null = null;
+    let cancelled = false;
+    api.compose
+      .watchDrafts(resolvedAccountId)
+      .then((l) => {
+        if (cancelled) void api.compose.unwatchDrafts(l).catch(() => {});
+        else lease = l;
+      })
+      .catch((e) => {
+        console.error("Drafts watch failed to start:", e);
+        void api.system.logClientError("draft-watch", String(e));
+      });
+    return () => {
+      cancelled = true;
+      if (lease !== null) void api.compose.unwatchDrafts(lease).catch(() => {});
+    };
+  }, [hasSavedDraft, resolvedAccountId]);
 
   const handleMcpReload = useCallback(async () => {
     const env = mcpUpdate;
@@ -1516,7 +1566,11 @@ export default function ComposeModal({
         <div className="flex items-center justify-between gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2">
           <div className="flex min-w-0 items-center gap-2 text-xs text-warning">
             <Sparkles className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">Claude updated this draft — you have unsaved edits.</span>
+            <span className="truncate">
+              {mcpUpdate.tool === "another-device"
+                ? "This draft was updated on another device. You have unsaved edits."
+                : "Claude updated this draft. You have unsaved edits."}
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <button

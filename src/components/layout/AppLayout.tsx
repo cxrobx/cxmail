@@ -39,7 +39,9 @@ const SYNC_INTERVAL_MS = 300_000; // Poll every 5 minutes
 // Friendly toast text for an MCP activity, varied by kind/tool.
 function mcpActivityToastMessage(env: McpActivity): string {
   if (env.kind === "draft-created") return "New draft from Claude";
-  if (env.kind === "draft-updated") return "Draft updated by Claude";
+  if (env.kind === "draft-updated") {
+    return env.tool === "another-device" ? "Draft updated on another device" : "Draft updated by Claude";
+  }
   if (env.kind === "calendar") {
     return env.tool === "send_calendar_invites"
       ? "Calendar invites sent by Claude"

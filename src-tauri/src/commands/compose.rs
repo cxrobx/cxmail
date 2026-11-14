@@ -1,5 +1,5 @@
 use crate::db;
-use crate::email::{draft_local, imap, parser, smtp, tracking};
+use crate::email::{draft_local, draft_revisions, imap, parser, smtp, tracking};
 use crate::error::AppError;
 use crate::AppState;
 use crate::LockExt;
@@ -390,6 +390,7 @@ pub async fn save_draft(
         .map_err(|e| AppError::Imap(format!("APPEND to Drafts failed: {}", e)))?;
 
     let uid = imap::find_uid_by_message_id(&mut session, &drafts_folder, &message_id_header).await?;
+    crate::draft_watch::note_own_revision(&account_id, &drafts_folder, uid);
     let _ = imap::disconnect(session, &account.email).await;
 
     // Persist the freshly-APPENDed draft into the local cache so it shows up
@@ -551,11 +552,57 @@ async fn replace_draft_revision(
     claim_token: &str,
     claimed: bool,
 ) -> Result<SavedDraftRef, AppError> {
+    let mut session = imap::connect_for_account(account).await?;
+
+    // T666 — ask the SERVER which revision is current before writing. This
+    // Mac's `drafts` row only knows what this Mac wrote or synced, so a
+    // compose window here would otherwise autosave its stale text as a new
+    // revision over an edit another machine (the MCP on another Mac) made
+    // since. A newer revision refuses the save before the APPEND; the composer
+    // adopts the UID named in the error (`now UID N`) and reloads or asks.
+    let scan = match draft_revisions::scan(&mut session, old_folder).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = imap::disconnect(session, &account.email).await;
+            return Err(e);
+        }
+    };
+    // A draft this Mac has no row for (synced before v60, or opened before the
+    // sync linked it) still carries its real id on the server; use that, so
+    // the check below and the cleanup after see every revision of it.
+    let draft_id: String = if claimed {
+        draft_id.to_string()
+    } else {
+        scan.draft_id_of(uid).unwrap_or(draft_id).to_string()
+    };
+    let draft_id = draft_id.as_str();
+    let revisions = scan.revisions(draft_id).to_vec();
+    if let draft_revisions::Resolution::Moved { current } =
+        draft_revisions::resolve(&revisions, uid, false)
+    {
+        let _ = imap::disconnect(session, &account.email).await;
+        {
+            let conn = state.db.safe_lock();
+            if let Err(e) =
+                db::drafts::link(&conn, draft_id, account_id, old_folder, scan.uidvalidity, current)
+            {
+                log::warn!("edit_draft: linking newer revision {current} of {draft_id}: {e}");
+            }
+        }
+        return Err(AppError::General(format!(
+            "Draft conflict: UID {uid} is no longer the current revision of draft {draft_id} (now UID {current}); nothing was saved"
+        )));
+    }
+
     let message_id_bare = format!("{}@cxmail.app", uuid::Uuid::new_v4());
     let message_id_header = format!("<{}>", message_id_bare);
-    let raw = build_draft_raw(from, email, &message_id_bare, draft_id)?;
-
-    let mut session = imap::connect_for_account(account).await?;
+    let raw = match build_draft_raw(from, email, &message_id_bare, draft_id) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = imap::disconnect(session, &account.email).await;
+            return Err(e);
+        }
+    };
     let (uidvalidity, _) = imap::select_folder(&mut session, drafts_folder).await?;
 
     // Same flag rationale as save_draft: \Seen suppresses new-mail notification +
@@ -567,6 +614,7 @@ async fn replace_draft_revision(
 
     let new_uid =
         imap::find_uid_by_message_id(&mut session, drafts_folder, &message_id_header).await?;
+    crate::draft_watch::note_own_revision(account_id, drafts_folder, new_uid);
 
     // The new revision is on the server: move the pointer NOW, before the
     // old-UID delete. From here on the old revision is the duplicate.
@@ -585,27 +633,16 @@ async fn replace_draft_revision(
         }
     }
 
-    // Now delete the old draft.
-    match imap::select_folder(&mut session, old_folder).await {
-        Ok(_) => {
-            if let Err(e) = imap::store_flags(&mut session, uid, true, "\\Deleted").await {
-                log::warn!(
-                    "edit_draft: failed to mark old draft UID {} deleted: {}",
-                    uid, e
-                );
-            } else if let Err(e) = imap::uid_expunge(&mut session, uid).await {
-                log::warn!(
-                    "edit_draft: UID EXPUNGE {} failed after marking old draft deleted: {}",
-                    uid, e
-                );
-            }
-        }
-        Err(e) => {
-            log::warn!(
-                "edit_draft: SELECT {} failed while removing old draft UID {}: {}",
-                old_folder, uid, e
-            );
-        }
+    // Now retire the old revision, plus any older revision of this draft a
+    // cross-machine race left behind (T666), so Drafts holds one copy.
+    // Never anything at or above `new_uid`: that is a newer writer's.
+    let to_retire = draft_revisions::superseded(&revisions, uid, new_uid);
+    let retired = draft_revisions::retire(&mut session, old_folder, &to_retire).await;
+    if retired.len() != to_retire.len() {
+        log::warn!(
+            "edit_draft: retired {:?} of {:?} for draft {} (the rest stay as duplicates until the next save)",
+            retired, to_retire, draft_id
+        );
     }
 
     let _ = imap::disconnect(session, &account.email).await;
@@ -614,7 +651,7 @@ async fn replace_draft_revision(
     // the search row in the same transaction), then persist the new one.
     {
         let conn = state.db.safe_lock();
-        if let Err(e) = db::messages::delete_uids(&conn, account_id, old_folder, &[uid]) {
+        if let Err(e) = db::messages::delete_uids(&conn, account_id, old_folder, &retired) {
             log::warn!(
                 "edit_draft: local DB delete of old UID {} in {} failed: {}",
                 uid, old_folder, e

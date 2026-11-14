@@ -6,6 +6,7 @@ mod commands;
 #[cfg(target_os = "macos")]
 pub mod dock_menu_macos;
 pub mod glass_macos;
+pub mod draft_watch;
 pub mod idle;
 pub mod launchd;
 pub mod notify;
@@ -208,6 +209,8 @@ pub fn run() {
             commands::compose::save_draft,
             commands::compose::resolve_draft_link,
             commands::compose::edit_draft,
+            draft_watch::draft_watch_start,
+            draft_watch::draft_watch_stop,
             commands::compose::download_attachment,
             commands::compose::fetch_outgoing_attachments,
             commands::compose::cancel_send,
@@ -801,6 +804,16 @@ pub fn run() {
                                             );
                                             if let Err(e) = conn_handle.emit("mcp-activity", &env) {
                                                 log::warn!("MCP bridge: emit failed: {e}");
+                                            }
+                                            // The local MCP's draft writes are this Mac's own:
+                                            // the Drafts watcher must not announce them again
+                                            // as an edit from another device (T666).
+                                            if env.kind.starts_with("draft-") {
+                                                draft_watch::note_own_revision(
+                                                    &env.account_id,
+                                                    &env.folder,
+                                                    env.uid,
+                                                );
                                             }
                                             if env.kind == "calendar-approval-request" {
                                                 if let Some(approval_id) = env.approval_id.as_deref()

@@ -336,6 +336,12 @@ export const api = {
       }),
     editDraft: (accountId: string, folder: string, uid: number, email: OutgoingEmail) =>
       invoke<SavedDraftRef>("edit_draft", { accountId, folder, uid, email }),
+    /** Watch this account's Drafts folder for revisions saved on another
+     * machine (T666). Returns a lease for `unwatchDrafts`. */
+    watchDrafts: (accountId: string) =>
+      invoke<number>("draft_watch_start", { accountId }),
+    unwatchDrafts: (lease: number) =>
+      invoke<void>("draft_watch_stop", { lease }),
     downloadAttachment: (
       accountId: string,
       folder: string,

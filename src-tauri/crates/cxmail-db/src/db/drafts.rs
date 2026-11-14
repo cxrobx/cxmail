@@ -249,6 +249,23 @@ pub fn advance(
     Ok(())
 }
 
+/// Does a writer hold an unexpired claim on `draft_id` right now? The
+/// cross-machine watcher (T666) uses it to tell "this Mac is mid-save" from
+/// "another machine wrote": a revision that appears while a local claim is
+/// held is the local writer's own, and is not announced as a foreign edit.
+pub fn claim_active(conn: &Connection, draft_id: &str) -> Result<bool, AppError> {
+    let held: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM drafts
+              WHERE draft_id = ?1 AND claim_token IS NOT NULL
+                AND claim_expires_at IS NOT NULL AND claim_expires_at >= ?2",
+            params![draft_id, now_iso()],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(held.is_some())
+}
+
 /// Headline fields of the revision at `uid`, for telling a losing writer what
 /// it lost to. `None` when the local cache has no row for it (not synced yet).
 pub fn snapshot(
@@ -369,6 +386,25 @@ mod tests {
         advance(&c, "d1", "tok-a", 7, 11).unwrap();
         assert!(matches!(claim(&c, "d1", 11, "tok-c").unwrap(), ClaimOutcome::Busy { .. }));
         assert_eq!(get(&c, "d1").unwrap().unwrap().current_uid, 11);
+    }
+
+    #[test]
+    fn claim_active_tracks_an_unexpired_claim_only() {
+        let c = conn();
+        assert!(!claim_active(&c, "nope").unwrap());
+        link(&c, "d1", "acct", "Drafts", 7, 10).unwrap();
+        assert!(!claim_active(&c, "d1").unwrap());
+        assert_eq!(claim(&c, "d1", 10, "tok").unwrap(), ClaimOutcome::Claimed);
+        assert!(claim_active(&c, "d1").unwrap());
+        c.execute(
+            "UPDATE drafts SET claim_expires_at = '2000-01-01T00:00:00.000Z' WHERE draft_id = 'd1'",
+            [],
+        )
+        .unwrap();
+        assert!(!claim_active(&c, "d1").unwrap(), "an expired claim is not held");
+        assert_eq!(claim(&c, "d1", 10, "tok2").unwrap(), ClaimOutcome::Claimed);
+        advance(&c, "d1", "tok2", 7, 11).unwrap();
+        assert!(!claim_active(&c, "d1").unwrap(), "advance drops the claim");
     }
 
     #[test]

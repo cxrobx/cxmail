@@ -5,6 +5,7 @@ pub mod calendar;
 pub mod categorize;
 pub mod chat_agent;
 pub mod draft_local;
+pub mod draft_revisions;
 pub mod document_text;
 pub mod event_input;
 pub mod embeddings;

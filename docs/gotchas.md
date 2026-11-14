@@ -1366,6 +1366,26 @@ Pattern: `crates/cxmail-email/src/email/smtp.rs::{envelope_rcpts, send_email_wit
 
 ---
 
+### 68. A draft's current revision is the SERVER's to say: each Mac's `drafts` row lags the other Mac
+
+**Symptom (2026-11-13):** an agent on Mac A ran `edit_draft` on a draft that was open in compose on Mac B. Mac B's window never showed the edits, and its autosave wrote the old text back as new revisions. Mac A's next `edit_draft` by `draft_id` then failed with "Draft UID … is not in [Gmail]/Drafts … The local cache still lists it", and Drafts held two live copies, one of them stale and one click from being sent.
+
+**Why:** v60's `drafts` table (#57) is per machine. Its `current_uid` moves only when THIS Mac writes or syncs Drafts, and its claim is a compare-and-set against that local belief. So Mac B's claim on its stale UID succeeded, the APPEND went through, and the old-UID delete was a silent no-op on a UID Mac A had already retired. Live refresh was the local MCP bridge only, so it never crossed machines.
+
+**Guard:**
+- **Every writer asks the server first.** `email::draft_revisions::scan` reads `X-CXMail-Draft-Id` for the whole Drafts folder (a header FETCH matched client-side, not `UID SEARCH HEADER`, which Gmail's search index is not trusted for) and `resolve` decides: the app's autosave (`commands::compose::replace_draft_revision`) is refused with `Draft conflict: … (now UID N)` before the APPEND when the server has moved on; MCP `edit_draft` follows the newest revision when addressed by `draft_id` alone, refuses when it named a revision, and re-links from the server when this Mac has no row for that `draft_id` yet.
+- **After the APPEND, retire every older revision of the draft** (`draft_revisions::superseded` + `retire`, per-UID `UID EXPUNGE`), never one at or above the new UID.
+- **Live update across Macs: `draft_watch`.** While a compose window holds a saved draft it leases one held IMAP session per account. That session NOOPs every 3 s, rescans on EXISTS/EXPUNGE, syncs Drafts, then emits the bridge's `draft-updated` envelope (`tool: "another-device"`) to the existing composer listener. **Not IDLE and not a reconnect per check:** measured on Gmail, IDLE reported another session's Drafts APPEND ~30 s late every time while a NOOP saw it in ~1 s, and a login every few seconds is what Gmail throttles. The watcher skips this Mac's own revisions (`note_own_revision`, fed by `save_draft`, `edit_draft` and the MCP bridge) and drafts with a live local claim.
+- **Composer:** a `Draft conflict … (now UID N)` save error is turned into the same `draft-updated` event (`lib/draftConflict.ts`), so the window adopts the newer UID and shows Reload / Keep mine. It is still an error to Save Draft, which must not close on unsaved edits.
+
+Pinned by `draft_revisions::tests`, `draft_watch::tests`, `db::drafts::tests::claim_active_tracks_an_unexpired_claim_only`, `draftConflict.test.ts`, and the source-order tests in `mcp::server::tests::edit_draft_*`. Live-probed on Gmail 2026-11-13 (two sessions, throwaway self-addressed drafts): scan, resolve, retire, and the NOOP-loop latency.
+
+**Not covered:** a draft edited in Gmail's web composer loses the header (#62), so it degrades to the old single-Mac behaviour. A draft sent or deleted on the other Mac is not a "newer revision", so a stale window's autosave can still put it back.
+
+Pattern: `crates/cxmail-email/src/email/draft_revisions.rs`, `src-tauri/src/draft_watch.rs`.
+
+---
+
 ## Lifecycle Management
 
 - **SUPERSEDED**: When a gotcha is resolved, mark it: `## #N: [Title] ~~SUPERSEDED~~`

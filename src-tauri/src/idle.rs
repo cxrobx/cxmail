@@ -244,7 +244,7 @@ async fn run_idle_session(
             // even if the frontend listener is broken / not running.
             // Adapted from src-tauri/src/bin/helper.rs:214-301.
             if let Some(state) = app.try_state::<AppState>() {
-                mini_sync(&state, app, &mut session, account_id, email).await;
+                mini_sync(&state, app, &mut session, account_id, email, "INBOX").await;
             } else {
                 log::warn!("IDLE: AppState unavailable, skipping mini_sync for {}", email);
             }
@@ -269,16 +269,17 @@ async fn run_idle_session(
 /// the IDLE loop must keep running.
 ///
 /// Adapted from `src-tauri/src/bin/helper.rs::mini_sync`.
-async fn mini_sync(
+pub(crate) async fn mini_sync(
     state: &AppState,
     app: &AppHandle,
     session: &mut imap::ImapSession,
     account_id: &str,
     email: &str,
+    folder: &str,
 ) {
     let mut prepared = {
         let conn = state.db.safe_lock();
-        match sync::prepare_folder_sync(&conn, account_id, "INBOX") {
+        match sync::prepare_folder_sync(&conn, account_id, folder) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("IDLE mini_sync: prepare failed for {}: {}", email, e);
@@ -287,7 +288,7 @@ async fn mini_sync(
         }
     };
 
-    let plan = match sync::select_and_plan(session, "INBOX", &prepared.sync_state).await {
+    let plan = match sync::select_and_plan(session, folder, &prepared.sync_state).await {
         Ok(p) => p,
         Err(e) => {
             log::warn!("IDLE mini_sync: select_and_plan failed for {}: {}", email, e);
@@ -297,7 +298,7 @@ async fn mini_sync(
 
     let was_reset = {
         let conn = state.db.safe_lock();
-        match sync::apply_reset_if_needed(&conn, account_id, "INBOX", &plan) {
+        match sync::apply_reset_if_needed(&conn, account_id, folder, &plan) {
             Ok(r) => r,
             Err(e) => {
                 log::warn!("IDLE mini_sync: reset failed for {}: {}", email, e);
@@ -334,7 +335,7 @@ async fn mini_sync(
             if let Err(e) = sync::apply_header_batch(
                 &conn,
                 account_id,
-                "INBOX",
+                folder,
                 &batch_headers,
                 end_uid,
                 plan.uidvalidity,
@@ -352,7 +353,7 @@ async fn mini_sync(
             .filter(|h| !was_reset && !existing_uids.contains(&h.uid) && !h.is_read)
             .map(|h| crate::notify::NewMailInfo {
                 account_id: account_id.to_string(),
-                folder: "INBOX".to_string(),
+                folder: folder.to_string(),
                 uid: h.uid,
                 from_name: h.from_name.clone(),
                 from_email: h.from_email.clone(),
@@ -380,7 +381,7 @@ async fn mini_sync(
         if let Err(e) = sync::finalize_header_sync(
             &conn,
             account_id,
-            "INBOX",
+            folder,
             final_last_uid,
             plan.uidvalidity,
             plan.uidnext,
@@ -392,7 +393,7 @@ async fn mini_sync(
 
     let reconciliation_plan = {
         let conn = state.db.safe_lock();
-        match sync::prepare_reconciliation(&conn, account_id, "INBOX", sync::SyncMode::Limited) {
+        match sync::prepare_reconciliation(&conn, account_id, folder, sync::SyncMode::Limited) {
             Ok(plan) => plan,
             Err(e) => {
                 log::warn!(
@@ -420,7 +421,7 @@ async fn mini_sync(
         if let Err(e) = sync::apply_reconciliation(
             &conn,
             account_id,
-            "INBOX",
+            folder,
             &reconciliation_plan,
             reconciliation,
         ) {
