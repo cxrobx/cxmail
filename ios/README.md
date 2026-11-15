@@ -215,8 +215,14 @@ Verification passed 21 unit checks, 17 compact UI flows (one unrelated orientati
 case skipped), five existing wide flows, and the two sender-policy flows on both
 compact and wide simulators. The 58 API checks, 615 frontend checks, 997 Rust checks,
 real-browser request blocking, read-only cached-mail compatibility probe and design
-preflight passed. Screenshots were inspected. Signed desktop and iOS build 8
-artifacts are prepared; installation awaits the required desktop swap approval.
+preflight passed. Screenshots were inspected. After explicit swap approval, both
+signed builds were installed on the mini and physical Duo. Desktop app, helper,
+shared MCP and remote service were restarted and their installed binaries checked.
+The live authenticated tailnet HTTPS API returned the domain-authentication policy
+and matching final image-permission header without mail/trust mutations. Duo build
+8 was confirmed installed; launch was refused because the phone was locked, so
+CXMail must be opened after unlocking. The previous desktop bundle is preserved
+in a private local rollback directory.
 
 ## Current boundaries
 
