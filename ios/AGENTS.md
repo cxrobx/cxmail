@@ -26,7 +26,8 @@ can misroute taps to the inbox underneath (caught by chat-open UI regression).
 MCP text output is not a message-body API: `read_email` includes diagnostic
 headers, and its plain-text branch can be empty for HTML-only mail. The remote
 API resolves missing bodies through the sanitized preview, verifies/removes its
-envelope, and returns `body_error` for a failed fetch. Keep the uncached HTML,
+envelope (including matching-nonce MCP safety fences and server-note metadata),
+and returns `body_error` for a failed fetch. Keep the uncached HTML,
 plain-only, empty-body, failure/retry and missing-snippet density regressions.
 
 The exact-width test is a geometry harness, not physical hinge automation.
