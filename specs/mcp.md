@@ -60,7 +60,25 @@ and the client:
    to its own ask tier (`chat_agent::mutating_tools_are_never_auto_allowed`).
    `send_calendar_invites` needs the in-app approval card regardless.
 
-Not covered: clients without a hook (Codex, other MCP hosts) get layers 1 and 2 only.
+4. **Per-message risk check.** On an agent's first contact with a message (`read_email`,
+   `read_thread`, `list_attachments`) the server runs `email::risk::assess` and stores the
+   report in `message_risk` (v66), keyed by account + bare Message-ID so a moved message is
+   not re-assessed; `RULES_VERSION` invalidates stale reports. Sender standing ("first-time
+   sender", from `needs_you::sender_trust`, cached 10 min in-process) is computed live and
+   never stored. The result is a server note: level, then each signal. **A level only ever
+   tightens:** LOW skips no approval and drops no warning. The approval hook reads the
+   stored level and makes a download prompt from a MEDIUM/HIGH email louder.
+   Calibrated on 3,000 real inbox messages (`cxmail-email` example `risk_probe`, aggregates
+   only): first pass 62.6% medium, final 99.9% low. What the first pass got wrong is now
+   written into the rules: hidden layout blocks and preheader padding are info; link text
+   counts only when the whole text is a URL, and sponsor/tracker mismatches are info (a
+   judgment for the model half, not a rule); a shared prefix is not a typosquat
+   (`northwind` vs `northwind06`); invoicing platforms make display-name mismatches medium, not
+   high; DMARC aggregate reports are not risky attachments; mentions of "system prompt"
+   are info, but text that addresses an agent and tells it to act is medium, and anything
+   instruction-like in HIDDEN text, or Unicode tag characters, is high.
+
+Not covered: clients without a hook (Codex, other MCP hosts) get layers 1, 2 and 4 only.
 
 ## Tool Definitions
 

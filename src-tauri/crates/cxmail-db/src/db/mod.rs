@@ -15,6 +15,7 @@ pub mod knowledge;
 mod intelligence_tests;
 pub mod inbox_groups;
 pub mod invite_notifications;
+pub mod message_risk;
 pub mod messages;
 pub mod needs_you;
 pub mod nudges;

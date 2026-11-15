@@ -213,6 +213,42 @@ pub(crate) fn load_correspondence(conn: &Connection) -> Result<Correspondence, A
     })
 }
 
+/// Who the user really corresponds with, for the per-message risk check
+/// (`email::risk`). A view over `load_correspondence`, so "established
+/// correspondent" means exactly what it means for Needs You and nudges.
+pub struct SenderTrust {
+    /// Non-freemail domains the user writes to repeatedly, plus their own
+    /// account domains: the reference set for lookalike detection.
+    pub known_domains: HashSet<String>,
+    /// Addresses written to repeatedly, or that have replied to the user.
+    pub established: HashSet<String>,
+    pub own_addresses: HashSet<String>,
+}
+
+impl SenderTrust {
+    /// True when the user has neither written to this address repeatedly nor
+    /// ever had a reply from it. Live by design: it changes as mail flows.
+    pub fn is_unestablished(&self, address: &str) -> bool {
+        let a = address.trim().to_lowercase();
+        !self.established.contains(&a) && !self.own_addresses.contains(&a)
+    }
+}
+
+pub fn sender_trust(conn: &Connection) -> Result<SenderTrust, AppError> {
+    let c = load_correspondence(conn)?;
+    let mut known_domains = c.domains.clone();
+    for a in &c.own_addresses {
+        if let Some((_, d)) = a.split_once('@') {
+            if !FREEMAIL.contains(&d) {
+                known_domains.insert(d.to_string());
+            }
+        }
+    }
+    let mut established = c.senders.clone();
+    established.extend(c.repliers.iter().cloned());
+    Ok(SenderTrust { known_domains, established, own_addresses: c.own_addresses })
+}
+
 struct Row {
     uid: u32,
     account_id: String,

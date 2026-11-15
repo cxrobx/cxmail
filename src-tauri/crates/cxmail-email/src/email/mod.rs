@@ -23,6 +23,7 @@ pub mod loose_text;
 pub mod oauth2;
 pub mod parser;
 pub mod providers;
+pub mod risk;
 pub mod search_parse;
 pub mod server_search;
 pub mod smtp;

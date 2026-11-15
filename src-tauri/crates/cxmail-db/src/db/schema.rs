@@ -1,7 +1,7 @@
 use chrono::{DateTime, FixedOffset, Utc};
 use rusqlite::{Connection, Result};
 
-const CURRENT_VERSION: i32 = 65;
+const CURRENT_VERSION: i32 = 66;
 
 /// Initialize the database, creating tables if needed and running migrations.
 pub fn initialize(conn: &Connection) -> Result<()> {
@@ -226,6 +226,10 @@ pub fn initialize(conn: &Connection) -> Result<()> {
         super::intelligence::create_tables(&tx)?;
         super::knowledge::create_tables(&tx)?;
         tx.commit()?;
+    }
+    if version < 66 {
+        // Per-message risk reports, written on first MCP contact (message_risk.rs).
+        super::message_risk::create_table(conn)?;
     }
 
     set_schema_version(conn, CURRENT_VERSION)?;
