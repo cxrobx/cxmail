@@ -43,9 +43,11 @@ use tokio::sync::Notify;
 
 /// How often the held session asks the server for news (one NOOP).
 const POLL_EVERY: Duration = Duration::from_secs(3);
-/// Re-scan this often even with no news: a safety net for a server that does
-/// not report another session's APPEND on NOOP.
-const RESCAN_EVERY: Duration = Duration::from_secs(60);
+/// Bound freshness by an explicit server read, not unsolicited notices.
+/// The real two-Mac T666 check saw NOOP notices lag 9–13 seconds on Gmail.
+/// Draft folders are small; read their identity headers on every poll even
+/// when the server's unsolicited queue is silent.
+const RESCAN_EVERY: Duration = POLL_EVERY;
 /// Any one command on the held session must answer quickly or the socket is dead.
 const IDLE_OP_TIMEOUT: Duration = Duration::from_secs(15);
 /// A session that stayed up this long resets the failure count.

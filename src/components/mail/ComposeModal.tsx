@@ -57,6 +57,7 @@ import LinkButton from "./LinkButton";
 import { ComposeShortcuts, isLinkShortcut } from "@/lib/composeShortcuts";
 import { isEmptyEditorHtml, placeSignature, recoverForeignDraftHtml } from "@/lib/draftRecovery";
 import { draftConflictTarget } from "@/lib/draftConflict";
+import { fetchDraftReload } from "@/lib/draftReload";
 import AIAssistPanel, { type AssistLaunch } from "./AIAssistPanel";
 import type { DraftSnapshot } from "@/lib/draftValidation";
 import FollowupPopover from "./FollowupPopover";
@@ -260,6 +261,8 @@ export default function ComposeModal({
   // (declared right after the snapshot effect) then rebases lastSavedHashRef onto
   // the settled snapshot so the debounced autosave the reload scheduled skips.
   const [reloadSettleTick, setReloadSettleTick] = useState(0);
+  const reloadRequestRef = useRef(0);
+  const reloadSettleRequestRef = useRef(0);
   // AI Assist panel. `assistLaunch` is non-null exactly while the panel is
   // open; `assistSelection` freezes the editor selection at launch, because
   // focusing the panel destroys it and Rewrite needs to know what to act on.
@@ -600,8 +603,10 @@ export default function ComposeModal({
   // after the reload mutates latestDraftRef, so the hashes diverge and it still saves.
   useEffect(() => {
     if (reloadSettleTick === 0) return;
+    if (reloadSettleRequestRef.current !== reloadRequestRef.current) return;
     if (!latestDraftRef.current) return;
     lastSavedHashRef.current = hashDraft(latestDraftRef.current.outgoing);
+    mcpReloadPendingRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSettleTick]);
 
@@ -646,6 +651,12 @@ export default function ComposeModal({
       let result: SavedDraftRef | null = null;
       let savedError: unknown = null;
       const next = saveQueueRef.current.then(async () => {
+        // A save may already have been queued when the remote update arrived.
+        // Its UID now names the new server body, while its text is still stale.
+        if (mcpReloadPendingRef.current) {
+          savedError = new Error("This draft changed on another device. Choose Reload or Keep mine before saving.");
+          return;
+        }
         const accountId = resolvedAccountIdRef.current;
         if (!accountId) { console.debug("saveOrEdit: skip — no account"); return; }
         // Don't bail on finalizedRef here — manual Save Draft sets finalizedRef
@@ -821,8 +832,22 @@ export default function ComposeModal({
   // instead of re-saving (which would re-mint the UID and clobber).
   const applyMcpReload = useCallback(async (env: McpActivity) => {
     if (!editor) return;
+    const request = ++reloadRequestRef.current;
+    // Suppress saves throughout the fetch, not just while the banner is shown.
+    mcpReloadPendingRef.current = true;
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
     try {
-      const fresh = await api.messages.fetchBody(env.account_id, env.folder, env.uid);
+      const loaded = await fetchDraftReload(
+        () => api.messages.fetchBody(env.account_id, env.folder, env.uid),
+        () => latestDraftRef.current ? hashDraft(latestDraftRef.current.outgoing) : null,
+        () => request === reloadRequestRef.current,
+      );
+      if (loaded.kind === "superseded") return;
+      if (loaded.kind === "edited") {
+        setMcpUpdate(env);
+        return;
+      }
+      const fresh = loaded.value;
       const freshTo = fresh.to_list.map((a) => ({ name: a.name, email: a.email }));
       const freshCc = fresh.cc_list.map((a) => ({ name: a.name, email: a.email }));
       setSubject(fresh.subject ?? "");
@@ -842,9 +867,14 @@ export default function ComposeModal({
       // buildOutgoingEmail), so seed from that same source. Bump the tick; the
       // reseed effect above sets the baseline once the snapshot has settled.
       setLastSavedAt(new Date());
+      reloadSettleRequestRef.current = request;
       setReloadSettleTick((t) => t + 1);
     } catch (e) {
+      if (request !== reloadRequestRef.current) return;
+      // Keep saves blocked and expose Retry/Keep mine through the existing banner.
+      setMcpUpdate(env);
       console.error("Failed to reload draft after MCP edit:", e);
+      void api.system.logClientError("draft-reload", String(e));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
@@ -872,6 +902,7 @@ export default function ComposeModal({
       const snap = latestDraftRef.current;
       const isDirty = !!snap && hashDraft(snap.outgoing) !== lastSavedHashRef.current;
       if (isDirty) {
+        ++reloadRequestRef.current; // Invalidate any older fetch still in flight.
         // Don't clobber unsaved edits. Suppress autosave + surface a banner.
         if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
         mcpReloadPendingRef.current = true;
@@ -914,11 +945,11 @@ export default function ComposeModal({
   const handleMcpReload = useCallback(async () => {
     const env = mcpUpdate;
     setMcpUpdate(null);
-    mcpReloadPendingRef.current = false;
     if (env) await applyMcpReload(env);
   }, [mcpUpdate, applyMcpReload]);
 
   const handleMcpKeepMine = useCallback(() => {
+    ++reloadRequestRef.current;
     setMcpUpdate(null);
     mcpReloadPendingRef.current = false;
     // Persist the user's local edits onto the new (live) UID — draftContextStateRef

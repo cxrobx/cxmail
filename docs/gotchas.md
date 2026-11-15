@@ -1380,6 +1380,8 @@ Pattern: `crates/cxmail-email/src/email/smtp.rs::{envelope_rcpts, send_email_wit
 
 Pinned by `draft_revisions::tests`, `draft_watch::tests`, `db::drafts::tests::claim_active_tracks_an_unexpired_claim_only`, `draftConflict.test.ts`, and the source-order tests in `mcp::server::tests::edit_draft_*`. Live-probed on Gmail 2026-11-13 (two sessions, throwaway self-addressed drafts): scan, resolve, retire, and the NOOP-loop latency.
 
+**Two-Mac acceptance follow-up (2026-11-15):** NOOP notices lagged 9–13 s in the real app, so the watcher now explicitly rescans identity headers every 3 s on its held session. A second race existed between the listener's clean-editor check and the asynchronous body fetch: new typing could be discarded when that fetch returned, and saves could target the newly adopted UID with the old body. `fetchDraftReload` rechecks the editor snapshot and request generation after the await; newer typing gets Reload / Keep mine. The composer blocks both debounced and already-queued saves throughout reload, until the new saved baseline settles. Failed fetches retain the conflict choice instead of silently enabling stale saves. **Check:** `draftReload.test.ts` uses deferred network responses to exercise typing during fetch, explicit Reload followed by more typing, out-of-order responses and failure; the live two-Mac acceptance records are on T666.
+
 **Not covered:** a draft edited in Gmail's web composer loses the header (#62), so it degrades to the old single-Mac behaviour. A draft sent or deleted on the other Mac is not a "newer revision", so a stale window's autosave can still put it back.
 
 Pattern: `crates/cxmail-email/src/email/draft_revisions.rs`, `src-tauri/src/draft_watch.rs`.
