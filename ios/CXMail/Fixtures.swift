@@ -46,6 +46,22 @@ import Foundation
                 "has_remote_images": true, "blocked_reason": "Images require your permission."]
     }
     static let html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font:17px -apple-system;line-height:1.6;padding:20px;color:#202124;background:white'><p>Hi Chris,</p><p>Thanks for the thoughtful notes. I’ve had a chance to work through the outline, and I think we have a good place to pick this up.</p><p>Could we find a little time next week to talk through the next steps? Tuesday or Thursday would work well on my end.</p><p>I especially liked the idea of keeping the first version focused. Let’s start with what we’ll actually use, then take it from there.</p><p>Talk soon,<br>Jordan</p></body></html>"
+    // Same 600px table class as fixed-width account notices, with fiction only.
+    static let fixedWidthHTML = """
+    <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+    <body style="font:18px -apple-system;color:#202124;background:white">
+    <table width="600" align="center" style="width:600px;min-width:600px;border-collapse:collapse"><tbody>
+    <tr><td style="padding:10px"><span style="float:right">Right edge</span><span>Bluebird Studio</span></td></tr>
+    <tr><td style="padding:10px"><h2>New sign-in to your account</h2><p>Hello Alex,</p>
+    <p>We noticed a new sign-in to your Bluebird Studio account. You can review the complete details below.</p>
+    <p style="white-space:nowrap"><strong>IP address: 2001:db8:1234:5678:90ab:cdef:1234:5678</strong></p>
+    <p>Time: 15 November 2026, 12:00 UTC</p>
+    <p>If this was you, you can ignore this email.</p>
+    <p>If you do not recognise this sign-in, <a href="https://example.org/account">review your account</a> or contact our support team.</p>
+    <h2>Need support?</h2><p>Find answers at <a href="https://example.org/help">https://example.org/help</a>.</p>
+    <p>Keep this complete account notice for your records.</p><p>Bottom of the complete email</p>
+    </td></tr></tbody></table></body></html>
+    """
     static func response(_ path: String, query: [URLQueryItem], body: [String: Any]?) throws -> Data {
         let q = Dictionary(query.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, n in n })
         var result: Any = ["ok": true]
@@ -69,7 +85,7 @@ import Foundation
         case "/api/image-trust":
             imageSenderTrusted = body?["trusted"] as? Bool ?? false
             result = imagePolicy()
-        case "/api/body", "/api/draft-body": return Data(html.utf8)
+        case "/api/body", "/api/draft-body": return Data((ProcessInfo.processInfo.arguments.contains("--fixed-width-email") ? fixedWidthHTML : html).utf8)
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
         case "/api/drafts":
             var draft = message(20); draft["draft"] = true; draft["folder"] = "Drafts"; draft["subject"] = "Re: A good place to pick this up"

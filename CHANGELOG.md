@@ -4,6 +4,9 @@ All notable changes to CXMail are documented here.
 
 ## Unreleased
 
+### Fixed
+- **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
+
 ### Added
 - **Shared sender image trust and authentication.** Desktop and iOS use the same trusted-sender list. Images load automatically only when the current message passes Google From-domain authentication and has no Medium/High risk or Junk flag. A discreet domain-authentication indicator explains the result; Show once remains separate from trust. CSS images, stale decisions and offline caches cannot bypass the gate.
 - **Open a draft from an agent.** The MCP's new `open_draft` tool opens a specific draft in the compose window and brings CXMail to the front. `compose_draft` and `edit_draft` results now carry a `cxmail://draft/<id>` link that does the same from anywhere on the Mac, and it keeps working after the draft is re-saved.

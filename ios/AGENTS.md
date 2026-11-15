@@ -30,6 +30,13 @@ permission offline. Keep Show once separate from trust; preserve sandbox/CSP
 restrictions when images are allowed. The sender indicator is domain
 authentication, never Google's BIMI brand badge or a claim of content safety.
 
+Fixed-width HTML must fit the actual WKWebView width and retain its full height
+after rotation or pane resizing. Keep responsive mail at natural scale. Native
+fitting uses constant app-authored code in `.defaultClient` with
+`allowsContentJavaScript = false`; never interpolate mail into executable code
+or enable page scripts to measure it. Preserve the fixed-table right-edge/footer
+UI regression and native WebKit geometry/security tests.
+
 MCP text output is not a message-body API: `read_email` includes diagnostic
 headers, and its plain-text branch can be empty for HTML-only mail. The remote
 API resolves missing bodies through the sanitized preview, verifies/removes its

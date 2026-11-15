@@ -51,9 +51,13 @@ account, set `CXMAIL_ASC_KEY_PATH`, `CXMAIL_ASC_KEY_ID`, and
   No offline mail mutations or phone-side send queue; failures are explicit.
 
 HTML is already sanitized by the mini, then rendered in an ephemeral WKWebView
-with JavaScript disabled, a restrictive CSP, blocked remote images and external
-links handed to the OS. Opted-in images are not persisted as an opt-in.
+with email JavaScript disabled, a restrictive CSP, blocked remote images and
+external links handed to the OS. Opted-in images are not persisted as an opt-in.
 Original HTML colors are preserved, including white email paper in dark mode.
+Responsive mail keeps its natural size. Fixed-width tables and other overflowing
+layouts scale down to the available reader width, including after rotation or a
+pane resize. A constant app-authored measurement runs in WebKit’s isolated client
+world; it does not enable email scripts or change network permissions.
 When a body is missing locally, the mini fetches sanitized HTML through its
 existing signed helper. MCP metadata is never treated as message content. A
 missing body gets a retry state, and the old metadata-bearing phone cache is
@@ -131,7 +135,9 @@ bash scripts/verify.sh <compact-duo-simulator-udid> <ipad-simulator-udid>
 
 The compact suite covers reading rendered HTML, reply recovery after relaunch,
 compose/review/confirmed-send, stale-draft refusal, Claude permission denial,
-search, empty and offline states, and rotation. The separate iPad run constrains
+search, empty and offline states, rotation, and a fictional fixed-width email’s
+right edge and footer. Native WebKit tests assert fitted bounds, unchanged
+responsive/wide scaling, disabled email scripts and the image CSP. The separate iPad run constrains
 the host to the Duo's 951×669 wide or 669×951 tall window and injects the measured
 side/top and bottom safe areas, plus the active 40-point fold in the wide profile.
 The iPad retains its own system chrome. Tests compare actual rendered email bounds;
@@ -223,6 +229,16 @@ and matching final image-permission header without mail/trust mutations. Duo bui
 8 was confirmed installed; launch was refused because the phone was locked, so
 CXMail must be opened after unlocking. The previous desktop bundle is preserved
 in a private local rollback directory.
+
+Build 9 fits fixed-width email layouts to the actual native reader width and
+refits after rotation or pane resizing, including the scaled document height and
+padding. Responsive emails retain their normal size. Verification passed 25 unit
+checks, 18 compact UI flows (one unrelated orientation case skipped), eight wide
+UI flows, all 58 API checks and design preflight. The additional light/XXXL and
+normal dark footer checks passed; captures confirm the complete email can scroll
+clear of the floating toolbar. Fitting uses constant host code in the isolated
+client world while email JavaScript remains disabled and the image CSP is intact.
+The signed Release build 9 was installed and launched on the physical Duo.
 
 ## Current boundaries
 

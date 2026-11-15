@@ -82,3 +82,5 @@ entry there, then add its one line here.
 - **Probe any data migration on a `.backup` copy of the real mailbox** (#21b, #45, #47, #56) — unit tests have passed against broken versions every time.
 - **One matcher per question** (#36, #49, #50, #54, #61) — reuse the helper, don't write a second query.
 - **Your own `mcp__cxmail__*` tools run the binary from session start** (#47) — test a rebuilt MCP over stdio.
+
+- **Native fixed-width mail crops on closed Duo:** `max-width:100%` alone cannot contain a table’s minimum content width. Keep the WKWebView constrained to the proposed native width, fit overflowing HTML with constant isolated-world host code, and measure the scaled height including padding. Refit on width/content-size changes without enabling email JavaScript or relaxing CSP.

@@ -17,6 +17,30 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15), "Sanitized HTML must actually render")
     }
+    func testFixedWidthEmailFitsClosedReaderAndRotation() {
+        XCUIDevice.shared.orientation = .portrait
+        launch(["--show-reader", "--fixed-width-email"])
+        let web = app.webViews.firstMatch
+        let edge = web.staticTexts["Right edge"]
+        XCTAssertTrue(edge.waitForExistence(timeout: 15))
+        capture("600px email in portrait reader")
+        XCTAssertTrue(edge.isHittable, "The right edge of a fixed-width email must be visible")
+        XCTAssertLessThanOrEqual(edge.frame.maxX, web.frame.maxX + 1)
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(edge.waitForExistence(timeout: 10))
+        XCTAssertLessThanOrEqual(edge.frame.maxX, web.frame.maxX + 1, "Resize must refit the HTML")
+        capture("600px email after width change")
+        XCUIDevice.shared.orientation = .portrait
+        let footer = web.staticTexts["Bottom of the complete email"]
+        let toolbar = app.buttons["readerArchive"]
+        for _ in 0..<4 {
+            if footer.isHittable, footer.frame.maxY < toolbar.frame.minY { break }
+            app.scrollViews.firstMatch.swipeUp()
+        }
+        XCTAssertTrue(footer.isHittable, "Fitting must preserve the complete document height")
+        XCTAssertLessThan(footer.frame.maxY, toolbar.frame.minY, "The footer must scroll clear of the floating toolbar")
+        capture("Complete fixed-width email footer")
+    }
     func testTrustedSenderImagesAndAuthenticationDetails() {
         launch(["--image-policy", "--show-reader"])
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
