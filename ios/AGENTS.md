@@ -15,6 +15,12 @@ mutated by tests. Assert rendered HTML, not just that the reader screen exists.
 Keep primary actions in the safe content area: the Duo's side-rail hit testing
 can misroute taps to the inbox underneath (caught by chat-open UI regression).
 
+MCP text output is not a message-body API: `read_email` includes diagnostic
+headers, and its plain-text branch can be empty for HTML-only mail. The remote
+API resolves missing bodies through the sanitized preview, verifies/removes its
+envelope, and returns `body_error` for a failed fetch. Keep the uncached HTML,
+plain-only, empty-body, failure/retry and missing-snippet density regressions.
+
 The exact-width test is a geometry harness, not physical hinge automation.
 When changing layout, preserve the root-owned selection, draft and chat state,
 check both appearances and XXXL type, and inspect the test captures/recordings.

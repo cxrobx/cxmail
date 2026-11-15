@@ -49,6 +49,7 @@ struct MailMessage: Codable, Hashable, Identifiable {
     var thread: [MailMessage]?
     var accountEmail: String?
     var imagesTrusted: Bool?
+    var bodyError: String?
     var ref: MessageRef { .init(account: account, folder: folder, uid: uid) }
     var id: String { ref.id }
     var sender: String { fromName.flatMap { $0.isEmpty ? nil : $0 } ?? fromEmail ?? "Unknown sender" }

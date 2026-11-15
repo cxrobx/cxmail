@@ -47,13 +47,23 @@ HTML is already sanitized by the mini, then rendered in an ephemeral WKWebView
 with JavaScript disabled, a restrictive CSP, blocked remote images and external
 links handed to the OS. Opted-in images are not persisted as an opt-in.
 Original HTML colors are preserved, including white email paper in dark mode.
+When a body is missing locally, the mini fetches sanitized HTML through its
+existing signed helper. MCP metadata is never treated as message content. A
+missing body gets a retry state, and the old metadata-bearing phone cache is
+discarded without touching recovered replies.
+
+Native Liquid Glass on iOS 26+ provides the account/filter surface and compact
+floating action capsules; earlier systems use a material fallback. The list is
+dense and unboxed. The icon uses the actual desktop CXMail artwork, adapted to
+the opaque iOS mask by `scripts/icon.swift`.
 
 ## Duo layout
 
 The layout uses available geometry, not a device-name or size-class guess.
 Closed upright (382 usable points), closed sideways and open tall stay one pane.
-Open wide becomes inbox + reader. On iOS 27.1+, the measured division region,
-including an inactive fold when flat, supplies the gap and pane boundary.
+Open wide becomes inbox + reader. Flat, the inbox takes about 38% of the usable
+width, leaving most of the space for the email. On iOS 27.1+, an active division
+region supplies the fold gap and pane boundary while the device is partly folded.
 Outdated division geometry during rotation is rejected when a pane cannot fit.
 System safe areas protect the asymmetric status column and home indicator.
 Selection, composer and chat state sit above layout changes.
@@ -82,11 +92,17 @@ Use simulator appearance and content-size settings for light/dark and large-text
 captures. Screenshots and recordings are attached to the test result bundles;
 build products/results live in `/private/tmp/cxmail-ios-dd` by default.
 
-Verified 2026-11-15: 12 unit tests, 7 compact UI flows, the exact open-width UI
+Initial verification 2026-11-15: 12 unit tests, 7 compact UI flows, the exact open-width UI
 profile, and all 32 existing remote API regressions passed. Light/dark and XXXL
 captures were inspected; the reply/recovery flow was recorded. A signed Release
 build was installed on the physical Duo and loaded the live mini mailbox.
 Physical hinge transitions and sustained device frame rate remain manual checks.
+
+The polish pass adds body-load failure/retry, realistic missing-snippet density,
+and flat-Duo reader-width UI checks, plus four API regressions for uncached HTML,
+plain-text envelope removal, empty cached bodies and explicit fetch errors.
+It passes 12 unit checks, 9 compact UI flows, the partial-fold/flat open-width
+flow, and 36 API regressions. Build 2 uses CXMail's actual icon and native glass.
 
 ## Current boundaries
 

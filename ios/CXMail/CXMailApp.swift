@@ -12,7 +12,7 @@ struct CXMailApp: App {
         let cache = fixture ? MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("cxmail-ui-fixture")) : MailCache()
         #if DEBUG
         if fixture && ProcessInfo.processInfo.arguments.contains("--reset") {
-            cache.remove("mail.json"); cache.remove("draft.json")
+            cache.remove("mail.json"); cache.remove("mail-v2.json"); cache.remove("draft.json")
         }
         #endif
         let model = MailStore(api: APIClient(baseURL: url, fixture: fixture), cache: cache)
@@ -24,7 +24,7 @@ struct CXMailApp: App {
     var body: some Scene {
         WindowGroup {
             #if DEBUG
-            if store.api.fixture && ProcessInfo.processInfo.arguments.contains("--duo-wide") {
+            if store.api.fixture && (ProcessInfo.processInfo.arguments.contains("--duo-wide") || ProcessInfo.processInfo.arguments.contains("--duo-flat")) {
                 RootView(store: store).frame(width: 867, height: 635).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else { RootView(store: store) }
             #else

@@ -25,6 +25,8 @@ final class CXMailTests: XCTestCase {
         XCTAssertFalse(DuoLayout.resolve(width: 669, height: 835, fold: CGRect(x: 0, y: 373.5, width: 669, height: 40)).split)
         let wide = DuoLayout.resolve(width: 867, height: 635, fold: CGRect(x: 455.5, y: 0, width: 40, height: 669))
         XCTAssertTrue(wide.split); XCTAssertEqual(wide.leading, 455.5); XCTAssertEqual(wide.gap, 40)
+        let flat = DuoLayout.resolve(width: 867, height: 635, fold: nil)
+        XCTAssertGreaterThan(867 - flat.leading - flat.gap, 500)
         // A transient previous-orientation region must not create an off-screen pane.
         XCTAssertTrue(DuoLayout.resolve(width: 867, height: 635, fold: CGRect(x: 900, y: 0, width: 40, height: 669)).split)
     }

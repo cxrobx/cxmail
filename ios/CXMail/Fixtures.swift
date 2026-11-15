@@ -9,12 +9,22 @@ import Foundation
     static var saved = false
     static var sent = false
     static var revision = 0
+    static var bodyRequests = 0
     static func message(_ uid: Int = 10, detail: Bool = false) -> [String: Any] {
         var value: [String: Any] = ["account": "work", "folder": "INBOX", "uid": uid,
             "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
             "from_name": uid == 10 ? "Jordan Lee" : "Alex Morgan", "from_email": "jordan@example.org",
             "date": "2026-11-14T17:30:00+00:00", "snippet": "Thanks for the thoughtful notes. Here’s what I’m thinking for next week.",
             "read": read.contains(uid), "starred": starred.contains(uid), "attachments": true, "category": "primary", "recipients": ["Chris"]]
+        let examples: [Int: (String, String, String)] = [
+            12: ("Bluebird Billing", "Your November statement is ready", ""),
+            13: ("Morgan Chen", "Re: Thursday’s session", "Thursday at 2 works for me. I’ll send the notes over beforehand."),
+            14: ("Northline Travel", "Your trip receipt", "Thanks for riding with us. Your receipt is attached."),
+            15: ("Casey Brooks", "A couple of ideas for the launch", "I pulled together a short list after our conversation yesterday."),
+            16: ("Field Notes", "Something worth reading this weekend", "A few things we’ve been thinking about lately."),
+            17: ("Jamie Rivera", "Files for next week", "Here’s everything in one place. Let me know if anything is missing.")
+        ]
+        if let example = examples[uid] { value["from_name"] = example.0; value["subject"] = example.1; value["snippet"] = example.2; value["attachments"] = uid == 12 || uid == 14 }
         if detail {
             value.merge(["to": [["email": "me@example.com", "name": "Chris"]], "cc": [["email": "alex@example.org", "name": "Alex"]],
                 "cached": true, "has_html": true, "attachment_names": ["Project outline.pdf"], "thread": uid == 10 ? [message(11)] : [],
@@ -31,8 +41,15 @@ import Foundation
         case "/api/messages":
             if ProcessInfo.processInfo.arguments.contains("--offline") { throw URLError(.notConnectedToInternet) }
             if ProcessInfo.processInfo.arguments.contains("--empty") || (q["q"] != nil && q["q"] != "project") { result = [[String: Any]]() }
-            else { result = [message(), message(11), message(12)].filter { !archived.contains($0["uid"] as! Int) && (q["view"] != "unread" || !($0["read"] as! Bool)) && (q["view"] != "starred" || ($0["starred"] as! Bool)) } }
-        case "/api/message": result = message(Int(q["uid"] ?? "10") ?? 10, detail: true)
+            else { result = (10...17).map { message($0) }.filter { !archived.contains($0["uid"] as! Int) && (q["view"] != "unread" || !($0["read"] as! Bool)) && (q["view"] != "starred" || ($0["starred"] as! Bool)) } }
+        case "/api/message":
+            var body = message(Int(q["uid"] ?? "10") ?? 10, detail: true)
+            bodyRequests += 1
+            if ProcessInfo.processInfo.arguments.contains("--body-unavailable") && bodyRequests == 1 {
+                body["has_html"] = false
+                body["body_error"] = "We couldn’t load this message. Try again."
+            }
+            result = body
         case "/api/body", "/api/draft-body": return Data(html.utf8)
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
         case "/api/drafts":

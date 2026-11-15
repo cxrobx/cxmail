@@ -44,6 +44,26 @@ final class CXMailUITests: XCTestCase {
         XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well. See you then!")
         capture("Recovered reply")
     }
+    func testDenseInboxAndSafeGlassActions() {
+        launch()
+        let emptyPreview = app.buttons["message-12"]
+        XCTAssertTrue(emptyPreview.waitForExistence(timeout: 10))
+        XCTAssertLessThanOrEqual(emptyPreview.frame.height, 84, "An empty snippet must not leave a large empty card")
+        XCTAssertLessThanOrEqual(app.buttons["message-10"].frame.height, 104)
+        XCTAssertTrue(app.buttons["message-13"].isHittable, "At least four realistic messages must fit on the closed Duo")
+        XCTAssertLessThanOrEqual(app.buttons["compose"].frame.height, 52)
+        capture("Dense glass inbox")
+    }
+    func testBodyFailureIsRetryableAndNotMetadata() {
+        launch(["--body-unavailable"])
+        XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10)); app.buttons["message-10"].tap()
+        let retry = app.buttons["retryBody"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'Message-ID:'")).element.exists)
+        capture("Body loading failure")
+        retry.tap()
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+    }
     func testComposeReviewAndExplicitSend() {
         launch()
         XCTAssertTrue(app.buttons["compose"].waitForExistence(timeout: 10)); app.buttons["compose"].tap()
@@ -135,5 +155,11 @@ final class CXMailUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         XCTAssertEqual(body.value as? String, "Keep this through a fold.")
         capture("Open composer retains reply on rotation")
+        app.terminate()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        launch(["--duo-flat", "--show-reader"])
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertGreaterThan(app.otherElements["detailPane"].frame.width, 500, "A flat Duo should give the reader most of the usable width")
+        capture("Flat Duo glass workspace")
     }
 }

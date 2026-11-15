@@ -21,6 +21,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -253,7 +254,7 @@ def search(conn, q, account, before):
 
 def get_message(conn, account, folder, uid):
     r = conn.execute(
-        "SELECT m.*, b.plain_text, b.sanitized_html IS NOT NULL AS has_html, "
+        "SELECT m.*, b.plain_text, length(trim(COALESCE(b.sanitized_html, ''))) > 0 AS has_html, "
         "b.id IS NOT NULL AS cached "
         "FROM messages m LEFT JOIN message_bodies b USING (account_id, folder_name, uid) "
         "WHERE m.account_id = ? AND m.folder_name = ? AND m.uid = ?",
@@ -348,7 +349,69 @@ def get_html(conn, account, folder, uid):
         "SELECT sanitized_html FROM message_bodies WHERE account_id = ? AND folder_name = ? AND uid = ?",
         (account, folder, uid),
     ).fetchone()
-    return r["sanitized_html"] if r else None
+    html = r["sanitized_html"] if r else None
+    return html if html and html.strip() else FETCHED_BODIES.get((account, folder, uid))
+
+
+class FetchedBodies:
+    """Bounded memory cache for sanitized HTML fetched by the signed MCP.
+
+    The remote service stays read-only on SQLite. Unlike read_email's text
+    diagnostic, preview_email_html gives the parser's actual sanitized markup.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.items = OrderedDict()
+
+    def get(self, ref):
+        import time
+        with self.lock:
+            item = self.items.get(ref)
+            if not item or item[0] < time.monotonic():
+                self.items.pop(ref, None)
+                return None
+            self.items.move_to_end(ref)
+            return item[1]
+
+    def put(self, ref, html):
+        import time
+        if len(html.encode("utf-8")) > 2 * 1024 * 1024:
+            raise McpError("This message is too large to preview. Open it on the Mac.")
+        with self.lock:
+            self.items[ref] = (time.monotonic() + 900, html)
+            self.items.move_to_end(ref)
+            while len(self.items) > 80 or sum(len(v[1].encode("utf-8")) for v in self.items.values()) > 20 * 1024 * 1024:
+                self.items.popitem(last=False)
+
+
+FETCHED_BODIES = FetchedBodies()
+
+
+def load_message_body(msg):
+    """Resolve real body content; never pass an MCP header dump to a reader."""
+    ref = (msg["account"], msg["folder"], msg["uid"])
+    if msg["has_html"] or (msg.get("plain_text") or "").strip():
+        return msg
+    if FETCHED_BODIES.get(ref):
+        return dict(msg, has_html=True, plain_text=None)
+    args = {"account_id": ref[0], "folder": ref[1], "uid": ref[2]}
+    try:
+        result = MCP.call("preview_email_html", args)
+        header, separator, html = result.partition("\n\n")
+        expected = "Raw stored HTML for Folder: {} UID: {} — structural inspection only, NOT a rendered preview:".format(ref[1], ref[2])
+        if header == expected and separator and html.strip():
+            FETCHED_BODIES.put(ref, html)
+            return dict(msg, has_html=True, plain_text=None)
+        # Plain-text-only messages use read_email. Its metadata envelope is
+        # verified and removed, not heuristically rendered as HTML.
+        text = MCP.call("read_email", args)
+        header, separator, body = text.partition("\n\n")
+        lines = header.splitlines()
+        if separator and "Folder: {}".format(ref[1]) in lines and "UID: {}".format(ref[2]) in lines:
+            return dict(msg, has_html=False, plain_text=body, body_error=None)
+        raise McpError("The mini did not return the message body. Try again.")
+    except McpError as e:
+        return dict(msg, has_html=False, plain_text=None, body_error=str(e))
 
 
 def folders(conn, account):
@@ -880,14 +943,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err(404, "message not found (archived or moved since?)")
                 msg = dict(msg, **{k: applied[0][k] for k in ("read", "starred")})
                 msg["thread"] = PENDING.apply(msg["thread"])
-                if not msg["cached"]:
-                    # Not on the mini yet: let the MCP fetch it from IMAP.
-                    try:
-                        msg["plain_text"] = MCP.call(
-                            "read_email", {"account_id": ref[0], "folder": ref[1], "uid": ref[2]}
-                        )
-                    except McpError as e:
-                        msg["plain_text"] = "Body not cached on the mini, and fetching it failed: {}".format(e)
+                msg = load_message_body(msg)
                 return self._send(200, msg)
             if url.path == "/api/body":
                 ref = self._ref(q)

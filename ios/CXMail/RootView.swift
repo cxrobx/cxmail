@@ -61,7 +61,7 @@ struct MailWorkspace: View {
                     Rectangle().fill(Color(uiColor: .separator)).frame(width: 1)
                     Color(uiColor: .systemGroupedBackground).frame(width: max(0, layout.gap - 1))
                     NavigationStack {
-                        if let ref = store.selected { destination(ref) }
+                        if store.tab == tab, let ref = store.selected { destination(ref, split: true) }
                         else { ContentUnavailableView("Choose a message", systemImage: "envelope.open", description: Text("Your conversation will open here.")) }
                     }
                     .frame(maxWidth: .infinity)
@@ -71,9 +71,9 @@ struct MailWorkspace: View {
             }
         }
     }
-    @ViewBuilder func destination(_ ref: MessageRef) -> some View {
+    @ViewBuilder func destination(_ ref: MessageRef, split: Bool = false) -> some View {
         if tab == .drafts { ReviewView(store: store, ref: ref, embedded: true) }
-        else { ReaderView(store: store, ref: ref) }
+        else { ReaderView(store: store, ref: ref, split: split) }
     }
 }
 
@@ -85,21 +85,6 @@ struct MailboxView: View {
     let categories = ["primary", "starred", "updates", "promotions", "social", "all"]
     var body: some View {
         List {
-            Section {
-                HStack {
-                    Menu {
-                        Picker("Account", selection: $store.account) {
-                            Text("All accounts").tag("")
-                            ForEach(store.snapshot.accounts) { Text($0.email).tag($0.id) }
-                        }
-                    } label: {
-                        Label(store.snapshot.accounts.first(where: { $0.id == store.account })?.email ?? "All accounts", systemImage: "person.crop.circle")
-                            .lineLimit(1).frame(minHeight: 44)
-                    }.accessibilityLabel("Choose account").accessibilityIdentifier("accountMenu")
-                    Spacer(minLength: 8)
-                    Button { settings = true } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Settings")
-                }.buttonStyle(.plain)
-            }
             if let error = store.error {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -107,25 +92,6 @@ struct MailboxView: View {
                         Text(error).font(.subheadline).foregroundStyle(.secondary)
                         Button("Try again") { Task { await store.load() } }.accessibilityIdentifier("retryConnection")
                     }.padding(.vertical, 8)
-                }
-            }
-            if tab == .inbox {
-                Section {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(categories, id: \.self) { category in
-                                Button { store.category = category } label: {
-                                    Text(category == "all" ? "All mail" : category.capitalized)
-                                        .font(.subheadline.weight(store.category == category ? .semibold : .regular))
-                                        .padding(.horizontal, 12).frame(minHeight: 44)
-                                        .background(store.category == category ? Color.accentColor.opacity(0.12) : Color(uiColor: .tertiarySystemFill), in: Capsule())
-                                }.buttonStyle(.plain).foregroundStyle(store.category == category ? Color.accentColor : .secondary)
-                                    .accessibilityAddTraits(store.category == category ? .isSelected : [])
-                            }
-                        }
-                    }
-                    .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
-                    .listRowBackground(Color.clear)
                 }
             }
             if let draft = store.recoveredDraft {
@@ -149,7 +115,8 @@ struct MailboxView: View {
                             else { store.selected = message.ref }
                         } label: { MessageRow(message: message, sent: tab == .sent) }
                         .buttonStyle(.plain)
-                        .listRowBackground(store.selected == message.ref && split ? Color.accentColor.opacity(0.10) : Color(uiColor: .secondarySystemGroupedBackground))
+                        .listRowBackground(store.selected == message.ref && split ? Color.accentColor.opacity(0.14) : Color.clear)
+                        .listRowInsets(.init(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .accessibilityIdentifier("message-\(message.uid)")
                         .contextMenu { MailActions(store: store, message: message) }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -180,23 +147,68 @@ struct MailboxView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, 0)
+        .scrollContentBackground(.hidden)
+        .background(Color("MailCanvas"))
         .navigationTitle(tab.title)
-        .navigationBarTitleDisplayMode(.large)
+        .navigationBarTitleDisplayMode(split ? .inline : .large)
         .refreshable { await store.load() }
+        .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: 16) {
                 Button { store.chatSeed = nil; store.chatPresented = true } label: {
-                    Label("Ask Claude", systemImage: "bubble.left.and.bubble.right").frame(maxWidth: .infinity, minHeight: 44)
-                }.accessibilityIdentifier("openChat").buttonStyle(.bordered)
+                    Label("Ask Claude", systemImage: "bubble.left.and.bubble.right").font(.subheadline).frame(minHeight: 44)
+                }.accessibilityIdentifier("openChat")
+                Spacer(minLength: 0)
                 Button { store.newDraft() } label: {
-                    Label("Compose", systemImage: "square.and.pencil").frame(maxWidth: .infinity, minHeight: 44)
-                }.accessibilityIdentifier("compose").buttonStyle(.borderedProminent).keyboardShortcut("n", modifiers: .command)
-            }.padding(.horizontal, 16).padding(.vertical, 8).background(.bar)
+                    Image(systemName: "square.and.pencil").font(.title3).frame(minWidth: 44, minHeight: 44)
+                }.accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
+            }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 4).mailGlass(capsule: true).padding(.horizontal, 12).padding(.vertical, 8)
         }
         .modifier(MailSearch(enabled: tab == .search, query: $store.query))
         .sensoryFeedback(.selection, trigger: store.category)
         .sensoryFeedback(.selection, trigger: store.selected)
+    }
+    private var mailboxControls: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Account", selection: $store.account) {
+                        Text("All accounts").tag("")
+                        ForEach(store.snapshot.accounts) { Text($0.email).tag($0.id) }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "tray.2")
+                        Text(store.snapshot.accounts.first(where: { $0.id == store.account })?.email ?? "All accounts").lineLimit(1)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    }.font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                }.accessibilityLabel("Choose account").accessibilityIdentifier("accountMenu")
+                Spacer(minLength: 0)
+                Button { settings = true } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Settings")
+            }.padding(.leading, 16).padding(.trailing, 4)
+            if tab == .inbox {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 20) {
+                        ForEach(categories, id: \.self) { category in
+                            Button { store.category = category } label: {
+                                Text(category == "all" ? "All mail" : category.capitalized)
+                                    .font(.footnote.weight(store.category == category ? .semibold : .regular))
+                                    .frame(minHeight: 44)
+                                    .overlay(alignment: .bottom) {
+                                        if store.category == category { Capsule().fill(Color.accentColor).frame(height: 2).padding(.bottom, 4) }
+                                    }
+                            }.foregroundStyle(store.category == category ? Color.accentColor : .secondary)
+                                .accessibilityAddTraits(store.category == category ? .isSelected : [])
+                        }
+                    }
+                }.contentMargins(.horizontal, 16, for: .scrollContent)
+            }
+        }
+        .buttonStyle(.plain)
+        .mailGlass()
+        .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
     }
     static let placeholder = MailMessage(account: "", folder: "", uid: 0, subject: "A note about next week", fromName: "Your correspondent", date: "", snippet: "A preview of your message will appear here.", read: false, starred: false, attachments: false)
 }
@@ -215,24 +227,22 @@ struct MessageRow: View {
     let sent: Bool
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Circle().fill(message.read ? Color.clear : Color.accentColor).frame(width: 8, height: 8).padding(.top, 7)
-            VStack(alignment: .leading, spacing: 4) {
+            Circle().fill(message.read ? Color.clear : Color.accentColor).frame(width: 6, height: 6).padding(.top, 6)
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(sent ? "To: " + (message.recipients ?? []).joined(separator: ", ") : message.sender)
-                        .font(.headline).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                    if let date = message.timestamp { Text(date, format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.secondary).monospacedDigit().fixedSize() }
+                        .font(.subheadline.weight(.semibold)).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    if message.starred { Image(systemName: "star.fill").font(.caption2).foregroundStyle(.orange).accessibilityLabel("Starred") }
+                    if message.attachments { Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary).accessibilityLabel("Has attachments") }
+                    if let date = message.timestamp { Text(date, format: .dateTime.month(.abbreviated).day()).font(.caption2).foregroundStyle(.secondary).monospacedDigit().fixedSize() }
                 }
                 Text(message.subject).font(.subheadline.weight(message.read ? .regular : .semibold)).lineLimit(2)
-                Text(message.snippet).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                if message.starred || message.attachments {
-                    HStack(spacing: 8) {
-                        if message.starred { Image(systemName: "star.fill").foregroundStyle(.orange).accessibilityLabel("Starred") }
-                        if message.attachments { Image(systemName: "paperclip").accessibilityLabel("Has attachments") }
-                    }.font(.caption).foregroundStyle(.secondary)
+                if !message.snippet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(message.snippet).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
         }
-        .foregroundStyle(.primary).padding(.vertical, 8).frame(minHeight: 80)
+        .foregroundStyle(.primary).padding(.vertical, 12).frame(minHeight: 72)
         .accessibilityElement(children: .combine)
         .accessibilityValue(message.read ? "Read" : "Unread")
     }

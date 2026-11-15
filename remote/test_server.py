@@ -182,6 +182,7 @@ class Api(unittest.TestCase):
 
     def setUp(self):
         server.PENDING.items.clear()
+        server.FETCHED_BODIES.items.clear()
 
     def req(self, path, body=None, login="owner@example.com", headers=None):
         h = dict(headers or {})
@@ -260,6 +261,65 @@ class Api(unittest.TestCase):
         self.assertIn("sandbox", csp)
         _, headers, _ = self.req("/api/body?account=a1&folder=INBOX&uid=10&images=1")
         self.assertIn("https:", headers["Content-Security-Policy"])
+
+    def test_uncached_html_only_message_loads_body_not_mcp_headers(self):
+        old = server.MCP.call
+        calls = []
+        def fetch(tool, args):
+            calls.append(tool)
+            self.assertEqual(tool, "preview_email_html")
+            return "Raw stored HTML for Folder: INBOX UID: 11 — structural inspection only, NOT a rendered preview:\n\n<p>Your receipt is ready.</p>"
+        server.MCP.call = fetch
+        try:
+            msg = self.j("/api/message?account=a1&folder=INBOX&uid=11")
+            self.assertTrue(msg["has_html"])
+            self.assertIsNone(msg["plain_text"])
+            code, headers, raw = self.req("/api/body?account=a1&folder=INBOX&uid=11")
+            self.assertEqual(code, 200)
+            self.assertIn(b"Your receipt is ready.", raw)
+            self.assertNotIn(b"Raw stored HTML", raw)
+            self.assertIn("img-src data: cid:;", headers["Content-Security-Policy"])
+            self.j("/api/message?account=a1&folder=INBOX&uid=11")
+            self.assertEqual(calls, ["preview_email_html"], "reopening should reuse the bounded body cache")
+        finally:
+            server.MCP.call = old
+
+    def test_uncached_plain_message_strips_verified_metadata_envelope(self):
+        old = server.MCP.call
+        def fetch(tool, args):
+            if tool == "preview_email_html":
+                return "(no HTML body stored for Folder: INBOX UID: 11 — it may be plain-text-only)"
+            return "From: Shop <shop@example.org>\nFolder: INBOX\nUID: 11\nTo: me@example.com\nSubject: Your receipt\nDate: 2026-11-11\nMessage-ID: <m@example.org>\n\nYour order is on its way.\n\nThanks!"
+        server.MCP.call = fetch
+        try:
+            msg = self.j("/api/message?account=a1&folder=INBOX&uid=11")
+            self.assertEqual(msg["plain_text"], "Your order is on its way.\n\nThanks!")
+            self.assertFalse(msg["has_html"])
+        finally:
+            server.MCP.call = old
+
+    def test_body_failure_is_explicit_and_does_not_display_tool_output(self):
+        old = server.MCP.call
+        server.MCP.call = lambda tool, args: "unexpected tool diagnostic"
+        try:
+            msg = self.j("/api/message?account=a1&folder=INBOX&uid=11")
+            self.assertIsNone(msg["plain_text"])
+            self.assertIn("did not return", msg["body_error"])
+            self.assertNotIn("unexpected tool diagnostic", json.dumps(msg))
+        finally:
+            server.MCP.call = old
+
+    def test_empty_stored_html_is_not_a_loaded_body(self):
+        c = sqlite3.connect(FIXTURE)
+        c.execute("INSERT INTO message_bodies (account_id,folder_name,uid,plain_text,sanitized_html) VALUES ('a1','INBOX',11,'','')")
+        c.commit(); c.close()
+        try:
+            with server.db() as c:
+                self.assertFalse(server.get_message(c, "a1", "INBOX", 11)["has_html"])
+        finally:
+            c = sqlite3.connect(FIXTURE)
+            c.execute("DELETE FROM message_bodies WHERE account_id='a1' AND folder_name='INBOX' AND uid=11")
+            c.commit(); c.close()
 
     def test_trusted_sender_images(self):
         c = sqlite3.connect(FIXTURE)

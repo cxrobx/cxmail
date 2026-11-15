@@ -28,7 +28,9 @@ final class MailStore {
 
     init(api: APIClient, cache: MailCache = .init()) {
         self.api = api; self.cache = cache
-        snapshot = cache.load("mail.json") ?? .init()
+        snapshot = cache.load("mail-v2.json") ?? .init()
+        // The first remote protocol could cache MCP metadata as body text.
+        cache.remove("mail.json")
         recoveredDraft = cache.load("draft.json")
         rows = snapshot.lists[listKey] ?? []
     }
@@ -67,7 +69,7 @@ final class MailStore {
     }
     func message(_ ref: MessageRef) async throws -> MailMessage {
         let message: MailMessage = try await api.get("/api/message", query: ref.query)
-        snapshot.messages[ref.id] = message
+        if message.bodyError == nil { snapshot.messages[ref.id] = message }
         if snapshot.messages.count > 100 {
             let keep = Set(snapshot.messages.values.sorted { $0.date > $1.date }.prefix(80).map(\.id))
             snapshot.messages = snapshot.messages.filter { keep.contains($0.key) }
@@ -137,11 +139,11 @@ final class MailStore {
         clearDraft(); snapshot.lists = [:]; persist(); return result
     }
     func persist() {
-        do { try cache.save(snapshot, name: "mail.json") }
+        do { try cache.save(snapshot, name: "mail-v2.json") }
         catch { notice = "Mail is available now, but this phone couldn’t save an offline copy." }
     }
     func clearCache() {
-        snapshot = .init(accounts: snapshot.accounts); rows = []; selected = nil; cache.remove("mail.json")
+        snapshot = .init(accounts: snapshot.accounts); rows = []; selected = nil; cache.remove("mail-v2.json")
     }
     func friendly(_ error: Error) -> String {
         if error is URLError { return "Can’t reach the mini. Check Tailscale and that CXMail is running. Saved mail is still available." }

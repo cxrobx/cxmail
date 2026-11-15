@@ -6,5 +6,11 @@ System typography and native controls. Radius scale: Capsule, 8 (chips), 12
 Native Mail is the navigation reference: mailbox -> message push, a modal composer,
 native swipe/context actions, large collapsing titles, bottom reader actions.
 Honor all safe-area edges: the Duo's 84-point status column is not usable space.
-Open wide: two panes, a 40-point division region kept free; open tall/closed:
+Liquid Glass is explicitly requested: use native glass on compact navigation,
+account/filter chrome and floating action capsules, with neutral depth behind it.
+Mail rows stay dense and unboxed; email documents keep their own formatting.
+Open wide and flat: narrower inbox, wider reader. Partially folded: two panes,
+the active 40-point division kept free. Open tall/closed:
 single pane. Selection, draft and chat state live above adaptive branches.
+The split reader has no redundant navigation heading: the subject is its title.
+The iOS icon uses the actual desktop CXMail artwork, not a generic envelope.

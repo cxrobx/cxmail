@@ -1,17 +1,21 @@
-// Render the existing CXMail Remote envelope as an opaque iOS icon.
+// Adapt CXMail's actual desktop artwork to iOS's opaque, system-masked icon.
+// The crop removes only the macOS icon's transparent outside margin.
 // Run from ios/: swift scripts/icon.swift
 import Foundation
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 let size = 1024
+let sourceURL = URL(fileURLWithPath: "../src-tauri/icons/icon_source.png")
+let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil)!
+let artwork = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+let cropped = artwork.cropping(to: CGRect(x: 96, y: 96, width: 832, height: 832))!
 let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
     bytesPerRow: size * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-context.setFillColor(CGColor(red: 47.0/255, green: 111.0/255, blue: 222.0/255, alpha: 1))
+context.setFillColor(CGColor(red: 39.0/255, green: 39.0/255, blue: 43.0/255, alpha: 1))
 context.fill(CGRect(x: 0, y: 0, width: size, height: size))
-context.setStrokeColor(CGColor(gray: 1, alpha: 1)); context.setLineWidth(56); context.setLineJoin(.round)
-context.stroke(CGRect(x: 224, y: 320, width: 576, height: 384))
-context.move(to: .init(x: 224, y: 704)); context.addLine(to: .init(x: 512, y: 480)); context.addLine(to: .init(x: 800, y: 704)); context.strokePath()
+context.interpolationQuality = .high
+context.draw(cropped, in: CGRect(x: 0, y: 0, width: size, height: size))
 let directory = URL(fileURLWithPath: "CXMail/Assets.xcassets/AppIcon.appiconset")
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 let destination = CGImageDestinationCreateWithURL(directory.appendingPathComponent("AppIcon.png") as CFURL, UTType.png.identifier as CFString, 1, nil)!

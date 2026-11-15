@@ -7,7 +7,8 @@ struct EmailHTMLView: UIViewRepresentable {
     let html: String
     var images = false
     @Binding var height: CGFloat
-    func makeCoordinator() -> Coordinator { Coordinator(height: $height) }
+    var onLoaded: (() -> Void)? = nil
+    func makeCoordinator() -> Coordinator { Coordinator(height: $height, onLoaded: onLoaded) }
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
@@ -22,13 +23,17 @@ struct EmailHTMLView: UIViewRepresentable {
         view.accessibilityLabel = "Email body"
         context.coordinator.observation = view.scrollView.observe(\.contentSize, options: [.new]) { _, change in
             guard let size = change.newValue, size.height.isFinite else { return }
-            Task { @MainActor in context.coordinator.height.wrappedValue = max(180, min(30_000, size.height)) }
+            Task { @MainActor in context.coordinator.height.wrappedValue = max(100, min(30_000, size.height)) }
         }
         return view
     }
     func updateUIView(_ view: WKWebView, context: Context) {
         let input = (images ? "images:" : "blocked:") + html
-        guard context.coordinator.loaded != input else { return }
+        context.coordinator.onLoaded = onLoaded
+        guard context.coordinator.loaded != input else {
+            if !view.isLoading { Task { @MainActor in context.coordinator.onLoaded?() } }
+            return
+        }
         context.coordinator.loaded = input
         let img = images ? "data: cid: https:" : "data: cid:"
         let policy = "default-src 'none'; img-src \(img); style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'"
@@ -42,7 +47,8 @@ struct EmailHTMLView: UIViewRepresentable {
         var height: Binding<CGFloat>
         var observation: NSKeyValueObservation?
         var loaded = ""
-        init(height: Binding<CGFloat>) { self.height = height }
+        var onLoaded: (() -> Void)?
+        init(height: Binding<CGFloat>, onLoaded: (() -> Void)?) { self.height = height; self.onLoaded = onLoaded }
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             #if DEBUG
             print("CXMail document navigation: \(navigationAction.navigationType.rawValue), scheme \(navigationAction.request.url?.scheme ?? "nil")")
@@ -58,6 +64,7 @@ struct EmailHTMLView: UIViewRepresentable {
             decisionHandler(url.scheme == "about" && navigationAction.navigationType == .other ? .allow : .cancel)
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onLoaded?()
             #if DEBUG
             print("CXMail document loaded; height \(webView.scrollView.contentSize.height)")
             #endif

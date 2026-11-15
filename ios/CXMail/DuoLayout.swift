@@ -10,7 +10,7 @@ struct DuoLayout: Equatable {
         if let fold, fold.height > fold.width, fold.minX >= 300, width - fold.maxX >= 300 {
             return .init(split: true, leading: fold.minX, gap: fold.width)
         }
-        return .init(split: true, leading: min(380, width * 0.42), gap: 1)
+        return .init(split: true, leading: min(340, max(300, width * 0.38)), gap: 1)
     }
 }
 
@@ -22,7 +22,7 @@ extension GeometryProxy {
             fold = CGRect(x: 455.5, y: 0, width: 40, height: 635)
         }
         #endif
-        if #available(iOS 27.1, *), fold == nil { fold = reservedRegions(kind: .division, options: .includeInactive).first?.frame }
+        if #available(iOS 27.1, *), fold == nil { fold = reservedRegions(kind: .division).first?.frame }
         return .resolve(width: size.width, height: size.height, fold: fold)
     }
 }

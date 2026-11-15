@@ -31,7 +31,7 @@ final class APIClient {
         self.fixture = fixture
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 35
-        config.timeoutIntervalForResource = 180
+        config.timeoutIntervalForResource = 240
         config.urlCache = nil
         self.session = session ?? URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
     }
@@ -55,6 +55,7 @@ final class APIClient {
         return request
     }
     static func timeout(for path: String) -> TimeInterval {
+        if path == "/api/message" { return 210 }
         if ["/api/send", "/api/draft-preview"].contains(path) { return 150 }
         return path == "/api/chat/events" ? 35 : 100
     }
