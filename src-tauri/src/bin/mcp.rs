@@ -65,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Measurement mode, before the startup migration below: it opens the
     // database read-only and must not write to it (cxmail_mcp::risk_eval).
+    if std::env::args().any(|a| a == "--set-openai-key-from-env") {
+        return cxmail_mcp::risk_eval::set_openai_key_from_env();
+    }
     if std::env::args().any(|a| a == "--risk-eval") {
         return cxmail_mcp::risk_eval::run(&db_path).await;
     }
