@@ -68,6 +68,10 @@ final class APIClient {
     private func transfer(_ path: String, query: [URLQueryItem], body: [String: Any]?) async throws -> (Data, HTTPURLResponse) {
         #if DEBUG
         if fixture {
+            if path == "/api/action", body?["action"] as? String == "read",
+               ProcessInfo.processInfo.arguments.contains("--slow-read") {
+                try await Task.sleep(for: .seconds(30))
+            }
             let data = try Fixtures.response(path, query: query, body: body)
             let mode = query.first { $0.name == "images" }?.value
             let allow = mode == "1" || (mode == "auto" && Fixtures.imageSenderTrusted && !ProcessInfo.processInfo.arguments.contains("--image-auth-failed"))

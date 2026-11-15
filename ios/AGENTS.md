@@ -23,6 +23,11 @@ mutated by tests. Assert rendered HTML, not just that the reader screen exists.
 Keep primary actions in the safe content area: the Duo's side-rail hit testing
 can misroute taps to the inbox underneath (caught by chat-open UI regression).
 
+Keep mail-row hit targets rectangular, including blank label space. A pending
+mark-read acknowledgement must not disable opening a row or scrolling its reader;
+keep mutation guards on the actions. XCUITest row bounds can include the Duo’s
+system rail: tap within usable content, and use its native `BackButton` identifier.
+
 Automatic images use the mini's shared `image_policy`: exact sender trust,
 current From-domain authentication and no suspicious/Junk flag are all required.
 Never use cached `imagesTrusted` or a remembered positive policy as network

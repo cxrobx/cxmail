@@ -1,12 +1,39 @@
 import SwiftUI
 
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+    static var storageKey: String {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return "fixtureAppearance" }
+        #endif
+        return "appAppearance"
+    }
+}
+
 struct SettingsView: View {
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
     @Bindable var store: MailStore
     @Environment(\.dismiss) private var dismiss
     @State private var clear = false
     var body: some View {
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Appearance", selection: $appearance) {
+                        ForEach(AppAppearance.allCases) { mode in Text(mode.title).tag(mode) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("appearancePicker")
+                }
                 Section {
                     Label(store.online ? "Connected" : "Not connected", systemImage: store.online ? "checkmark.icloud" : "icloud.slash")
                     if let url = store.api.baseURL { Text(url.absoluteString).font(.footnote).textSelection(.enabled) }
@@ -28,5 +55,6 @@ struct SettingsView: View {
                 Button("Clear saved mail", role: .destructive) { store.clearCache() }
             }
         }
+        .preferredColorScheme(appearance.colorScheme)
     }
 }

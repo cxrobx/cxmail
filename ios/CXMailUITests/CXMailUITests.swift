@@ -108,6 +108,48 @@ final class CXMailUITests: XCTestCase {
         XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well. See you then!")
         capture("Recovered reply")
     }
+    func testAppearanceSelectionPersistsAcrossRelaunch() {
+        launch()
+        if !app.buttons["Settings"].exists { app.buttons["showInbox"].tap() }
+        app.buttons["Settings"].tap()
+        let picker = app.segmentedControls["appearancePicker"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        picker.buttons["Dark"].tap()
+        XCTAssertTrue(picker.buttons["Dark"].isSelected)
+        capture("Dark appearance settings")
+        app.buttons["Done"].tap()
+        app.terminate()
+        launch(reset: false)
+        if !app.buttons["Settings"].exists { app.buttons["showInbox"].tap() }
+        app.buttons["Settings"].tap()
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.buttons["Dark"].isSelected)
+        picker.buttons["Light"].tap()
+        capture("Light appearance settings")
+        XCTAssertTrue(picker.buttons["Light"].isSelected)
+        picker.buttons["System"].tap()
+        XCTAssertTrue(picker.buttons["System"].isSelected)
+        capture("System appearance settings")
+    }
+    func testSingleTapBlankRowAreaOpensWhileReadAcknowledgementIsPending() {
+        launch(["--slow-read"])
+        let row = app.buttons["message-12"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        // Right of the short subject, between the text lines and bottom inset.
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.75)).tap()
+        capture("After single row tap")
+        XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews.firstMatch.isEnabled, "Reading must remain interactive during mark-read")
+        app.scrollViews.firstMatch.swipeUp()
+        capture("Reader while mark-read is pending")
+        app.buttons["BackButton"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(row.isEnabled, "A pending read acknowledgement must not block navigation")
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.75)).tap()
+        XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 5))
+        capture("Reopened with one tap during mark-read")
+    }
     func testDenseInboxAndSafeGlassActions() {
         launch()
         let emptyPreview = app.buttons["message-12"]

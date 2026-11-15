@@ -68,6 +68,16 @@ floating action capsules; earlier systems use a material fallback. The list is
 dense and unboxed. The icon uses the actual desktop CXMail artwork, adapted to
 the opaque iOS mask by `scripts/icon.swift`.
 
+## Appearance
+
+Settings → Appearance offers System, Light and Dark. The choice applies immediately
+to native app screens and sheets and persists on this device; System follows iOS.
+Email documents retain their sender’s original colors. UI fixtures use a separate
+preference so tests cannot change the normal app setting.
+
+Inbox rows have a full rectangular tap target. Pending read acknowledgements do
+not disable navigation or scrolling; mutation controls retain their pending guard.
+
 ## Sender image settings
 
 The small sender icon opens authentication details: Domain authenticated, failed,
@@ -239,6 +249,18 @@ normal dark footer checks passed; captures confirm the complete email can scroll
 clear of the floating toolbar. Fitting uses constant host code in the isolated
 client world while email JavaScript remains disabled and the image CSP is intact.
 The signed Release build 9 was installed and launched on the physical Duo.
+
+Build 10 adds a device-local System/Light/Dark preference in Settings and makes
+blank row space tappable. Pending mark-read acknowledgements no longer disable
+opening mail or scrolling the reader. A delayed-acknowledgement fixture checks a
+single blank-area tap, reading and reopening. Validation passed 25 unit checks,
+20 compact UI flows (one unrelated orientation case skipped), eight existing wide
+flows and the new appearance/persistence flow on wide. The wide appearance test
+was rerun after correcting it to open the initially hidden Inbox sidebar. The
+additional XXXL appearance flow, all 58 API checks and design preflight passed.
+Light/dark captures were inspected; fixture preferences are separate from normal
+app preferences. Email documents retain their original colors. Signed Release
+build 10 was installed and launched on the physical Duo.
 
 ## Current boundaries
 

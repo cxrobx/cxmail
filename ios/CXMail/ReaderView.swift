@@ -77,8 +77,7 @@ struct ReaderView: View {
                 }
                 .background(Color("MailCanvas"))
                 .refreshable { await load() }
-                .safeAreaInset(edge: .bottom, spacing: 0) { actionBar(message) }
-                .disabled(store.pending.contains(message.id))
+                .safeAreaInset(edge: .bottom, spacing: 0) { actionBar(message).disabled(store.pending.contains(message.id)) }
                 .sheet(isPresented: $move) { MoveView(store: store, message: message) }
                 .sheet(isPresented: $showThread) {
                     NavigationStack {

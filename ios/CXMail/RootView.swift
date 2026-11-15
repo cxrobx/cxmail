@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
+    @AppStorage(AppAppearance.storageKey) private var appearance: AppAppearance = .system
     @Bindable var store: MailStore
     @State private var settings = false
     @State private var chat: ChatStore
@@ -16,6 +17,7 @@ struct RootView: View {
             }
         }
         .tint(Color.accentColor)
+        .preferredColorScheme(appearance.colorScheme)
         .task(id: store.listKey) {
             if store.tab == .search { try? await Task.sleep(for: .milliseconds(300)); if Task.isCancelled { return } }
             await store.load()
@@ -214,7 +216,6 @@ struct MailboxView: View {
                                 Button(message.read ? "Unread" : "Read", systemImage: message.read ? "envelope.badge" : "envelope.open") { Task { await store.action(message.read ? "unread" : "read", message) } }.tint(.accentColor)
                             }
                         }
-                        .disabled(store.pending.contains(message.id))
                     }
                     if store.hasMore {
                         Button { Task { await store.load(more: true) } } label: { HStack { Spacer(); if store.loadingMore { ProgressView() } else { Text("Load more") }; Spacer() } }
@@ -334,7 +335,9 @@ struct MessageRow: View {
                 }
             }
         }
-        .foregroundStyle(.primary).padding(.vertical, 12).frame(minHeight: 72)
+        .foregroundStyle(.primary).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityValue(message.read ? "Read" : "Unread")
     }
