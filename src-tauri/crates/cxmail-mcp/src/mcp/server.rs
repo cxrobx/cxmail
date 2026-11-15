@@ -3474,7 +3474,7 @@ impl CxMailMcp {
             let text = body
                 .plain_text
                 .unwrap_or_else(|| body.sanitized_html.unwrap_or_default());
-            let risk = risk_note_for(&conn, &params.account_id, &params.folder, params.uid, None);
+            let risk = risk_note(&self.db_path, &params.account_id, &params.folder, params.uid, None).await;
             return Ok(CallToolResult::success(vec![
                 super::untrusted::server_note(risk),
                 Content::text(format!("{}{}", header, text)),
@@ -3493,7 +3493,7 @@ impl CxMailMcp {
 
         let parsed = parser::parse_message(&raw_body);
         // Before any field is moved out of `parsed` below.
-        let risk = risk_note_for(&conn, &params.account_id, &params.folder, params.uid, Some(&parsed));
+        let risk = risk_note(&self.db_path, &params.account_id, &params.folder, params.uid, Some(&parsed)).await;
         let text = parsed
             .plain_text
             .unwrap_or_else(|| parsed.sanitized_html.unwrap_or_default());
@@ -3568,12 +3568,12 @@ impl CxMailMcp {
         let mut flagged = Vec::new();
         let (mut checked, mut unchecked) = (0, 0);
         for m in &thread {
-            let Some(src) = risk_source_from_db(&conn, &params.account_id, &m.folder_name, m.uid) else {
+            let Ok(o) = risk_check(&self.db_path, &params.account_id, &m.folder_name, m.uid, None).await else {
                 unchecked += 1;
                 continue;
             };
             checked += 1;
-            if let Ok(o) = assess_message_risk(&conn, &params.account_id, &m.folder_name, m.uid, &src) {
+            {
                 if o.level != crate::email::risk::Level::Low {
                     let codes: Vec<String> = o
                         .signals
@@ -6293,11 +6293,9 @@ impl CxMailMcp {
                 (!f.is_empty()).then(|| format!("Index:{i} — {}", f.join("; ")))
             })
             .collect();
-        let level_line = match risk_source_from_db(&conn, &params.account_id, &params.folder, params.uid)
-            .map(|src| assess_message_risk(&conn, &params.account_id, &params.folder, params.uid, &src))
-        {
-            Some(Ok(o)) => format!("Message risk: {} (read_email shows the full report)", o.level.as_str().to_uppercase()),
-            _ => "Message risk: not checked (body not cached)".to_string(),
+        let level_line = match risk_check(&self.db_path, &params.account_id, &params.folder, params.uid, None).await {
+            Ok(o) => format!("Message risk: {} (read_email shows the full report)", o.level.as_str().to_uppercase()),
+            Err(_) => "Message risk: not checked (body not cached)".to_string(),
         };
         let note = format!(
             "CXMail attachment check (server-authored, from names and declared types only)\n{level_line}\n{}\nTo learn what a document says, prefer read_attachment_text (nothing touches disk). download_attachment asks the user first.",
@@ -7408,7 +7406,7 @@ fn prepare_attachment_text(name: &str, mime: &str, bytes: &[u8]) -> (String, Opt
     (note, Some(text))
 }
 
-// ─── Per-message risk check (email::risk + db::message_risk) ──────────────
+// ─── Per-message risk check (email::risk + email::risk_model + db::message_risk)
 
 /// Owned facts about one message, from the DB cache or a fresh parse.
 struct RiskSource {
@@ -7419,6 +7417,10 @@ struct RiskSource {
     sanitized_html: Option<String>,
     plain_text: Option<String>,
     attachments: Vec<(String, String)>,
+    subject: Option<String>,
+    date: String,
+    to: Vec<String>,
+    cc: Vec<String>,
 }
 
 struct RiskOutcome {
@@ -7426,6 +7428,39 @@ struct RiskOutcome {
     signals: Vec<crate::email::risk::Signal>,
     note: String,
 }
+
+/// Where the model half stands for one message.
+enum ModelState {
+    /// Switched off (`ai:risk:model` = "off") or no usable provider. Not stored.
+    Off(&'static str),
+    /// A verdict for the current `MODEL_VERSION` is already stored.
+    Stored(f64, f64, f64),
+    /// The gate refused this message for this version (stored).
+    StoredWithheld(String),
+    /// Needs a verdict; the gate's redacted payload is ready.
+    Pending(Box<crate::email::triage_gate::SafeMessage>),
+    /// The gate just refused it; store the reason.
+    Withheld(String),
+    /// Fresh verdict from this call; store it.
+    Judged(f64, f64, f64),
+    /// The call failed; not stored, so the next contact retries.
+    Failed(String),
+}
+
+/// Everything decided from the database, owned, so the model call can be
+/// awaited without holding a `Connection` borrow (an MCP handler's future
+/// must be `Send`, and `&Connection` is not).
+struct RiskPrep {
+    account_id: String,
+    folder: String,
+    uid: u32,
+    key: String,
+    signals: Vec<crate::email::risk::Signal>,
+    first_time: bool,
+    model: ModelState,
+}
+
+const RISK_MODEL_SETTING: &str = "ai:risk:model";
 
 /// `SenderTrust` scans every sent message (300–600 ms on a real mailbox), so
 /// one copy is shared for ten minutes. Staleness only delays a sender being
@@ -7446,12 +7481,19 @@ fn sender_trust_cached(conn: &rusqlite::Connection) -> Result<Arc<db::needs_you:
     Ok(fresh)
 }
 
+fn addr_list(json: Option<&str>) -> Vec<String> {
+    json.and_then(|j| serde_json::from_str::<Vec<serde_json::Value>>(j).ok())
+        .map(|v| v.iter().filter_map(|e| e["email"].as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
 /// Facts for a cached message, or None when its body is not cached (the
 /// check then says it did not run rather than implying a clean result).
 fn risk_source_from_db(conn: &rusqlite::Connection, account_id: &str, folder: &str, uid: u32) -> Option<RiskSource> {
     let row = db::messages::get_by_uid(conn, account_id, folder, uid).ok()??;
     let body = db::messages::get_body(conn, account_id, folder, uid).ok()??;
     let (message_id, _, _) = db::messages::get_message_headers(conn, account_id, folder, uid).unwrap_or((None, None, None));
+    let (to_json, cc_json, _) = db::messages::get_address_lists(conn, account_id, folder, uid).unwrap_or((None, None, None));
     let attachments = db::messages::get_attachments(conn, account_id, folder, uid)
         .unwrap_or_default()
         .into_iter()
@@ -7466,6 +7508,10 @@ fn risk_source_from_db(conn: &rusqlite::Connection, account_id: &str, folder: &s
         sanitized_html: body.sanitized_html,
         plain_text: body.plain_text,
         attachments,
+        subject: row.subject,
+        date: row.date,
+        to: addr_list(to_json.as_deref()),
+        cc: addr_list(cc_json.as_deref()),
     })
 }
 
@@ -7483,28 +7529,48 @@ fn risk_source_from_parsed(p: &parser::ParsedMessage) -> RiskSource {
             .filter(|a| !a.is_inline)
             .map(|a| (a.filename.clone().unwrap_or_default(), a.content_type.clone()))
             .collect(),
+        subject: p.subject.clone(),
+        date: p.date.clone().unwrap_or_default(),
+        to: p.to_list.iter().map(|a| a.email.clone()).collect(),
+        cc: p.cc_list.iter().map(|a| a.email.clone()).collect(),
     }
 }
 
-/// Run the check once per message: reuse the stored report while its rules
-/// version is current, otherwise assess and store. Sender standing is always
-/// computed live.
-fn assess_message_risk(
+fn model_enabled() -> bool {
+    !matches!(
+        crate::keychain::get_credential(RISK_MODEL_SETTING).ok().flatten().as_deref().map(str::trim),
+        Some("off")
+    )
+}
+
+/// Step 1, sync: the rules half (stored or fresh) and where the model half stands.
+fn risk_prepare(
     conn: &rusqlite::Connection,
     account_id: &str,
     folder: &str,
     uid: u32,
-    src: &RiskSource,
-) -> Result<RiskOutcome, crate::error::AppError> {
-    use crate::email::risk;
-    let trust = sender_trust_cached(conn)?;
+    parsed: Option<&parser::ParsedMessage>,
+) -> Result<RiskPrep, String> {
+    use crate::email::{risk, risk_model, triage_gate};
+    let src = match parsed {
+        Some(p) => Some(risk_source_from_parsed(p)),
+        None => risk_source_from_db(conn, account_id, folder, uid),
+    }
+    .ok_or_else(|| "CXMail risk check (server-authored): not run, the message body is not cached yet (read_email caches it).".to_string())?;
+    let failed = |e: crate::error::AppError| {
+        log::warn!("risk check failed for {account_id}/{folder}/{uid}: {e}");
+        "CXMail risk check (server-authored): failed to run; treat this message with ordinary caution.".to_string()
+    };
+    let trust = sender_trust_cached(conn).map_err(failed)?;
     let key = db::message_risk::message_key(src.message_id.as_deref(), folder, uid);
-    let stored: Option<Vec<risk::Signal>> = db::message_risk::get(conn, account_id, &key)?
+    let stored = db::message_risk::get(conn, account_id, &key).map_err(failed)?;
+    let rules_current = stored
+        .as_ref()
         .filter(|s| s.rules_version == risk::RULES_VERSION)
-        .and_then(|s| serde_json::from_str(&s.signals_json).ok());
-    let signals = match stored {
+        .and_then(|s| serde_json::from_str::<Vec<risk::Signal>>(&s.signals_json).ok());
+    let signals = match rules_current {
         Some(s) => {
-            db::message_risk::touch_location(conn, account_id, &key, folder, uid)?;
+            db::message_risk::touch_location(conn, account_id, &key, folder, uid).map_err(failed)?;
             s
         }
         None => {
@@ -7518,31 +7584,133 @@ fn assess_message_risk(
                 known_domains: &trust.known_domains,
             });
             let json = serde_json::to_string(&s).unwrap_or_else(|_| "[]".into());
-            db::message_risk::upsert_signals(conn, account_id, &key, folder, uid, risk::RULES_VERSION, &json)?;
+            db::message_risk::upsert_signals(conn, account_id, &key, folder, uid, risk::RULES_VERSION, &json).map_err(failed)?;
             s
         }
     };
-    let first = trust.is_unestablished(&src.from_email);
-    let level = risk::level(&signals, first);
-    let note = risk::render(level, &signals, first, None);
-    Ok(RiskOutcome { level, signals, note })
+    let model_current = stored.filter(|s| s.model_version.as_deref() == Some(risk_model::MODEL_VERSION));
+    let model = match model_current {
+        Some(s) if s.model_withheld.is_some() => ModelState::StoredWithheld(s.model_withheld.unwrap()),
+        Some(s) if s.p_phishing.is_some() => ModelState::Stored(
+            s.p_phishing.unwrap_or(0.0),
+            s.p_ai_instructions.unwrap_or(0.0),
+            s.p_impersonation.unwrap_or(0.0),
+        ),
+        _ if !model_enabled() => ModelState::Off("switched off (ai:risk:model = off)"),
+        _ => match triage_gate::gate(
+            triage_gate::TriageMode::On,
+            &triage_gate::MessageForTriage {
+                from_email: &src.from_email,
+                from_name: src.from_name.as_deref(),
+                to: &src.to,
+                cc: &src.cc,
+                date: &src.date,
+                subject: src.subject.as_deref(),
+                body: src.plain_text.as_deref(),
+            },
+        ) {
+            triage_gate::Gate::Send(safe) => ModelState::Pending(safe),
+            triage_gate::Gate::Withheld(w) => ModelState::Withheld(format!("{w:?}").chars().take(60).collect()),
+        },
+    };
+    Ok(RiskPrep {
+        account_id: account_id.to_string(),
+        folder: folder.to_string(),
+        uid,
+        key,
+        signals,
+        first_time: trust.is_unestablished(&src.from_email),
+        model,
+    })
 }
 
-/// The note for one message, or a line saying why the check did not run.
-fn risk_note_for(conn: &rusqlite::Connection, account_id: &str, folder: &str, uid: u32, parsed: Option<&parser::ParsedMessage>) -> String {
-    let src = match parsed {
-        Some(p) => Some(risk_source_from_parsed(p)),
-        None => risk_source_from_db(conn, account_id, folder, uid),
-    };
-    let Some(src) = src else {
-        return "CXMail risk check (server-authored): not run, the message body is not cached yet (read_email caches it).".into();
-    };
-    match assess_message_risk(conn, account_id, folder, uid, &src) {
-        Ok(o) => o.note,
-        Err(e) => {
-            log::warn!("risk check failed for {account_id}/{folder}/{uid}: {e}");
-            "CXMail risk check (server-authored): failed to run; treat this message with ordinary caution.".into()
+/// Step 2, async, no database: ask Decisions when a verdict is pending.
+async fn risk_model_step(mut prep: RiskPrep) -> RiskPrep {
+    use crate::email::inference::{InferenceClient, ProviderKind};
+    if let ModelState::Pending(safe) = &prep.model {
+        prep.model = match InferenceClient::load() {
+            Ok(c) if c.provider_kind() == ProviderKind::Openai => {
+                match tokio::time::timeout(Duration::from_secs(20), crate::email::risk_model::judge(&c, safe)).await {
+                    Ok(Ok(v)) => ModelState::Judged(v.p_phishing, v.p_ai_instructions, v.p_impersonation),
+                    Ok(Err(e)) => ModelState::Failed(e.to_string().chars().take(100).collect()),
+                    Err(_) => ModelState::Failed("timed out".into()),
+                }
+            }
+            Ok(_) => ModelState::Off("needs the OpenAI provider (Decisions)"),
+            Err(_) => ModelState::Off("no AI provider key configured in CXMail"),
+        };
+    }
+    prep
+}
+
+/// Step 3, sync: store a fresh model result, combine, render.
+fn risk_finish(conn: &rusqlite::Connection, prep: RiskPrep) -> RiskOutcome {
+    use crate::email::{risk, risk_model};
+    let model_name = format!("decisions:{}", crate::email::triage::DECISIONS_MODEL);
+    let store = |p: Option<(f64, f64, f64)>, w: Option<&str>| {
+        if let Err(e) = db::message_risk::set_model(conn, &prep.account_id, &prep.key, &model_name, risk_model::MODEL_VERSION, p, w) {
+            log::warn!("risk: storing model verdict failed for {}/{}/{}: {e}", prep.account_id, prep.folder, prep.uid);
         }
+    };
+    let (probs, line) = match &prep.model {
+        ModelState::Stored(a, b, c) => (Some((*a, *b, *c)), None),
+        ModelState::Judged(a, b, c) => {
+            store(Some((*a, *b, *c)), None);
+            (Some((*a, *b, *c)), None)
+        }
+        ModelState::Withheld(w) => {
+            store(None, Some(w));
+            (None, Some(format!("Model check: not sent (the privacy gate withheld it: {w})")))
+        }
+        ModelState::StoredWithheld(w) => (None, Some(format!("Model check: not sent (the privacy gate withheld it: {w})"))),
+        ModelState::Off(why) => (None, Some(format!("Model check: off, {why}"))),
+        ModelState::Failed(e) => (None, Some(format!("Model check: failed ({e}); rules only this time"))),
+        ModelState::Pending(_) => (None, Some("Model check: not run".to_string())),
+    };
+    let mut signals = prep.signals.clone();
+    let line = match probs {
+        Some((a, b, c)) => {
+            signals.extend(risk::model_signals(a, b, c));
+            Some(format!("Model check (Decisions, {}): phishing {a:.2}, AI-instructions {b:.2}, impersonation {c:.2}", risk_model::MODEL_VERSION))
+        }
+        None => line,
+    };
+    let level = risk::level(&signals, prep.first_time);
+    let note = risk::render(level, &signals, prep.first_time, line.as_deref());
+    RiskOutcome { level, signals, note }
+}
+
+/// Full check for one message: prepare, ask the model if needed, finish.
+/// Takes the database path, not a connection, so it can be awaited from any
+/// handler; each sync step opens its own short-lived connection.
+async fn risk_check(db_path: &str, account_id: &str, folder: &str, uid: u32, parsed: Option<&parser::ParsedMessage>) -> Result<RiskOutcome, String> {
+    let prep = {
+        let conn = rusqlite::Connection::open(db_path).map_err(|e| format!("CXMail risk check: database unavailable ({e})"))?;
+        risk_prepare(&conn, account_id, folder, uid, parsed)?
+    };
+    let prep = risk_model_step(prep).await;
+    let conn = rusqlite::Connection::open(db_path).map_err(|e| format!("CXMail risk check: database unavailable ({e})"))?;
+    Ok(risk_finish(&conn, prep))
+}
+
+async fn risk_note(db_path: &str, account_id: &str, folder: &str, uid: u32, parsed: Option<&parser::ParsedMessage>) -> String {
+    match risk_check(db_path, account_id, folder, uid, parsed).await {
+        Ok(o) => o.note,
+        Err(note) => note,
+    }
+}
+
+/// Rules plus any stored model verdict, without a model call. Sync, for tests.
+#[cfg(test)]
+fn risk_note_for(conn: &rusqlite::Connection, account_id: &str, folder: &str, uid: u32, parsed: Option<&parser::ParsedMessage>) -> String {
+    match risk_prepare(conn, account_id, folder, uid, parsed) {
+        Ok(mut prep) => {
+            if matches!(prep.model, ModelState::Pending(_)) {
+                prep.model = ModelState::Off("not called in tests");
+            }
+            risk_finish(conn, prep).note
+        }
+        Err(note) => note,
     }
 }
 
@@ -7854,6 +8022,35 @@ mod tests {
         )
         .unwrap();
         assert!(risk_note_for(&conn, "acct", "INBOX", 8, None).contains("not run"));
+    }
+
+    #[test]
+    fn a_stored_model_verdict_raises_and_a_withheld_one_says_why() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::initialize(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host) VALUES ('acct', 'me@own.example', 'gmail', 'i', 's');
+             INSERT INTO messages (account_id, folder_name, uid, subject, from_email, to_list, date, message_id)
+               VALUES ('acct', 'INBOX', 3, 'Your account', 'alerts@service.example', '[]', '2026-11-01', '<m3@service.example>');
+             INSERT INTO message_bodies (account_id, folder_name, uid, plain_text) VALUES ('acct', 'INBOX', 3, 'Please verify your account.');",
+        )
+        .unwrap();
+        let note = risk_note_for(&conn, "acct", "INBOX", 3, None);
+        assert!(note.contains("): LOW"), "rules alone find nothing: {note}");
+        let key = crate::db::message_risk::message_key(Some("<m3@service.example>"), "INBOX", 3);
+        let v = crate::email::risk_model::MODEL_VERSION;
+        crate::db::message_risk::set_model(&conn, "acct", &key, "decisions:x", v, Some((0.9, 0.01, 0.2)), None).unwrap();
+        let note = risk_note_for(&conn, "acct", "INBOX", 3, None);
+        assert!(note.contains("): HIGH"), "{note}");
+        assert!(note.contains("phishing 0.90"), "{note}");
+        crate::db::message_risk::set_model(&conn, "acct", &key, "decisions:x", v, Some((0.55, 0.0, 0.0)), None).unwrap();
+        assert!(risk_note_for(&conn, "acct", "INBOX", 3, None).contains("): MEDIUM"));
+        crate::db::message_risk::set_model(&conn, "acct", &key, "decisions:x", v, None, Some("FinancialSender")).unwrap();
+        let note = risk_note_for(&conn, "acct", "INBOX", 3, None);
+        assert!(note.contains("privacy gate withheld it: FinancialSender"), "{note}");
+        // An old model version is ignored, not trusted.
+        crate::db::message_risk::set_model(&conn, "acct", &key, "decisions:x", "risk-v0", Some((0.99, 0.0, 0.0)), None).unwrap();
+        assert!(risk_note_for(&conn, "acct", "INBOX", 3, None).contains("): LOW"));
     }
 
     #[test]

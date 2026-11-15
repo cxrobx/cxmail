@@ -78,6 +78,17 @@ and the client:
    are info, but text that addresses an agent and tells it to act is medium, and anything
    instruction-like in HIDDEN text, or Unicode tag characters, is high.
 
+   **Model half (Decisions, `email::risk_model`).** On first contact the triage gate's
+   redacted payload is asked three predicates (phishing, AI-instructions, impersonation);
+   the verdict is stored in `message_risk` under `MODEL_VERSION`, or the gate's withheld
+   reason is. The handler awaits the call with no connection borrowed: `risk_prepare` (sync)
+   → `risk_model_step` (async) → `risk_finish` (sync). Thresholds, measured by
+   `cxmail-mcp --risk-eval --referee` against a tool-less Opus referee on 706 real messages
+   (17 phishing): phishing ≥ 0.5 → MEDIUM (caught 12/17, flagged 4/648 others), ≥ 0.8 → HIGH
+   (9/17, 0/648); AI-instructions ≥ 0.5 → HIGH (no real examples yet); impersonation is
+   shown, never raised on (5% false positives). The rules alone caught 0/17. Off switch:
+   credential `ai:risk:model` = `off`. Needs the OpenAI provider configured in CXMail.
+
 Not covered: clients without a hook (Codex, other MCP hosts) get layers 1, 2 and 4 only.
 
 ## Tool Definitions

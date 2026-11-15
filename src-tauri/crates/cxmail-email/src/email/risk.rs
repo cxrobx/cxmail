@@ -517,6 +517,32 @@ pub fn level(signals: &[Signal], first_time_sender: bool) -> Level {
     Level::Low
 }
 
+/// Thresholds for the model half, chosen from the refereed eval (706 real
+/// messages, 17 phishing per a tool-less Opus referee): phishing >= 0.5 caught
+/// 12/17 and flagged 4/648 others; >= 0.8 caught 9/17 and flagged none.
+/// Impersonation flagged 5% of ordinary mail at 0.5, so it is shown, never
+/// raised on. The approval hook mirrors these (cxmail-approval.py).
+pub const MODEL_PHISHING_MEDIUM: f64 = 0.5;
+pub const MODEL_PHISHING_HIGH: f64 = 0.8;
+pub const MODEL_AI_INSTRUCTIONS_HIGH: f64 = 0.5;
+
+/// Signals from a stored model verdict. Like every signal, they only raise.
+pub fn model_signals(p_phishing: f64, p_ai_instructions: f64, p_impersonation: f64) -> Vec<Signal> {
+    let mut out = Vec::new();
+    if p_phishing >= MODEL_PHISHING_HIGH {
+        out.push(sig("model_phishing", Severity::High, format!("the model judges this a phishing or scam lure (p={p_phishing:.2})")));
+    } else if p_phishing >= MODEL_PHISHING_MEDIUM {
+        out.push(sig("model_phishing", Severity::Medium, format!("the model suspects a phishing or scam lure (p={p_phishing:.2})")));
+    }
+    if p_ai_instructions >= MODEL_AI_INSTRUCTIONS_HIGH {
+        out.push(sig("model_ai_instructions", Severity::High, format!("the model finds instructions aimed at an AI assistant (p={p_ai_instructions:.2})")));
+    }
+    if p_impersonation >= 0.5 {
+        out.push(sig("model_impersonation", Severity::Info, format!("the model suspects impersonation (p={p_impersonation:.2}; shown only, too noisy to raise on)")));
+    }
+    out
+}
+
 /// One server-authored note.
 pub fn render(level: Level, signals: &[Signal], first_time_sender: bool, model_line: Option<&str>) -> String {
     let mut lines = vec![format!(
@@ -676,6 +702,15 @@ mod tests {
         let padding = format!("Sale today{}", "\u{200C}\u{00AD}".repeat(20));
         let s = assess(&input(None, Some(&padding), None, &known));
         assert!(s.iter().any(|x| x.code == "invisible_characters" && x.severity == Severity::Info), "{s:?}");
+    }
+
+    #[test]
+    fn model_thresholds_raise_only_as_measured() {
+        assert!(model_signals(0.49, 0.49, 0.99).iter().all(|s| s.severity == Severity::Info));
+        assert_eq!(level(&model_signals(0.5, 0.0, 0.0), false), Level::Medium);
+        assert_eq!(level(&model_signals(0.8, 0.0, 0.0), false), Level::High);
+        assert_eq!(level(&model_signals(0.0, 0.5, 0.0), false), Level::High);
+        assert_eq!(level(&model_signals(0.0, 0.0, 1.0), false), Level::Low, "impersonation never raises");
     }
 
     #[test]

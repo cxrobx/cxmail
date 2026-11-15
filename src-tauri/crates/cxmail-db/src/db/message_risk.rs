@@ -116,6 +116,31 @@ pub fn upsert_signals(
     Ok(())
 }
 
+/// Write the model half: three probabilities, or a withheld reason when the
+/// triage gate refused to send the message. Leaves the rules half alone.
+#[allow(clippy::too_many_arguments)]
+pub fn set_model(
+    conn: &Connection,
+    account_id: &str,
+    key: &str,
+    model: &str,
+    model_version: &str,
+    probabilities: Option<(f64, f64, f64)>,
+    withheld: Option<&str>,
+) -> Result<(), AppError> {
+    let (p1, p2, p3) = match probabilities {
+        Some((a, b, c)) => (Some(a), Some(b), Some(c)),
+        None => (None, None, None),
+    };
+    conn.execute(
+        "UPDATE message_risk SET model = ?3, model_version = ?4, p_phishing = ?5, p_ai_instructions = ?6,
+                p_impersonation = ?7, model_withheld = ?8, model_at = datetime('now'), updated_at = datetime('now')
+          WHERE account_id = ?1 AND message_key = ?2",
+        params![account_id, key, model, model_version, p1, p2, p3, withheld],
+    )?;
+    Ok(())
+}
+
 /// Record where the message is now, without touching the report.
 pub fn touch_location(conn: &Connection, account_id: &str, key: &str, folder_name: &str, uid: u32) -> Result<(), AppError> {
     conn.execute(
