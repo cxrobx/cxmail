@@ -222,7 +222,7 @@ async function openMessage(account, folder, uid) {
   try { m = await api("/api/message?account=" + encodeURIComponent(account) + "&folder=" + encodeURIComponent(folder) + "&uid=" + uid); }
   catch (e) { box.replaceChildren(navbar(""), h("div", { class: "banner" }, e.message)); return; }
   state.current = m;
-  renderReader(m, m.images_trusted);
+  renderReader(m, m.image_policy?.auto_load ? "auto" : false);
   if (!m.read) {
     m.read = true; patchRow(m, { read: true });
     api("/api/action", { action: "read", account: m.account, folder: m.folder, uid: m.uid }).catch(() => {});
@@ -248,10 +248,23 @@ function renderReader(m, images) {
       h("div", { class: "meta" }, new Date(m.date).toLocaleString()),
       m.to.length ? h("div", { class: "meta" }, "To: ", m.to.map(fmtAddr).join(", ")) : null,
       m.cc.length ? h("div", { class: "meta" }, "Cc: ", m.cc.map(fmtAddr).join(", ")) : null)];
+  if (m.image_policy) {
+    const auth = m.image_policy.authentication;
+    const label = auth.status === "passed" ? "Domain authenticated" : auth.status === "failed" ? "Domain authentication failed" : "Sender authentication unavailable";
+    parts.push(h("div", { class: "meta", title: auth.explanation }, label + (auth.domain ? ": " + auth.domain : "")));
+  }
   if (m.has_html) {
+    const p = m.image_policy;
+    if (p?.has_remote_images) parts.push(h("div", { class: "imgnote" },
+      h("button", { disabled: !p.sender_trusted && (p.authentication.status !== "passed" || p.suspicious), onclick: async () => {
+        try {
+          m.image_policy = await api("/api/image-trust", { account: m.account, folder: m.folder, uid: m.uid, trusted: !p.sender_trusted });
+          renderReader(m, m.image_policy.auto_load ? "auto" : false);
+        } catch (e) { toast(e.message); }
+      } }, p.sender_trusted ? "Stop trusting this sender" : "Always trust this sender")));
     if (!images) parts.push(h("div", { class: "imgnote" }, "Remote images are blocked. ", h("button", { onclick: () => renderReader(m, true) }, "Show images")));
     const f = h("iframe", { class: "body", title: "Message body", sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox",
-      referrerpolicy: "no-referrer", src: "/api/body?" + refQ(m) + (images ? "&images=1" : "") });
+      referrerpolicy: "no-referrer", src: "/api/body?" + refQ(m) + (images ? "&images=" + (images === "auto" ? "auto" : "1") : "") });
     f.addEventListener("load", () => {
       try { const d = f.contentDocument; f.style.height = Math.max(200, d.documentElement.scrollHeight) + "px"; } catch (e) { f.style.height = "70vh"; }
     });
@@ -579,7 +592,7 @@ function renderReview(p, images) {
       p.blocked_reason ? h("div", { class: "banner" }, p.blocked_reason) : null)];
   if (!images) parts.push(h("div", { class: "imgnote" }, "Remote images are blocked. ", h("button", { onclick: () => renderReview(p, true) }, "Show images")));
   const f = h("iframe", { class: "body", title: "Draft body", sandbox: "allow-same-origin allow-popups allow-popups-to-escape-sandbox", referrerpolicy: "no-referrer",
-    src: "/api/draft-body?account=" + encodeURIComponent(p.account_id) + "&folder=" + encodeURIComponent(p.folder) + "&uid=" + p.uid + "&digest=" + p.digest + (images ? "&images=1" : "") });
+    src: "/api/draft-body?account=" + encodeURIComponent(p.account_id) + "&folder=" + encodeURIComponent(p.folder) + "&uid=" + p.uid + "&digest=" + p.digest + (images ? "&images=" + (images === "auto" ? "auto" : "1") : "") });
   f.addEventListener("load", () => { try { f.style.height = Math.max(200, f.contentDocument.documentElement.scrollHeight) + "px"; } catch (e) { f.style.height = "70vh"; } });
   parts.push(f);
   if (p.attachments.length) parts.push(h("div", { class: "attach" }, "📎 ", p.attachments.join(", ")));

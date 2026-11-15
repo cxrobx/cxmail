@@ -1009,6 +1009,36 @@ def body_csp(images):
     )
 
 
+def message_image_policy(ref):
+    """The same Rust policy as desktop; failures never grant image loading."""
+    try:
+        policy = run_send_bin("image-policy", *ref)
+        if not isinstance(policy, dict) or not isinstance(policy.get("sender_email"), str):
+            raise SendError("Invalid image policy")
+        auth = policy.get("authentication", {})
+        if auth.get("status") not in ("passed", "failed", "unknown") or any(
+                type(policy.get(k)) is not bool for k in
+                ("auto_load", "sender_trusted", "suspicious", "has_remote_images")):
+            raise SendError("Invalid image policy")
+        if auth["status"] != "passed" or not policy["sender_trusted"] or policy["suspicious"]:
+            policy["auto_load"] = False
+        return policy
+    except (SendError, AttributeError, TypeError):
+        return {"authentication": {"status": "unknown", "domain": None, "provider": None,
+                "explanation": "Sender authentication is unavailable. Images require a manual choice."},
+                "sender_email": "", "sender_trusted": False, "auto_load": False,
+                "suspicious": False, "has_remote_images": True,
+                "blocked_reason": "Sender authentication is unavailable."}
+
+
+def image_body(html, allowed):
+    if not allowed:
+        return html
+    # Restore only the sanitizer's image placeholders; CSP still denies scripts.
+    return re.sub(r'(<img\b[^>]*?)\bsrc=""\s+data-original-src="(https://[^"]+)"',
+                  r'\1src="\2"', html, flags=re.I)
+
+
 BODY_WRAP = (
     "<!doctype html><html><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -1090,6 +1120,8 @@ class Handler(BaseHTTPRequestHandler):
                 msg = dict(msg, **{k: applied[0][k] for k in ("read", "starred")})
                 msg["thread"] = PENDING.apply(msg["thread"])
                 msg = load_message_body(msg)
+                msg["image_policy"] = message_image_policy(ref)
+                msg["images_trusted"] = msg["image_policy"]["auto_load"]
                 return self._send(200, msg)
             if url.path == "/api/body":
                 ref = self._ref(q)
@@ -1097,11 +1129,13 @@ class Handler(BaseHTTPRequestHandler):
                     html = get_html(c, *ref)
                 if html is None:
                     return self._err(404, "no HTML body")
+                images = q.get("images") == "1" or (
+                    q.get("images") == "auto" and message_image_policy(ref)["auto_load"])
                 return self._send(
                     200,
-                    BODY_WRAP.format(html),
+                    BODY_WRAP.format(image_body(html, images)),
                     "text/html",
-                    {"Content-Security-Policy": body_csp(q.get("images") == "1")},
+                    {"Content-Security-Policy": body_csp(images), "X-CXMail-Images-Allowed": "1" if images else "0"},
                 )
             if url.path == "/api/drafts":
                 with db() as c:
@@ -1165,6 +1199,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._err(413, "too large")
             data = json.loads(self.rfile.read(n) or b"{}")
             url = urllib.parse.urlparse(self.path)
+            if url.path == "/api/image-trust":
+                if type(data.get("uid")) is not int or not 1 <= data["uid"] <= 4294967295:
+                    return self._err(400, "uid must be a positive integer")
+                ref = self._ref(data)
+                if type(data.get("trusted")) is not bool:
+                    return self._err(400, "trusted must be a boolean")
+                try:
+                    run_send_bin("trust-images" if data["trusted"] else "untrust-images", *ref)
+                    return self._send(200, message_image_policy(ref))
+                except SendError:
+                    return self._err(502, "Could not update sender image trust. Try again.")
             if url.path == "/api/action":
                 m = {
                     "account": str(data.get("account", "")),

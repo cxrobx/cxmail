@@ -94,11 +94,14 @@ final class MailStore {
         }
         online = true; persist(); return message
     }
-    func body(_ ref: MessageRef, images: Bool = false) async throws -> String {
-        let html = try await api.html("/api/body", query: ref.query + (images ? [.init(name: "images", value: "1")] : []))
+    func body(_ ref: MessageRef, images: Bool = false, automatic: Bool = false) async throws -> String {
+        try await imageDocument(ref, images: images, automatic: automatic).html
+    }
+    func imageDocument(_ ref: MessageRef, images: Bool = false, automatic: Bool = false) async throws -> ImageDocument {
+        let document = try await api.imageDocument(query: ref.query + (images ? [.init(name: "images", value: automatic ? "auto" : "1")] : []))
         // Never persist bodies after a remote-image opt-in.
-        if !images { snapshot.html[ref.id] = html; persist() }
-        return html
+        if !images { snapshot.html[ref.id] = document.html; persist() }
+        return document
     }
     func action(_ name: String, _ message: MailMessage, folder: String? = nil) async -> Bool {
         guard !pending.contains(message.id) else { return false }

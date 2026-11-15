@@ -300,6 +300,7 @@ pub fn run() {
             commands::image_trust::untrust_image_sender,
             commands::image_trust::is_image_sender_trusted,
             commands::image_trust::list_trusted_image_senders,
+            commands::image_trust::get_message_image_policy,
             commands::images::save_image_to_path,
             commands::images::copy_image_to_clipboard,
             commands::templates::list_templates,

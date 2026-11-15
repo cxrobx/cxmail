@@ -713,3 +713,18 @@ export interface AiDraftFinding {
   quote: string | null;
   suggestion: string | null;
 }
+
+export interface ImagePolicy {
+  authentication: {
+    status: "passed" | "failed" | "unknown";
+    domain: string | null;
+    provider: string | null;
+    explanation: string;
+  };
+  sender_email: string;
+  sender_trusted: boolean;
+  auto_load: boolean;
+  suspicious: boolean;
+  has_remote_images: boolean;
+  blocked_reason: string | null;
+}

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ChatSeed, ChatStarted } from "@/types/chat";
 import type {
   Account,
+  ImagePolicy,
   ImapAccountSettings,
   DiscoveredConfig,
   Folder,
@@ -682,6 +683,8 @@ export const api = {
       }),
   },
   imageTrust: {
+    policy: (accountId: string, folder: string, uid: number) =>
+      invoke<ImagePolicy>("get_message_image_policy", { accountId, folder, uid }),
     isTrusted: (senderEmail: string) =>
       invoke<boolean>("is_image_sender_trusted", { senderEmail }),
     trust: (senderEmail: string) =>

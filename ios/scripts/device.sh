@@ -25,7 +25,7 @@ if [ -n "${CXMAIL_ASC_KEY_PATH:-}" ]; then
 fi
 xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Release \
   -destination "platform=iOS,id=$UDID" -derivedDataPath "$OUT" \
-  -allowProvisioningUpdates -allowProvisioningDeviceRegistration "${AUTH[@]}" build > "$OUT/device-build.log" 2>&1 || {
+  -allowProvisioningUpdates -allowProvisioningDeviceRegistration ${AUTH[@]+"${AUTH[@]}"} build > "$OUT/device-build.log" 2>&1 || {
   rg 'error:|BUILD FAILED' "$OUT/device-build.log"; exit 1;
 }
 rg 'BUILD SUCCEEDED' "$OUT/device-build.log"

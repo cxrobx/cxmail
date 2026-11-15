@@ -3,6 +3,7 @@ import { messageSelectionKey, useMailStore } from "@/stores/mailStore";
 import { useWindowStore } from "@/stores/windowStore";
 import { useAccountStore } from "@/stores/accountStore";
 import { api } from "@/lib/tauri";
+import SenderAuthentication from "./SenderAuthentication";
 import MessageBody from "./MessageBody";
 import { buildReplyComposeProps } from "@/lib/replyCompose";
 import AttachmentList from "./AttachmentList";
@@ -626,6 +627,7 @@ export default function ReadingPane() {
                 {detail.from_name && (
                   <span className="text-content-muted">&lt;{detail.from_email}&gt;</span>
                 )}
+                <SenderAuthentication accountId={resolvedAccountId} folder={resolvedFolder} uid={detail.uid} />
                 {detail.from_email && unsubscribedSenders.has(detail.from_email.toLowerCase()) && (
                   <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-400">
                     <MailX className="h-3 w-3" />

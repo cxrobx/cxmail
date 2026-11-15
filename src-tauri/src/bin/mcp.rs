@@ -303,6 +303,20 @@ async fn run_remote(db_path: &str, args: &[String]) -> (i32, String) {
     let err = |m: String| (1, serde_json::json!({ "error": m }).to_string());
     let uid = |s: Option<&String>| s.and_then(|s| s.parse::<u32>().ok());
     match args.first().map(String::as_str) {
+        Some("image-policy") if args.len() == 4 => match uid(args.get(3)) {
+            Some(u) => match cxmail_lib::email::image_policy::load(std::path::Path::new(db_path), &args[1], &args[2], u).await {
+                Ok(p) => (0, serde_json::to_string(&p).unwrap_or_default()),
+                Err(e) => err(e.to_string()),
+            },
+            None => err("uid must be a number".into()),
+        },
+        Some("trust-images" | "untrust-images") if args.len() == 4 => match uid(args.get(3)) {
+            Some(u) => match cxmail_lib::email::image_policy::set_trusted(std::path::Path::new(db_path), &args[1], &args[2], u, args[0] == "trust-images") {
+                Ok(()) => (0, serde_json::json!({"ok": true}).to_string()),
+                Err(e) => err(e.to_string()),
+            },
+            None => err("uid must be a number".into()),
+        },
         Some("preview-draft") if args.len() == 4 => match uid(args.get(3)) {
             Some(u) => match rs::preview_draft(db_path, &args[1], &args[2], u).await {
                 Ok(p) => (0, serde_json::to_string(&p).unwrap_or_default()),

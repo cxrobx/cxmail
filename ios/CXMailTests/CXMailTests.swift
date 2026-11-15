@@ -17,10 +17,64 @@ final class FailingProtocol: URLProtocol {
     override func stopLoading() { }
 }
 
+final class ImageDocumentProtocol: URLProtocol {
+    static var permission: String?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let headers = Self.permission.map { ["X-CXMail-Images-Allowed": $0] } ?? [:]
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("<p>Fictional message</p>".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
 @MainActor
 final class CXMailTests: XCTestCase {
     func api() -> APIClient { APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), fixture: true) }
     func cache() -> MailCache { MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
+    func testAutomaticImagesRequireTrustAuthenticationAndMatchingSender() throws {
+        let json = #"{"account":"work","folder":"INBOX","uid":10,"subject":"Notes","from_email":"jordan@example.org","date":"2026-11-15T12:00:00Z","snippet":"Hi","read":true,"starred":false,"attachments":false,"image_policy":{"authentication":{"status":"passed","domain":"example.org","provider":"Google","explanation":"Domain authenticated, not content verified."},"sender_email":"jordan@example.org","sender_trusted":true,"auto_load":true,"suspicious":false,"has_remote_images":true}}"#
+        let message = try APIClient.decoder.decode(MailMessage.self, from: Data(json.utf8))
+        XCTAssertTrue(message.permitsAutomaticImages)
+        for status in ["failed", "unknown"] {
+            var changed = message; changed.imagePolicy?.authentication.status = status
+            XCTAssertFalse(changed.permitsAutomaticImages)
+        }
+        var changed = message; changed.imagePolicy?.senderTrusted = false
+        XCTAssertFalse(changed.permitsAutomaticImages)
+        changed = message; changed.imagePolicy?.suspicious = true
+        XCTAssertFalse(changed.permitsAutomaticImages)
+        changed = message; changed.imagePolicy?.senderEmail = "other@example.org"
+        XCTAssertFalse(changed.permitsAutomaticImages)
+        changed = message; changed.imagePolicy = nil; changed.imagesTrusted = true
+        XCTAssertFalse(changed.permitsAutomaticImages, "The old address-only flag is never permission")
+    }
+    func testImageOptInsNeverPersistAnUnblockedOfflineBody() async throws {
+        let store = MailStore(api: api(), cache: cache())
+        let ref = MessageRef(account: "work", folder: "INBOX", uid: 10)
+        _ = try await store.body(ref, images: true, automatic: true)
+        XCTAssertNil(store.snapshot.html[ref.id])
+        _ = try await store.body(ref)
+        XCTAssertNotNil(store.snapshot.html[ref.id])
+    }
+    func testFinalBodyPermissionOverridesAnEarlierAutomaticDecision() async throws {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ImageDocumentProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), session: URLSession(configuration: config))
+        let query = [URLQueryItem(name: "images", value: "auto")]
+        for header in [nil, "0", "unexpected"] as [String?] {
+            ImageDocumentProtocol.permission = header
+            let document = try await api.imageDocument(query: query)
+            XCTAssertFalse(document.imagesAllowed, "Missing or revoked final permission cannot enable WKWebView images")
+        }
+        ImageDocumentProtocol.permission = "1"
+        let document = try await api.imageDocument(query: query)
+        XCTAssertTrue(document.imagesAllowed)
+        XCTAssertEqual(document.html, "<p>Fictional message</p>")
+        ImageDocumentProtocol.permission = nil
+    }
     func testDuoGeometryChoosesPushOverlayAndColumns() {
         XCTAssertFalse(DuoLayout.resolve(width: 382, height: 644, fold: nil).split)
         XCTAssertFalse(DuoLayout.resolve(width: 594, height: 432, fold: nil).split)

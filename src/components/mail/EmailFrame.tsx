@@ -7,6 +7,7 @@ import { ImageOff } from "lucide-react";
 import { useResolvedTheme } from "../../hooks/useResolvedTheme";
 import { api } from "../../lib/tauri";
 import { prepareEmailHtml } from "@/lib/emailTheme";
+import { IMAGE_TRUST_CHANGED, useMessageImagePolicy } from "@/hooks/useMessageImagePolicy";
 import SelectionFeedback from "@/components/shared/SelectionFeedback";
 import { readFrameSelection, type FeedbackSelection } from "@/lib/selectionFeedback";
 
@@ -15,6 +16,7 @@ interface EmailFrameProps {
   /** Sender address used for the per-sender image-trust allowlist. When
    * omitted, blocked-image banner is hidden (no sender to attribute trust to). */
   senderEmail?: string;
+  messageRef?: { accountId: string; folder: string; uid: number };
   feedback?: {
     onAsk: (quote: string, note: string) => Promise<void>;
     wouldReplaceChat?: () => boolean;
@@ -38,11 +40,12 @@ interface EmailFrameProps {
 // unhashed, so this URL is stable in dev and in a bundled app.
 const FRAME_SCRIPT = `<script src="/email-frame.js"></script>`;
 
-function buildFrameDocument(html: string, isDark: boolean): string {
+function buildFrameDocument(html: string, isDark: boolean, imagesAllowed: boolean): string {
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="img-src 'self' asset: http://asset.localhost data: blob: ${imagesAllowed ? "https:" : ""}" />
     <base target="_top" />
     <style>
       html, body {
@@ -78,7 +81,7 @@ function buildFrameDocument(html: string, isDark: boolean): string {
 </html>`;
 }
 
-export default function EmailFrame({ html, senderEmail, feedback }: EmailFrameProps) {
+export default function EmailFrame({ html, senderEmail, messageRef, feedback }: EmailFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const theme = useResolvedTheme();
   const [frameHeight, setFrameHeight] = useState(200);
@@ -88,13 +91,11 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
     feedbackOpen.current = false;
     setSelection(null);
   }, []);
-  // Tri-state on purpose: 'pending' suppresses the banner during the trust
-  // query so a trusted sender doesn't briefly flash a "blocked" prompt before
-  // we postMessage the iframe to load.
-  const [trustState, setTrustState] = useState<"pending" | "trusted" | "untrusted">(
-    senderEmail ? "pending" : "untrusted",
-  );
-  const [imagesShown, setImagesShown] = useState(false);
+  const policy = useMessageImagePolicy(messageRef?.accountId, messageRef?.folder, messageRef?.uid);
+  const identity = JSON.stringify([messageRef?.accountId, messageRef?.folder, messageRef?.uid, senderEmail]);
+  const [manualPermission, setManualPermission] = useState<{ identity: string; html: string } | null>(null);
+  const imagesShown = manualPermission?.identity === identity && manualPermission.html === html;
+  const imagesAllowed = imagesShown || (policy?.auto_load === true && policy.sender_trusted && policy.authentication.status === "passed" && !policy.suspicious && policy.sender_email.toLowerCase() === senderEmail?.toLowerCase());
   // Image right-click menu state. Coordinates are viewport-relative so we can
   // use position: fixed in the portal — the reading-pane scroll container
   // would otherwise shift an absolutely-positioned menu off the cursor.
@@ -103,7 +104,7 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
     | null
   >(null);
   const isDark = theme === "dark";
-  const srcDoc = useMemo(() => buildFrameDocument(html, isDark), [html, isDark]);
+  const srcDoc = useMemo(() => buildFrameDocument(html, isDark, imagesAllowed), [html, isDark, imagesAllowed]);
   useEffect(closeFeedback, [srcDoc, closeFeedback]);
   useEffect(() => {
     if (!feedback) return;
@@ -116,36 +117,14 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
   }, [feedback]);
-  const hasBlockedImages = useMemo(() => /data-original-src=/i.test(html), [html]);
-
-  // Resolve trust state for this sender on mount / when sender changes.
-  useEffect(() => {
-    if (!senderEmail) {
-      setTrustState("untrusted");
-      return;
-    }
-    let cancelled = false;
-    setTrustState("pending");
-    api.imageTrust
-      .isTrusted(senderEmail)
-      .then((trusted) => {
-        if (cancelled) return;
-        setTrustState(trusted ? "trusted" : "untrusted");
-      })
-      .catch(() => {
-        if (!cancelled) setTrustState("untrusted");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [senderEmail]);
+  const hasBlockedImages = useMemo(() => /data-original-src\s*=|(?:src|background)\s*=\s*["']?https?:\/\/|url\(\s*["']?https?:\/\//i.test(html), [html]);
 
   // Reset per-message state when the html itself changes (e.g., switching
   // to a different message). Without this, "imagesShown=true" would stick
   // across messages even though the new message hasn't been unblocked.
   useEffect(() => {
-    setImagesShown(false);
-  }, [html]);
+    setManualPermission(null);
+  }, [html, identity]);
 
   function postLoadImages() {
     const win = iframeRef.current?.contentWindow;
@@ -154,7 +133,7 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
   }
 
   function handleShowImagesOnce() {
-    setImagesShown(true);
+    setManualPermission({ identity, html });
     postLoadImages();
   }
 
@@ -162,11 +141,10 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
     if (!senderEmail) return;
     try {
       await api.imageTrust.trust(senderEmail);
-      setTrustState("trusted");
-      setImagesShown(true);
-      postLoadImages();
+      window.dispatchEvent(new Event(IMAGE_TRUST_CHANGED));
     } catch (err) {
       console.error("Failed to trust sender", err);
+      void api.system.logClientError("image-trust", String(err));
     }
   }
 
@@ -174,18 +152,10 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
   // change (new message, theme flip — iframe reloads) so the trusted state
   // is re-applied after each reload.
   function handleIframeLoad() {
-    if (trustState === "trusted") {
+    if (imagesAllowed) {
       postLoadImages();
-      setImagesShown(true);
     }
   }
-  // Cover the race where trust resolves AFTER the iframe finished loading.
-  useEffect(() => {
-    if (trustState === "trusted" && !imagesShown) {
-      postLoadImages();
-      setImagesShown(true);
-    }
-  }, [trustState, imagesShown]);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -309,8 +279,7 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
   const showBanner =
     !!senderEmail &&
     hasBlockedImages &&
-    !imagesShown &&
-    trustState === "untrusted";
+    !imagesAllowed;
 
   return (
     <div className="w-full">
@@ -323,6 +292,7 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
           <span className="min-w-0 flex-1 truncate">
             Images blocked from{" "}
             <span className="font-medium text-content">{senderEmail}</span>
+            {policy?.sender_trusted && <span className="ml-1" title={policy.blocked_reason ?? ""}>(manual approval needed)</span>}
           </span>
           <div className="flex shrink-0 items-center gap-2">
             <button
@@ -335,6 +305,8 @@ export default function EmailFrame({ html, senderEmail, feedback }: EmailFramePr
             <button
               type="button"
               onClick={handleAlwaysTrust}
+              disabled={policy?.authentication.status !== "passed" || policy.suspicious || policy.sender_trusted}
+              title={policy?.blocked_reason ?? "Checking sender authentication"}
               className="rounded px-2 py-0.5 text-xs text-content-muted hover:text-content"
             >
               Always trust this sender

@@ -62,6 +62,7 @@ entry there, then add its one line here.
 - **#63** Send-as: Sent-folder `From:` is proof, delivery headers only suggest, `To:` is neither; removal tombstones in `send_as_hidden`.
 
 ## Frontend
+- **Sender trust is not message authentication:** automatic images require the shared `image_policy` result (trusted exact address + current provider-authenticated From domain + no Medium/High/Junk flag). Never treat the old address-only `images_trusted` field or a bare `dmarc=pass` regex as permission; keep CSS images behind CSP too.
 - **Human-reader MCP envelope leakage:** remote body fetches must decode the matching-nonce safety envelope and omit `_meta["cxmail/server-authored"]` notes before parsing preview/read headers. Otherwise HTML silently falls back to plain text with visible agent markers. `remote/test_server.py` pins fenced HTML, plain mail, invalid nonces and unchanged agent-tool output; desktop IPC reads stored bodies directly.
 - **#8** Account-row click selects; chevron collapses.
 - **#16/#17** Radix `Trigger asChild` may swallow your `onContextMenu` — use `onOpenChange`.

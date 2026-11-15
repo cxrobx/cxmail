@@ -48,7 +48,7 @@ export default function MessageBody({ detail, accountId, folder, html }: Props) 
   }, []);
 
   const bodyHtml = html ?? detail.sanitized_html;
-  if (bodyHtml) return <EmailFrame key={`${accountId}|${folder}|${detail.uid}`} html={bodyHtml} senderEmail={detail.from_email} feedback={feedback} />;
+  if (bodyHtml) return <EmailFrame key={`${accountId}|${folder}|${detail.uid}`} html={bodyHtml} senderEmail={detail.from_email} messageRef={accountId && folder ? { accountId, folder, uid: detail.uid } : undefined} feedback={feedback} />;
   return <>
     <pre ref={plainRoot} onMouseUp={updateSelection} onKeyUp={(event) => { if (event.key !== "Escape") updateSelection(); }}
       className="whitespace-pre-wrap p-4 text-sm text-content-secondary">{detail.plain_text}</pre>

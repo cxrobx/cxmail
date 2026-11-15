@@ -25,6 +25,30 @@ struct MessageRef: Codable, Hashable, Identifiable {
     var payload: [String: Any] { ["account": account, "folder": folder, "uid": uid] }
 }
 
+struct SenderAuthentication: Codable, Hashable {
+    var status: String
+    var domain: String?
+    var provider: String?
+    var explanation: String
+    var label: String {
+        status == "passed" ? "Domain authenticated" : status == "failed" ? "Domain authentication failed" : "Sender authentication unavailable"
+    }
+    var symbol: String { status == "passed" ? "checkmark.seal" : status == "failed" ? "exclamationmark.shield" : "questionmark.circle" }
+}
+
+struct ImagePolicy: Codable, Hashable {
+    var authentication: SenderAuthentication
+    var senderEmail: String
+    var senderTrusted: Bool
+    var autoLoad: Bool
+    var suspicious: Bool
+    var hasRemoteImages: Bool
+    var blockedReason: String?
+    var permitsAutomaticImages: Bool {
+        autoLoad && senderTrusted && authentication.status == "passed" && !suspicious
+    }
+}
+
 struct MailMessage: Codable, Hashable, Identifiable {
     var account: String
     var folder: String
@@ -49,6 +73,11 @@ struct MailMessage: Codable, Hashable, Identifiable {
     var thread: [MailMessage]?
     var accountEmail: String?
     var imagesTrusted: Bool?
+    var imagePolicy: ImagePolicy?
+    var permitsAutomaticImages: Bool {
+        guard let policy = imagePolicy else { return false }
+        return policy.permitsAutomaticImages && policy.senderEmail.caseInsensitiveCompare(fromEmail ?? "") == .orderedSame
+    }
     var bodyError: String?
     var ref: MessageRef { .init(account: account, folder: folder, uid: uid) }
     var id: String { ref.id }

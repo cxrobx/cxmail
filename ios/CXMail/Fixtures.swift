@@ -37,6 +37,14 @@ import Foundation
         }
         return value
     }
+    static var imageSenderTrusted = false
+    static func imagePolicy() -> [String: Any] {
+        let failed = ProcessInfo.processInfo.arguments.contains("--image-auth-failed")
+        return ["authentication": ["status": failed ? "failed" : "passed", "domain": "example.org", "provider": "Google", "explanation": "The sender domain was checked. This does not verify links or attachments."],
+                "sender_email": "jordan@example.org", "sender_trusted": imageSenderTrusted,
+                "auto_load": imageSenderTrusted && !failed, "suspicious": failed,
+                "has_remote_images": true, "blocked_reason": "Images require your permission."]
+    }
     static let html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font:17px -apple-system;line-height:1.6;padding:20px;color:#202124;background:white'><p>Hi Chris,</p><p>Thanks for the thoughtful notes. I’ve had a chance to work through the outline, and I think we have a good place to pick this up.</p><p>Could we find a little time next week to talk through the next steps? Tuesday or Thursday would work well on my end.</p><p>I especially liked the idea of keeping the first version focused. Let’s start with what we’ll actually use, then take it from there.</p><p>Talk soon,<br>Jordan</p></body></html>"
     static func response(_ path: String, query: [URLQueryItem], body: [String: Any]?) throws -> Data {
         let q = Dictionary(query.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, n in n })
@@ -54,7 +62,13 @@ import Foundation
                 body["has_html"] = false
                 body["body_error"] = "We couldn’t load this message. Try again."
             }
+            if ProcessInfo.processInfo.arguments.contains("--image-policy") {
+                body["image_policy"] = imagePolicy()
+            }
             result = body
+        case "/api/image-trust":
+            imageSenderTrusted = body?["trusted"] as? Bool ?? false
+            result = imagePolicy()
         case "/api/body", "/api/draft-body": return Data(html.utf8)
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
         case "/api/drafts":

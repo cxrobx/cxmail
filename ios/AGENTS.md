@@ -23,6 +23,13 @@ mutated by tests. Assert rendered HTML, not just that the reader screen exists.
 Keep primary actions in the safe content area: the Duo's side-rail hit testing
 can misroute taps to the inbox underneath (caught by chat-open UI regression).
 
+Automatic images use the mini's shared `image_policy`: exact sender trust,
+current From-domain authentication and no suspicious/Junk flag are all required.
+Never use cached `imagesTrusted` or a remembered positive policy as network
+permission offline. Keep Show once separate from trust; preserve sandbox/CSP
+restrictions when images are allowed. The sender indicator is domain
+authentication, never Google's BIMI brand badge or a claim of content safety.
+
 MCP text output is not a message-body API: `read_email` includes diagnostic
 headers, and its plain-text branch can be empty for HTML-only mail. The remote
 API resolves missing bodies through the sanitized preview, verifies/removes its

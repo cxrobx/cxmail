@@ -19,6 +19,8 @@ final class NoRedirects: NSObject, URLSessionTaskDelegate {
     }
 }
 
+struct ImageDocument { var html: String; var imagesAllowed: Bool }
+
 @MainActor
 final class APIClient {
     let baseURL: URL?
@@ -57,12 +59,21 @@ final class APIClient {
     }
     static func timeout(for path: String) -> TimeInterval {
         if path == "/api/message" { return 210 }
-        if ["/api/send", "/api/schedule", "/api/draft-preview"].contains(path) { return 150 }
+        if ["/api/send", "/api/schedule", "/api/draft-preview", "/api/body", "/api/image-trust"].contains(path) { return 150 }
         return path == "/api/chat/events" ? 35 : 100
     }
     func data(_ path: String, query: [URLQueryItem] = [], body: [String: Any]? = nil) async throws -> Data {
+        try await transfer(path, query: query, body: body).0
+    }
+    private func transfer(_ path: String, query: [URLQueryItem], body: [String: Any]?) async throws -> (Data, HTTPURLResponse) {
         #if DEBUG
-        if fixture { return try Fixtures.response(path, query: query, body: body) }
+        if fixture {
+            let data = try Fixtures.response(path, query: query, body: body)
+            let mode = query.first { $0.name == "images" }?.value
+            let allow = mode == "1" || (mode == "auto" && Fixtures.imageSenderTrusted && !ProcessInfo.processInfo.arguments.contains("--image-auth-failed"))
+            let response = HTTPURLResponse(url: URL(string: "https://fixture.example.ts.net")!, statusCode: 200, httpVersion: nil, headerFields: ["X-CXMail-Images-Allowed": allow ? "1" : "0"])!
+            return (data, response)
+        }
         #endif
         let request = try request(path, query: query, body: body)
         let (data, response) = try await session.data(for: request)
@@ -73,13 +84,20 @@ final class APIClient {
             if response.statusCode == 403 { throw MailError.server("Access denied. Connect Tailscale using the mini’s allowed account.") }
             throw MailError.server(error?["error"] as? String ?? "The mini returned HTTP \(response.statusCode).")
         }
-        return data
+        return (data, response)
     }
     func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as: T.Type = T.self) async throws -> T {
         try APIClient.decoder.decode(T.self, from: await data(path, query: query))
     }
     func post<T: Decodable>(_ path: String, body: [String: Any], as: T.Type = T.self) async throws -> T {
         try APIClient.decoder.decode(T.self, from: await data(path, body: body))
+    }
+    func imageDocument(query: [URLQueryItem]) async throws -> ImageDocument {
+        let (data, response) = try await transfer("/api/body", query: query, body: nil)
+        guard let html = String(data: data, encoding: .utf8) else { throw MailError.unexpected }
+        let header = response.value(forHTTPHeaderField: "X-CXMail-Images-Allowed")
+        let manual = query.contains { $0.name == "images" && $0.value == "1" }
+        return ImageDocument(html: html, imagesAllowed: header == "1" || (header == nil && manual))
     }
     func html(_ path: String, query: [URLQueryItem]) async throws -> String {
         guard let text = String(data: try await data(path, query: query), encoding: .utf8) else { throw MailError.unexpected }

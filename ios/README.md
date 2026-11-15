@@ -64,6 +64,16 @@ floating action capsules; earlier systems use a material fallback. The list is
 dense and unboxed. The icon uses the actual desktop CXMail artwork, adapted to
 the opaque iOS mask by `scripts/icon.swift`.
 
+## Sender image settings
+
+The small sender icon opens authentication details: Domain authenticated, failed,
+or unavailable. This is From-domain authentication, not brand/content verification.
+The image-settings menu can always trust or stop trusting that exact sender using
+the mini's shared desktop allowlist. Automatic loading additionally requires fresh
+passing authentication and no Medium/High risk/Junk flag. Unsupported providers,
+missing evidence and offline views retain manual image loading. Show images is
+one-time consent; unblocked remote-image bodies are never persisted for offline use.
+
 ## Scheduled send
 
 From a reviewed draft, use the chevron next to the paper plane → **Schedule
@@ -196,6 +206,17 @@ UI flows, five open-window flows and 49 fixture API checks. Light/XXXL recovery
 and the recorded transitions were inspected. Three failing live references were
 confirmed obsolete and excluded without sending, editing or deleting any mail.
 The signed Release build 7 was installed on the Duo.
+
+Build 8 shares sender image trust with desktop and adds From-domain authentication
+indicators. Automatic images require current Google authentication, exact sender
+trust and no Medium/High risk/Junk flag; the final body-response permission and
+request generations prevent stale decisions from enabling images after revocation.
+Verification passed 21 unit checks, 17 compact UI flows (one unrelated orientation
+case skipped), five existing wide flows, and the two sender-policy flows on both
+compact and wide simulators. The 58 API checks, 615 frontend checks, 997 Rust checks,
+real-browser request blocking, read-only cached-mail compatibility probe and design
+preflight passed. Screenshots were inspected. Signed desktop and iOS build 8
+artifacts are prepared; installation awaits the required desktop swap approval.
 
 ## Current boundaries
 

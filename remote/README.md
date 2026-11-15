@@ -33,6 +33,25 @@ remote/install.sh uninstall   # stop it and remove the Serve entry
 
 Standard-library Python only (`/usr/bin/python3`, 3.9): no venv, nothing to break. Log: `~/Library/Logs/cxmail-remote.log`.
 
+## Sender authentication and image trust
+
+The native app, web reader and desktop share `trusted_image_senders` on the mini.
+`image_policy` on `/api/message` comes from the same Rust implementation as desktop;
+its automatic permission requires explicit sender trust, passing Google receiver
+DMARC evidence for this message's From domain, and no Medium/High risk/Junk flag.
+Missing evidence or an older/unavailable helper leaves images blocked. The legacy
+`images_trusted` flag now carries this gated permission, not address membership.
+
+The human action `POST /api/image-trust` takes an exact account/folder/UID and a
+boolean `trusted`; it invokes the signed helper once, never adds an MCP tool and
+never writes through this service's read-only mailbox connection. `/api/body`
+rechecks `images=auto`; `images=1` is the explicit per-message override. The final
+`X-CXMail-Images-Allowed` response header binds native WKWebView permission to
+that body response, so a stale metadata decision cannot override a revocation. HTTPS
+placeholders are restored only after loading is allowed. Email scripts remain
+blocked. Authentication is domain identity evidence, not a content-safety verdict
+or Gmail's BIMI blue check. See `../specs/security.md` for the trust boundary.
+
 ## Draft freshness
 
 Draft list metadata comes from the mini's read-only cache. If the signed helper

@@ -5,6 +5,13 @@ use crate::LockExt;
 use tauri::State;
 
 #[tauri::command]
+pub async fn get_message_image_policy(
+    state: State<'_, AppState>, account_id: String, folder: String, uid: u32,
+) -> Result<crate::email::image_policy::ImagePolicy, AppError> {
+    crate::email::image_policy::load(&state.db_path, &account_id, &folder, uid).await
+}
+
+#[tauri::command]
 pub async fn trust_image_sender(
     state: State<'_, AppState>,
     sender_email: String,

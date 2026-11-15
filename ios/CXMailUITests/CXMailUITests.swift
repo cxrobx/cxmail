@@ -17,6 +17,34 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15), "Sanitized HTML must actually render")
     }
+    func testTrustedSenderImagesAndAuthenticationDetails() {
+        launch(["--image-policy", "--show-reader"])
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["senderAuthentication"].waitForExistence(timeout: 5))
+        app.buttons["senderAuthentication"].tap()
+        XCTAssertTrue(app.staticTexts["Domain authenticated: example.org"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["showImages"].exists)
+        app.buttons["senderImageSettings"].tap()
+        app.buttons["Always trust this sender"].tap()
+        let hidden = NSPredicate(format: "exists == false")
+        expectation(for: hidden, evaluatedWith: app.buttons["showImages"])
+        waitForExpectations(timeout: 10)
+        capture("Authenticated sender images load automatically")
+        app.buttons["senderImageSettings"].tap()
+        app.buttons["Stop trusting this sender"].tap()
+        XCTAssertTrue(app.buttons["showImages"].waitForExistence(timeout: 10))
+        capture("Revoked sender image trust")
+    }
+    func testFailedAuthenticationCannotTrustSenderAutomatically() {
+        launch(["--image-policy", "--image-auth-failed", "--show-reader"])
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["showImages"].waitForExistence(timeout: 5))
+        app.buttons["senderImageSettings"].tap()
+        let trust = app.buttons["Always trust this sender"]
+        XCTAssertTrue(trust.waitForExistence(timeout: 5))
+        XCTAssertFalse(trust.isEnabled)
+        capture("Failed authentication keeps images blocked")
+    }
     func confirmSend() {
         let query = app.buttons.matching(identifier: "confirmSend")
         XCTAssertTrue(query.element(boundBy: 0).waitForExistence(timeout: 5))

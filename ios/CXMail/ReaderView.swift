@@ -10,6 +10,8 @@ struct ReaderView: View {
     @State private var html: String?
     @State private var height: CGFloat = 240
     @State private var images = false
+    @State private var imageGeneration = 0
+    @State private var updatingImageTrust = false
     @State private var loading = true
     @State private var error: String?
     @State private var showThread = false
@@ -27,12 +29,28 @@ struct ReaderView: View {
                         if let bodyError = message.bodyError {
                             bodyFailure(bodyError)
                         } else if message.hasHtml == true {
-                            HStack(spacing: 8) {
-                                Label(images ? "Images loaded" : "Images blocked", systemImage: images ? "photo" : "eye.slash")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Spacer(minLength: 8)
-                                if !images { Button("Load images") { Task { await loadImages() } }.font(.caption.weight(.medium)).frame(minHeight: 44) }
-                            }.padding(.horizontal, 20)
+                            if message.imagePolicy?.hasRemoteImages != false {
+                                HStack(spacing: 8) {
+                                    if !images {
+                                        Text("Images blocked").font(.caption).foregroundStyle(.secondary)
+                                        Button("Show images") { Task { await loadImages() } }
+                                            .font(.caption.weight(.medium)).frame(minHeight: 44).accessibilityIdentifier("showImages")
+                                    }
+                                    Spacer(minLength: 8)
+                                    Menu {
+                                        if message.imagePolicy?.senderTrusted == true {
+                                            Button("Stop trusting this sender", role: .destructive) { Task { await setImageTrust(false) } }
+                                        } else {
+                                            Button("Always trust this sender") { Task { await setImageTrust(true) } }
+                                                .disabled(message.imagePolicy?.authentication.status != "passed" || message.imagePolicy?.suspicious != false)
+                                        }
+                                    } label: { Image(systemName: "photo").frame(minWidth: 44, minHeight: 44) }
+                                    .accessibilityLabel("Sender image settings").accessibilityIdentifier("senderImageSettings").disabled(updatingImageTrust)
+                                }.padding(.horizontal, 20)
+                                if !images, message.imagePolicy?.senderTrusted == true, let reason = message.imagePolicy?.blockedReason {
+                                    Text(reason).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20)
+                                }
+                            }
                             if let html {
                                 EmailHTMLView(html: html, images: images, height: $height, onLoaded: { webLoading = false })
                                     .frame(height: height)
@@ -88,7 +106,13 @@ struct ReaderView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(message.subject).font(.title3.weight(.semibold)).textSelection(.enabled).accessibilityIdentifier("readerSubject")
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(message.sender).font(.subheadline.weight(.semibold)).textSelection(.enabled)
+                HStack(spacing: 4) {
+                    Text(message.sender).font(.subheadline.weight(.semibold)).textSelection(.enabled)
+                    if let auth = message.imagePolicy?.authentication {
+                        Button { details.toggle() } label: { Image(systemName: auth.symbol).font(.caption).foregroundStyle(Color.secondary).frame(minWidth: 24, minHeight: 44) }
+                            .accessibilityLabel(auth.label).accessibilityIdentifier("senderAuthentication")
+                    }
+                }
                 Spacer(minLength: 8)
                 if let date = message.timestamp { Text(date, format: .dateTime.month(.abbreviated).day().hour().minute()).font(.caption2).foregroundStyle(.secondary).monospacedDigit() }
             }
@@ -107,6 +131,10 @@ struct ReaderView: View {
                 }
             }
             if details {
+                if let auth = message.imagePolicy?.authentication {
+                    Text(auth.label + (auth.domain.map { ": " + $0 } ?? "")).font(.caption.weight(.medium))
+                    Text(auth.explanation).font(.caption).foregroundStyle(.secondary)
+                }
                 AddressLine(title: "From", addresses: [.init(name: message.fromName, email: message.fromEmail ?? "")])
                 AddressLine(title: "To", addresses: message.to ?? [])
                 AddressLine(title: "Cc", addresses: message.cc ?? [])
@@ -153,21 +181,51 @@ struct ReaderView: View {
             .mailGlass(capsule: true).padding(.horizontal, 12).padding(.vertical, 8)
     }
     private func load() async {
-        message = store.snapshot.messages[ref.id]; html = store.snapshot.html[ref.id]
+        let requestRef = ref
+        imageGeneration += 1; let generation = imageGeneration
+        message = store.snapshot.messages[requestRef.id]; html = store.snapshot.html[requestRef.id]
         images = false; error = nil; loading = true; webLoading = true
-        defer { loading = false }
+        defer { if generation == imageGeneration { loading = false } }
         do {
-            let loaded = try await store.message(ref)
-            guard !Task.isCancelled else { return }
+            let loaded = try await store.message(requestRef)
+            guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
             message = loaded
-            if loaded.hasHtml == true { html = try await store.body(ref) }
-            guard !Task.isCancelled else { return }
+            if loaded.hasHtml == true {
+                let allow = loaded.permitsAutomaticImages
+                let body = try await store.imageDocument(requestRef, images: allow, automatic: allow)
+                guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
+                html = body.html; images = body.imagesAllowed
+            }
+            guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
             if !loaded.read, await store.action("read", loaded) { message?.read = true }
-        } catch { if !Task.isCancelled { self.error = store.friendly(error) } }
+        } catch { if ref == requestRef, generation == imageGeneration, !Task.isCancelled { self.error = store.friendly(error) } }
     }
     private func loadImages() async {
-        do { html = try await store.body(ref, images: true); images = true }
-        catch { self.error = store.friendly(error) }
+        let requestRef = ref
+        imageGeneration += 1; let generation = imageGeneration
+        defer { if generation == imageGeneration { loading = false } }
+        do {
+            let body = try await store.imageDocument(requestRef, images: true)
+            guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
+            html = body.html; images = body.imagesAllowed
+        } catch { if ref == requestRef, generation == imageGeneration { self.error = store.friendly(error) } }
+    }
+    private func setImageTrust(_ trusted: Bool) async {
+        let requestRef = ref
+        imageGeneration += 1; let generation = imageGeneration
+        updatingImageTrust = true
+        images = false // Revocation takes effect before its network response.
+        defer { updatingImageTrust = false; if generation == imageGeneration { loading = false } }
+        do {
+            var payload = requestRef.payload; payload["trusted"] = trusted
+            let policy: ImagePolicy = try await store.api.post("/api/image-trust", body: payload)
+            guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
+            message?.imagePolicy = policy
+            let allow = message?.permitsAutomaticImages == true
+            let body = try await store.imageDocument(requestRef, images: allow, automatic: allow)
+            guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
+            html = body.html; images = body.imagesAllowed
+        } catch { if ref == requestRef, generation == imageGeneration { self.error = store.friendly(error) } }
     }
     private func openThread() async {
         do {

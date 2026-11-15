@@ -75,22 +75,64 @@ Only `http:` and `https:` URLs allowed. `javascript:`, `data:`, `vbscript:` stri
 
 ## Remote Image Policy
 
-Default: **block all remote images** (prevents tracking pixels).
+Default: **block remote images**. The shared image-loading policy is implemented in
+`cxmail-email::email::image_policy`, used by Tauri and the signed remote helper.
 
-### Implementation
-1. During sanitization, rewrite all `<img src="https://...">` to `<img data-original-src="https://..." src="">` with a placeholder
-2. Frontend shows "Images blocked" banner with "Load images" button
-3. On "Load images" click:
-   - Frontend sends IPC to Rust
-   - Rust fetches images via reqwest, returns as data URLs
-   - Frontend updates iframe content with real images
-4. Per-sender allowlist stored in SQLite (Phase 3)
+### Automatic loading
 
-### What this prevents
-- Tracking pixels: sender knows when/where you opened the email
-- IP address leakage to sender
-- Cookie-based tracking across emails
-- Exploit delivery via malicious image URLs
+All three conditions are required for the current message:
+
+1. The exact sender address is in `trusted_image_senders`, the mini's existing
+   shared allowlist. Desktop and iOS write the same table; no domain wildcards.
+2. From-domain authentication passes. Currently supported for Gmail accounts and
+   generic IMAP accounts explicitly configured for `imap.gmail.com`. The policy
+   checks the receiver's topmost `Authentication-Results: mx.google.com`, its
+   receiving trace, an unambiguous single From mailbox matching the cached sender,
+   and exactly one passing DMARC result for that same From domain. Missing,
+   malformed, duplicate/ambiguous or unsupported evidence stays unknown.
+3. The message is not in Junk/Trash and has no Medium/High local or previously
+   stored risk warning. A LOW risk report alone never grants permission. Opening
+   mail does not start a new model/inference request.
+
+Only the configured receiving provider's results are trusted (RFC 8601). A
+Google-looking header copied to an unrelated provider is not evidence. As with
+other mail clients, this relies on the receiving provider's header handling;
+mailbox imports/IMAP APPEND are not independently attested by these headers.
+
+The discreet sender indicator says **Domain authenticated**, not Google verified,
+brand verified or safe. It does not certify the person, links, attachments or image
+bytes. Gmail's BIMI/VMC blue check is not reproduced. Non-Google providers retain
+manual image loading until a reviewed provider-specific verifier is added.
+
+### Rendering and explicit choices
+
+The parser rewrites remote `<img>` URLs to `data-original-src` placeholders. The
+desktop iframe also starts with a restrictive `img-src` CSP, covering CSS
+backgrounds and any direct image URL the placeholder rewrite does not cover.
+When images are allowed, a newly constructed frame permits HTTPS images and the
+app-owned frame script restores placeholders. Email scripts remain stripped and
+the frame never receives `allow-same-origin`.
+
+The iOS/PWA service keeps its SQLite reads read-only. Its signed helper supports
+`remote image-policy <account> <folder> <uid>` and explicit `trust-images` /
+`untrust-images` actions, which are not MCP tools. POST trust changes require the
+existing tailnet identity and JSON/CSRF guard. The `/api/body?images=auto` path
+rechecks policy before enabling HTTPS images; `images=1` is explicit Show once.
+The native client also requires the final `X-CXMail-Images-Allowed` response header
+for automatic permission, because loading HTML through URLSession does not carry
+HTTP CSP headers into WKWebView. In-flight decisions are superseded on refresh or
+trust changes, so an older response cannot re-enable images after revocation.
+Server and native WKWebView CSPs continue to deny email scripts.
+
+Show once permits images for one message without changing sender trust. Trust
+changes trigger a fresh policy check, never an immediate address-only grant.
+Desktop rechecks on focus; phone refresh/reopen reads current shared trust.
+Offline phone bodies never restore an automatic network-loading permission.
+
+Blocking avoids sender image requests that disclose opens and IP addresses, and
+reduces exposure to malicious remote images. It does not block embedded images,
+scan image files, or replace OS/WebKit security updates. Once allowed, images are
+fetched directly: there is no image proxy or claim of tracking prevention.
 
 ## Frontend Rendering Sandbox
 

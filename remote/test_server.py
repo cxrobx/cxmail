@@ -422,11 +422,79 @@ class Api(unittest.TestCase):
         c.execute("INSERT OR IGNORE INTO trusted_image_senders VALUES ('ann@example.org')")
         c.commit()
         c.close()
-        self.assertTrue(self.j("/api/message?account=a1&folder=INBOX&uid=10")["images_trusted"])
+        self.assertFalse(self.j("/api/message?account=a1&folder=INBOX&uid=10")["images_trusted"], "Address trust alone cannot authorize remote images")
         c = sqlite3.connect(FIXTURE)
         c.execute("DELETE FROM trusted_image_senders")
         c.commit()
         c.close()
+
+    def test_automatic_images_recheck_policy_and_restore_only_https_placeholders(self):
+        old = server.run_send_bin
+        allowed = {"value": True}
+        def helper(command, *ref):
+            self.assertEqual(command, "image-policy")
+            return {"authentication": {"status": "passed", "domain": "example.org", "provider": "Google", "explanation": "Domain authenticated"},
+                    "sender_email": "ann@example.org", "sender_trusted": allowed["value"],
+                    "auto_load": allowed["value"], "suspicious": False, "has_remote_images": True,
+                    "blocked_reason": None}
+        server.run_send_bin = helper
+        with sqlite3.connect(FIXTURE) as c:
+            previous = c.execute("SELECT sanitized_html FROM message_bodies WHERE account_id='a1' AND folder_name='INBOX' AND uid=10").fetchone()[0]
+            c.execute("UPDATE message_bodies SET sanitized_html=? WHERE account_id='a1' AND folder_name='INBOX' AND uid=10", ('<img src="" data-original-src="https://example.org/photo.png"><img src="" data-original-src="http://example.org/pixel.png">',))
+        try:
+            msg = self.j("/api/message?account=a1&folder=INBOX&uid=10")
+            self.assertTrue(msg["images_trusted"])
+            code, headers, raw = self.req("/api/body?account=a1&folder=INBOX&uid=10&images=auto")
+            self.assertEqual(code, 200)
+            self.assertIn('src="https://example.org/photo.png"', raw.decode())
+            self.assertNotIn('<img src="http://example.org/pixel.png"', raw.decode())
+            self.assertIn("img-src data: cid: https:", headers["Content-Security-Policy"])
+            self.assertEqual(headers["X-CXMail-Images-Allowed"], "1")
+            allowed["value"] = False
+            _, headers, raw = self.req("/api/body?account=a1&folder=INBOX&uid=10&images=auto")
+            self.assertNotIn("https:", headers["Content-Security-Policy"])
+            self.assertIn('src="" data-original-src=', raw.decode())
+            self.assertEqual(headers["X-CXMail-Images-Allowed"], "0")
+        finally:
+            server.run_send_bin = old
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE message_bodies SET sanitized_html=? WHERE account_id='a1' AND folder_name='INBOX' AND uid=10", (previous,))
+
+    def test_image_trust_uses_exact_message_reference_and_csrf_guard(self):
+        old = server.run_send_bin
+        calls = []
+        def helper(command, *ref):
+            calls.append((command, ref))
+            if command == "image-policy":
+                raise server.SendError("policy unavailable")
+            return {"ok": True}
+        server.run_send_bin = helper
+        data = {"account": "a1", "folder": "INBOX", "uid": 10, "trusted": True}
+        try:
+            self.assertEqual(self.req("/api/image-trust", data, login="outsider@example.org")[0], 403)
+            self.assertEqual(self.req("/api/image-trust", data, headers={"X-CXMail-Remote": "0"})[0], 400)
+            self.assertEqual(calls, [])
+            for uid in [True, 1.5, 0, -1, 4294967296]:
+                self.assertEqual(self.req("/api/image-trust", dict(data, uid=uid))[0], 400)
+            self.assertEqual(self.req("/api/image-trust", dict(data, trusted="true"))[0], 400)
+            result = json.loads(self.req("/api/image-trust", data)[2])
+            self.assertFalse(result["auto_load"], "A failed post-trust check cannot allow images")
+            self.assertEqual(calls[0], ("trust-images", ("a1", "INBOX", 10)))
+            self.req("/api/image-trust", dict(data, trusted=False))
+            self.assertIn(("untrust-images", ("a1", "INBOX", 10)), calls)
+        finally:
+            server.run_send_bin = old
+
+    def test_inconsistent_or_failed_policy_cannot_enable_images(self):
+        old = server.run_send_bin
+        try:
+            for status, trusted, suspicious in [("failed", True, False), ("unknown", True, False), ("passed", False, False), ("passed", True, True)]:
+                server.run_send_bin = lambda *args: {"authentication": {"status": status}, "sender_email": "ann@example.org", "sender_trusted": trusted, "auto_load": True, "suspicious": suspicious, "has_remote_images": True}
+                self.assertFalse(self.j("/api/message?account=a1&folder=INBOX&uid=10")["images_trusted"])
+            server.run_send_bin = lambda *args: {"auto_load": "true"}
+            self.assertFalse(self.j("/api/message?account=a1&folder=INBOX&uid=10")["images_trusted"])
+        finally:
+            server.run_send_bin = old
 
     def test_database_is_read_only(self):
         with server.db() as c:
