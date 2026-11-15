@@ -130,6 +130,18 @@ pub struct EmailAddress {
 
 /// Parse raw RFC822 message bytes into a ParsedMessage.
 pub fn parse_message(raw: &[u8]) -> ParsedMessage {
+    parse_message_opts(raw, true)
+}
+
+/// Parse without extracting any attachment text: no attachment bytes reach a
+/// document parser, sandboxed or not. For untrusted bulk reads (the risk
+/// eval over Spam folders), where attachment names and types are all that is
+/// needed. `attachment_text` comes back empty.
+pub fn parse_message_without_attachment_text(raw: &[u8]) -> ParsedMessage {
+    parse_message_opts(raw, false)
+}
+
+fn parse_message_opts(raw: &[u8], extract_attachment_text: bool) -> ParsedMessage {
     let message = match mail_parser::MessageParser::default().parse(raw) {
         Some(m) => m,
         None => {
@@ -397,7 +409,7 @@ pub fn parse_message(raw: &[u8]) -> ParsedMessage {
         }
     }
 
-    let attachment_text = (0..attachment_indices.len().min(10))
+    let attachment_text = (0..if extract_attachment_text { attachment_indices.len().min(10) } else { 0 })
         .filter_map(|i| {
             let part = message.attachment(attachment_indices[i])?;
             let meta = attachments.get(i)?;

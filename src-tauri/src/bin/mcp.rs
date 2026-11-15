@@ -63,6 +63,12 @@ async fn main() -> anyhow::Result<()> {
         .join("com.cxmail.app")
         .join("cxmail.db");
 
+    // Measurement mode, before the startup migration below: it opens the
+    // database read-only and must not write to it (cxmail_mcp::risk_eval).
+    if std::env::args().any(|a| a == "--risk-eval") {
+        return cxmail_mcp::risk_eval::run(&db_path).await;
+    }
+
     tracing::info!("CXMail MCP server starting, DB: {:?}", db_path);
 
     // Run schema migrations. The Tauri app also runs these on startup, but the

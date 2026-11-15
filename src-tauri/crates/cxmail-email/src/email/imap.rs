@@ -801,6 +801,29 @@ pub async fn select_folder(
     Ok((uidvalidity, uidnext))
 }
 
+/// Open a folder READ-ONLY (IMAP EXAMINE). Nothing done in an examined
+/// mailbox can change flags or the mailbox, so it is the only way bulk reads of
+/// mail we must not disturb (the risk eval over Spam) open a folder.
+pub async fn examine_folder(session: &mut ImapSession, folder: &str) -> Result<u32, AppError> {
+    let mailbox = session
+        .examine(folder)
+        .await
+        .map_err(|e| AppError::Imap(format!("EXAMINE {} failed: {}", folder, e)))?;
+    Ok(mailbox.exists)
+}
+
+/// Every UID in the selected or examined folder.
+pub async fn uid_search_all(session: &mut ImapSession) -> Result<Vec<u32>, AppError> {
+    let mut uids: Vec<u32> = session
+        .uid_search("ALL")
+        .await
+        .map_err(|e| AppError::Imap(format!("UID SEARCH ALL failed: {}", e)))?
+        .into_iter()
+        .collect();
+    uids.sort_unstable();
+    Ok(uids)
+}
+
 /// Fetch message headers by UID range.
 pub async fn fetch_headers(
     session: &mut ImapSession,

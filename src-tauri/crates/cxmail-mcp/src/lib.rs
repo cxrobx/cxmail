@@ -8,6 +8,7 @@
 pub mod mcp;
 /// Send a reviewed draft for CXMail Remote. Deliberately not an MCP tool.
 pub mod remote_send;
+pub mod risk_eval;
 
 // Re-exported at their historical paths so `server.rs` keeps saying
 // `crate::db::messages`, `crate::email::smtp` and `crate::error::AppError`.

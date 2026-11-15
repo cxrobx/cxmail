@@ -24,6 +24,7 @@ pub mod oauth2;
 pub mod parser;
 pub mod providers;
 pub mod risk;
+pub mod risk_model;
 pub mod search_parse;
 pub mod server_search;
 pub mod smtp;
