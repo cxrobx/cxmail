@@ -9,8 +9,8 @@ RUN=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
 xcodegen generate
 for PROFILE in compact wide; do
-  SIM=$COMPACT; ONLY=(-skip-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport)
-  if [ "$PROFILE" = wide ]; then SIM=$WIDE; ONLY=(-only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport); fi
+  SIM=$COMPACT; ONLY=(-skip-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -skip-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer)
+  if [ "$PROFILE" = wide ]; then SIM=$WIDE; ONLY=(-only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -only-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer); fi
   LOG="$OUT/$PROFILE-$RUN.log"
   xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Debug \
     -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath "$OUT" \

@@ -60,12 +60,16 @@ the opaque iOS mask by `scripts/icon.swift`.
 ## Duo layout
 
 The layout uses available geometry, not a device-name or size-class guess.
-Closed upright (382 usable points), closed sideways and open tall stay one pane.
+Closed upright (382 usable points) and closed sideways use mailbox-to-message navigation.
+Open tall starts with a full-width reader and a closed inbox drawer. The sidebar
+button opens the inbox over the message; selecting an email closes it again.
 Open wide becomes inbox + reader. Flat, the inbox takes about 38% of the usable
 width, leaving most of the space for the email. On iOS 27.1+, an active division
 region supplies the fold gap and pane boundary while the device is partly folded.
 Outdated division geometry during rotation is rejected when a pane cannot fit.
-System safe areas protect the asymmetric status column and home indicator.
+The native split container owns each column's safe area, so the status column
+does not reserve another blank strip inside the inbox. System safe areas protect
+the asymmetric status column and home indicator. Inbox filters begin with “All”.
 Selection, composer and chat state sit above layout changes.
 
 ## Verification
@@ -77,8 +81,11 @@ bash scripts/verify.sh <compact-duo-simulator-udid> <ipad-simulator-udid>
 The compact suite covers reading rendered HTML, reply recovery after relaunch,
 compose/review/confirmed-send, stale-draft refusal, Claude permission denial,
 search, empty and offline states, and rotation. The separate iPad run constrains
-the app to the open Duo's exact 867×635 usable viewport with its 40-point fold.
-That is a controlled geometry test, not a claim of physical hinge automation.
+the host to the Duo's 951×669 wide or 669×951 tall window and injects the measured
+side/top and bottom safe areas, plus the active 40-point fold in the wide profile.
+The iPad retains its own system chrome. Tests compare actual rendered email bounds;
+native navigation backgrounds can extend behind both columns. This is a controlled
+geometry test, not a claim of physical hinge automation.
 Unit tests cover API boundaries, identity, recipient handling, timeout contracts,
 cache persistence, optimistic rollback, no automatic send retries and chat events.
 Fixture API shapes are taken from `remote/server.py`, `remote/test_server.py` and
@@ -103,6 +110,15 @@ and flat-Duo reader-width UI checks, plus four API regressions for uncached HTML
 plain-text envelope removal, empty cached bodies and explicit fetch errors.
 It passes 12 unit checks, 9 compact UI flows, the partial-fold/flat open-width
 flow, and 36 API regressions. Build 2 uses CXMail's actual icon and native glass.
+
+Build 3 replaces the manual split with native column containment, puts “All”
+first, and adds the initially closed portrait inbox drawer. Verification covers
+12 unit checks, 10 compact UI flows, both open-window profiles and 36 API checks.
+The open profiles assert the actual fold boundary, clear division, full-width
+portrait reader, 400pt drawer, selection and explicit open/close controls.
+Light/dark, XXXL text and recorded drawer transitions were inspected. The signed
+Release update was installed on the Duo; a physical UI run and automatic launch
+were blocked by the phone being locked.
 
 ## Current boundaries
 

@@ -52,6 +52,9 @@ final class CXMailUITests: XCTestCase {
         XCTAssertLessThanOrEqual(app.buttons["message-10"].frame.height, 104)
         XCTAssertTrue(app.buttons["message-13"].isHittable, "At least four realistic messages must fit on the closed Duo")
         XCTAssertLessThanOrEqual(app.buttons["compose"].frame.height, 52)
+        XCTAssertTrue(app.buttons["All"].exists)
+        XCTAssertLessThan(app.buttons["All"].frame.minX, app.buttons["Primary"].frame.minX)
+        XCTAssertFalse(app.buttons["All mail"].exists)
         capture("Dense glass inbox")
     }
     func testBodyFailureIsRetryableAndNotMetadata() {
@@ -120,6 +123,7 @@ final class CXMailUITests: XCTestCase {
         launch()
         if app.frame.width > 760 { app.terminate(); launch(["--duo-wide"]) }
         openMessage()
+        let initialHierarchy = XCTAttachment(string: app.debugDescription); initialHierarchy.name = "Split geometry"; initialHierarchy.lifetime = .keepAlways; add(initialHierarchy)
         let pane = app.otherElements["detailPane"]
         if app.frame.width > 760 {
             XCTAssertTrue(pane.exists)
@@ -141,10 +145,13 @@ final class CXMailUITests: XCTestCase {
         // viewport fits. The fixture supplies the measured 40pt fold.
         XCTAssertGreaterThan(app.frame.width, 867)
         openMessage()
+        let splitHierarchy = XCTAttachment(string: app.debugDescription); splitHierarchy.name = "Native split geometry"; splitHierarchy.lifetime = .keepAlways; add(splitHierarchy)
         XCTAssertTrue(app.otherElements["detailPane"].exists)
         XCTAssertTrue(app.buttons["message-11"].isHittable)
         XCTAssertTrue(app.buttons["readerReply"].isHittable)
         XCTAssertTrue(app.buttons["readerArchive"].isHittable)
+        XCTAssertEqual(app.buttons["message-11"].frame.width, 455.5, accuracy: 1, "The active fold determines the inbox width")
+        XCTAssertEqual(app.webViews.firstMatch.frame.minX - app.buttons["message-11"].frame.maxX, 52, accuracy: 2, "Keep the measured 40pt division plus the 12pt email margin free")
         XCTAssertLessThanOrEqual(app.buttons["readerReply"].frame.maxX, app.frame.maxX)
         XCTAssertGreaterThan(app.buttons["readerReply"].frame.minX, app.buttons["message-11"].frame.maxX + 39)
         let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "Open viewport hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
@@ -159,7 +166,76 @@ final class CXMailUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         launch(["--duo-flat", "--show-reader"])
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
-        XCTAssertGreaterThan(app.otherElements["detailPane"].frame.width, 500, "A flat Duo should give the reader most of the usable width")
+        XCTAssertGreaterThan(app.webViews.firstMatch.frame.width, 500, "A flat Duo should give the reader most of the usable width")
+        let inbox = app.buttons["message-11"].frame
+        let detail = app.webViews.firstMatch.frame
+        let flatHierarchy = XCTAttachment(string: app.debugDescription); flatHierarchy.name = "Flat split geometry"; flatHierarchy.lifetime = .keepAlways; add(flatHierarchy)
+        XCTAssertGreaterThanOrEqual(detail.minX - inbox.maxX, 0, "Inbox content must not extend into the reader")
+        XCTAssertLessThan(detail.minX - inbox.maxX, 24, "The status safe area must not leave a second blank strip inside the inbox")
+        XCTAssertGreaterThan(inbox.width, 290, "The 329pt flat inbox must retain its usable width")
         capture("Flat Duo glass workspace")
+    }
+    func testSplitPaneStatusInset() {
+        // Constrain the same split tree on the Duo runtime too. The closed
+        // simulator clips this wide canvas; AX still reports pane geometry.
+        launch(["--duo-flat", "--show-reader"])
+        XCTAssertTrue(app.buttons["message-11"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "Status inset hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        let inbox = app.buttons["message-11"].frame
+        let detail = app.webViews.firstMatch.frame
+        XCTAssertGreaterThan(inbox.width, 290)
+        XCTAssertGreaterThanOrEqual(detail.minX - inbox.maxX, 0)
+        XCTAssertLessThan(detail.minX - inbox.maxX, 24)
+    }
+    func testDeviceLandscapeSidebar() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        launch(["--show-reader"])
+        guard app.frame.width >= 760 else { throw XCTSkip("Requires the Duo's inner display or a wide device.") }
+        XCTAssertTrue(app.buttons["message-11"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        let inbox = app.buttons["message-11"].frame
+        let detail = app.webViews.firstMatch.frame
+        let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "Native landscape sidebar"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        // Compare actual content boundaries, allowing the active fold and
+        // the reader's paper margin. A duplicated status inset exceeds this.
+        XCTAssertGreaterThanOrEqual(detail.minX - inbox.maxX, 0)
+        XCTAssertLessThan(detail.minX - inbox.maxX, 64)
+        XCTAssertGreaterThan(inbox.width, 290)
+        XCTAssertLessThan(app.buttons["compose"].frame.maxX, detail.minX)
+        capture("Native landscape sidebar")
+    }
+    func testPortraitInboxDrawer() throws {
+        XCUIDevice.shared.orientation = .portrait
+        launch()
+        guard app.frame.width >= 669 else { throw XCTSkip("Requires a viewport large enough for open-tall Duo geometry.") }
+        app.terminate(); launch(["--duo-tall"])
+        let show = app.buttons["showInbox"]
+        XCTAssertTrue(show.waitForExistence(timeout: 5)); XCTAssertTrue(show.isHittable)
+        XCTAssertFalse(app.buttons["message-11"].isHittable, "Portrait must start with the inbox drawer closed")
+        capture("Portrait starts with closed inbox")
+        show.tap(); openMessage()
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        let detail = app.webViews.firstMatch.frame
+        XCTAssertGreaterThan(detail.width, 600, "Portrait keeps the message at full width")
+        let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "Portrait toolbar geometry"; hierarchy.lifetime = .keepAlways; add(hierarchy)
+        XCTAssertTrue(show.isHittable); show.tap()
+        let row = app.buttons["message-11"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5)); XCTAssertTrue(row.isHittable)
+        XCTAssertLessThan(row.frame.width, 421)
+        XCTAssertGreaterThan(row.frame.width, 380, "The portrait drawer should retain its requested readable width")
+        XCTAssertLessThan(row.frame.maxX, detail.maxX - 150, "Inbox should overlay only part of the message")
+        let openHierarchy = XCTAttachment(string: app.debugDescription); openHierarchy.name = "Open portrait controls"; openHierarchy.lifetime = .keepAlways; add(openHierarchy)
+        capture("Portrait inbox drawer")
+        row.tap()
+        XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["readerSubject"].label, "The next steps for our project")
+        XCTAssertTrue(show.isHittable)
+        show.tap()
+        let hide = app.buttons["hideInbox"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: hide)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, "Wait for the native drawer transition before tapping its trailing control")
+        hide.tap(); XCTAssertTrue(show.isHittable)
+        capture("Portrait message after closing drawer")
     }
 }

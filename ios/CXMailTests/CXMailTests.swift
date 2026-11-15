@@ -19,10 +19,12 @@ final class FailingProtocol: URLProtocol {
 final class CXMailTests: XCTestCase {
     func api() -> APIClient { APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), fixture: true) }
     func cache() -> MailCache { MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
-    func testDuoGeometryKeepsNarrowAndTallSinglePane() {
+    func testDuoGeometryChoosesPushOverlayAndColumns() {
         XCTAssertFalse(DuoLayout.resolve(width: 382, height: 644, fold: nil).split)
         XCTAssertFalse(DuoLayout.resolve(width: 594, height: 432, fold: nil).split)
         XCTAssertFalse(DuoLayout.resolve(width: 669, height: 835, fold: CGRect(x: 0, y: 373.5, width: 669, height: 40)).split)
+        XCTAssertTrue(DuoLayout.resolve(width: 669, height: 835, fold: nil).overlay)
+        XCTAssertFalse(DuoLayout.resolve(width: 382, height: 644, fold: nil).overlay)
         let wide = DuoLayout.resolve(width: 867, height: 635, fold: CGRect(x: 455.5, y: 0, width: 40, height: 669))
         XCTAssertTrue(wide.split); XCTAssertEqual(wide.leading, 455.5); XCTAssertEqual(wide.gap, 40)
         let flat = DuoLayout.resolve(width: 867, height: 635, fold: nil)

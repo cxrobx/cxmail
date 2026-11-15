@@ -2,10 +2,14 @@ import SwiftUI
 
 struct DuoLayout: Equatable {
     var split = false
+    var overlay = false
     var leading: CGFloat = 340
     var gap: CGFloat = 1
     static func resolve(width: CGFloat, height: CGFloat, fold: CGRect?) -> Self {
         // A landscape closed Duo has only 432 usable points of height.
+        if width >= 600, height >= 760, height > width {
+            return .init(overlay: true, leading: min(400, width * 0.6))
+        }
         guard width >= 760, height >= 500 else { return .init() }
         if let fold, fold.height > fold.width, fold.minX >= 300, width - fold.maxX >= 300 {
             return .init(split: true, leading: fold.minX, gap: fold.width)

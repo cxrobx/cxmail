@@ -10,7 +10,8 @@ Liquid Glass is explicitly requested: use native glass on compact navigation,
 account/filter chrome and floating action capsules, with neutral depth behind it.
 Mail rows stay dense and unboxed; email documents keep their own formatting.
 Open wide and flat: narrower inbox, wider reader. Partially folded: two panes,
-the active 40-point division kept free. Open tall/closed:
-single pane. Selection, draft and chat state live above adaptive branches.
+the active 40-point division kept free. Open tall: full-width reader with an
+inbox drawer over it, initially closed. Closed: mailbox-to-message navigation.
+Selection, draft and chat state live above adaptive branches.
 The split reader has no redundant navigation heading: the subject is its title.
 The iOS icon uses the actual desktop CXMail artwork, not a generic envelope.

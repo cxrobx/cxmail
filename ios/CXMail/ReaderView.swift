@@ -4,6 +4,7 @@ struct ReaderView: View {
     @Bindable var store: MailStore
     let ref: MessageRef
     var split = false
+    var showsSidebar = false
     @State private var webLoading = true
     @State private var message: MailMessage?
     @State private var html: String?
@@ -79,7 +80,7 @@ struct ReaderView: View {
             }
         }
         .navigationTitle(split ? "" : "Message").navigationBarTitleDisplayMode(.inline)
-        .toolbar(split ? .hidden : .visible, for: .navigationBar)
+        .toolbar(split && !showsSidebar ? .hidden : .visible, for: .navigationBar)
         .task(id: ref) { await load() }
     }
 

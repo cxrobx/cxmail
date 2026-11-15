@@ -22,5 +22,11 @@ envelope, and returns `body_error` for a failed fetch. Keep the uncached HTML,
 plain-only, empty-body, failure/retry and missing-snippet density regressions.
 
 The exact-width test is a geometry harness, not physical hinge automation.
+Include the asymmetric external safe area in open-window fixtures. Compare
+rendered WKWebView bounds for pane spacing: a native split navigator's background
+and scroll view can span both columns while its content is correctly inset.
+Apply column-width preferences after toolbar modifiers; otherwise the native
+sidebar can fall back to 320pt. Assert the actual 455.5pt inbox boundary and
+40pt division, as well as the 400pt portrait drawer and its single close control.
 When changing layout, preserve the root-owned selection, draft and chat state,
 check both appearances and XXXL type, and inspect the test captures/recordings.

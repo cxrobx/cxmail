@@ -46,34 +46,81 @@ struct MailWorkspace: View {
     @Bindable var store: MailStore
     let tab: MailTab
     @Binding var settings: Bool
+    @State private var columns: NavigationSplitViewVisibility = .detailOnly
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         GeometryReader { geometry in
             let layout = geometry.mailLayout
-            HStack(spacing: 0) {
-                NavigationStack {
-                    MailboxView(store: store, tab: tab, split: layout.split, settings: $settings)
-                        .navigationDestination(isPresented: Binding(get: { !layout.split && store.tab == tab && store.selected != nil }, set: { if !$0 && !layout.split { store.selected = nil } })) {
-                            if let ref = store.selected { destination(ref) }
+            Group {
+                if layout.split || layout.overlay {
+                    NavigationSplitView(columnVisibility: $columns) {
+                        MailboxView(store: store, tab: tab, split: true, settings: $settings, largeTitle: layout.overlay)
+                            .padding(.trailing, max(0, layout.gap - 1))
+                            .toolbar(removing: .sidebarToggle)
+                            .toolbar {
+                                if layout.overlay {
+                                    ToolbarItem(placement: .topBarLeading) {
+                                        Button("Hide inbox", systemImage: "sidebar.left") { setColumns(.detailOnly) }
+                                            .accessibilityIdentifier("hideInbox")
+                                    }
+                                }
+                            }
+                            .navigationSplitViewColumnWidth(min: layout.leading + layout.gap - 1,
+                                ideal: layout.leading + layout.gap - 1, max: layout.leading + layout.gap - 1)
+                    } detail: {
+                        NavigationStack {
+                            Group {
+                                if store.tab == tab, let ref = store.selected { destination(ref, split: true, sidebar: layout.overlay || columns == .detailOnly) }
+                                else { ContentUnavailableView("Choose a message", systemImage: "envelope.open", description: Text(layout.overlay ? "Open Inbox to choose a message." : "Your conversation will open here.")) }
+                            }
+                            .toolbar {
+                                if layout.overlay || columns == .detailOnly {
+                                    ToolbarItem(placement: .topBarLeading) {
+                                        Button("Show inbox", systemImage: "sidebar.left") { setColumns(.all) }
+                                            .accessibilityIdentifier("showInbox")
+                                    }
+                                }
+                            }
                         }
-                }
-                .frame(width: layout.split ? layout.leading : nil)
-                if layout.split {
-                    Rectangle().fill(Color(uiColor: .separator)).frame(width: 1)
-                    Color(uiColor: .systemGroupedBackground).frame(width: max(0, layout.gap - 1))
-                    NavigationStack {
-                        if store.tab == tab, let ref = store.selected { destination(ref, split: true) }
-                        else { ContentUnavailableView("Choose a message", systemImage: "envelope.open", description: Text("Your conversation will open here.")) }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("detailPane")
+                        .navigationSplitViewColumnWidth(min: 300, ideal: 300, max: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier("detailPane")
+                    .modifier(MailSplitStyle(overlay: layout.overlay))
+                    // Wide Duo geometry can arrive before its size-class update.
+                    .environment(\.horizontalSizeClass, .regular)
+                } else {
+                    NavigationStack {
+                        MailboxView(store: store, tab: tab, split: false, settings: $settings)
+                            .navigationDestination(isPresented: Binding(get: { store.tab == tab && store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
+                                if let ref = store.selected { destination(ref) }
+                            }
+                    }
                 }
+            }
+            .onChange(of: layout, initial: true) { _, new in
+                columns = new.overlay ? .detailOnly : .all
+            }
+            .onChange(of: store.selected) { _, ref in
+                if layout.overlay, ref != nil { setColumns(.detailOnly) }
             }
         }
     }
-    @ViewBuilder func destination(_ ref: MessageRef, split: Bool = false) -> some View {
+    private func setColumns(_ value: NavigationSplitViewVisibility) {
+        withAnimation(reduceMotion ? nil : .default) { columns = value }
+    }
+    @ViewBuilder func destination(_ ref: MessageRef, split: Bool = false, sidebar: Bool = false) -> some View {
         if tab == .drafts { ReviewView(store: store, ref: ref, embedded: true) }
-        else { ReaderView(store: store, ref: ref, split: split) }
+        else { ReaderView(store: store, ref: ref, split: split, showsSidebar: sidebar) }
+    }
+}
+
+private struct MailSplitStyle: ViewModifier {
+    let overlay: Bool
+    func body(content: Content) -> some View {
+        if overlay { content.navigationSplitViewStyle(.prominentDetail) }
+        else { content.navigationSplitViewStyle(.balanced) }
     }
 }
 
@@ -82,7 +129,8 @@ struct MailboxView: View {
     let tab: MailTab
     let split: Bool
     @Binding var settings: Bool
-    let categories = ["primary", "starred", "updates", "promotions", "social", "all"]
+    var largeTitle = false
+    let categories = ["all", "primary", "starred", "updates", "promotions", "social"]
     var body: some View {
         List {
             if let error = store.error {
@@ -152,7 +200,7 @@ struct MailboxView: View {
         .scrollContentBackground(.hidden)
         .background(Color("MailCanvas"))
         .navigationTitle(tab.title)
-        .navigationBarTitleDisplayMode(split ? .inline : .large)
+        .navigationBarTitleDisplayMode(split && !largeTitle ? .inline : .large)
         .refreshable { await store.load() }
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -193,7 +241,7 @@ struct MailboxView: View {
                     HStack(spacing: 20) {
                         ForEach(categories, id: \.self) { category in
                             Button { store.category = category } label: {
-                                Text(category == "all" ? "All mail" : category.capitalized)
+                                Text(category.capitalized)
                                     .font(.footnote.weight(store.category == category ? .semibold : .regular))
                                     .frame(minHeight: 44)
                                     .overlay(alignment: .bottom) {
