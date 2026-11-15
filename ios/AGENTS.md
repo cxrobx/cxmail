@@ -8,6 +8,10 @@ The mini remains the only mail engine. Never add phone-side IMAP credentials,
 expose the MCP directly, bypass Tailscale identity, or weaken certificate checks.
 Preserve the reviewed-draft digest, full recipient review and explicit final
 send confirmation. Never automatically retry a mutation after an ambiguous error.
+Send review uses a compact floating glass capsule, never a full-width send CTA.
+Scheduling must preserve the reviewed digest and Bcc review, require a separate
+final approval and persist on the mini. Keep cancellation and uncertain delivery
+outcomes visible; a pending schedule blocks immediate send of that same draft.
 
 Before a phone install, run `scripts/verify.sh` on compact Duo + wide iPad
 simulators. Fixtures are fiction-only and in-process; real mail must never be

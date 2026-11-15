@@ -35,13 +35,16 @@ account, set `CXMAIL_ASC_KEY_PATH`, `CXMAIL_ASC_KEY_ID`, and
   review-before-send. From/To/Cc/Bcc and body are fetched from the mini; sending
   requires separate confirmation and the exact reviewed digest. No automatic
   send retry after an ambiguous connection failure.
+- Compact glass send controls, Send now and Schedule send with an explicit final
+  confirmation. The mini persists schedules while the phone is closed; the clock
+  in Drafts opens pending sends, cancellation and delivery outcomes.
 - Claude chat on the mini with streaming, tool details, permission requests,
   interruption and new-chat controls. Closing the sheet pauses polling without
   killing the conversation. Returning resumes it. This shares the server's one
   remote chat slot with the PWA.
 - Recent inboxes and up to 100 opened messages are available offline. Local mail
   and recovered replies have iOS data protection and are excluded from backups.
-  No offline mail mutations or queued sends; failures are explicit.
+  No offline mail mutations or phone-side send queue; failures are explicit.
 
 HTML is already sanitized by the mini, then rendered in an ephemeral WKWebView
 with JavaScript disabled, a restrictive CSP, blocked remote images and external
@@ -56,6 +59,16 @@ Native Liquid Glass on iOS 26+ provides the account/filter surface and compact
 floating action capsules; earlier systems use a material fallback. The list is
 dense and unboxed. The icon uses the actual desktop CXMail artwork, adapted to
 the opaque iOS mask by `scripts/icon.swift`.
+
+## Scheduled send
+
+From a reviewed draft, use the chevron next to the paper plane → **Schedule
+send…**. Choose a preset or custom date/time, review all recipients including Bcc,
+then confirm. The schedule uses the phone's timezone. The mini must be awake and
+online; a sleeping mini picks up the send after waking. Changes to the reviewed
+draft stop delivery. Pending schedules can be cancelled without deleting the
+draft. An uncertain outcome requires checking Sent before any manual retry.
+These companion schedules are separate from desktop compose-window schedules.
 
 ## Chat
 
@@ -158,6 +171,17 @@ startup failure passed on retry. The fresh open-layout rerun was interrupted by
 the build guard when the mini's machine load exceeded 150; it needs repeating
 when the machine is quiet. The signed update was installed and launched on the
 Duo without bypassing the guard.
+
+Build 6 replaces the full-width review CTA with compact glass send/options
+controls and adds persistent companion scheduling, date/time selection and
+cancellation. Verification passed 16 unit checks, 13 compact UI flows and four
+open-window flows (the new schedule flow passed after correcting its iPad test
+orientation and nested tab target), plus 45 fixture API/reliability checks.
+Light/XXXL and dark schedule flows passed; their captures and the recorded flow
+were inspected. The live authenticated HTTPS queue endpoint was verified without
+mutating mail. The signed Release update was installed and its build number
+confirmed on the Duo. Launch was refused because the phone was locked; open
+CXMail manually after unlocking.
 
 ## Current boundaries
 

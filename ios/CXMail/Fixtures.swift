@@ -12,6 +12,7 @@ import Foundation
     static var bodyRequests = 0
     static var chatStarts = 0
     static var lastChatText = ""
+    static var scheduled: [[String: Any]] = []
     static func message(_ uid: Int = 10, detail: Bool = false) -> [String: Any] {
         var value: [String: Any] = ["account": "work", "folder": "INBOX", "uid": uid,
             "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
@@ -74,6 +75,15 @@ import Foundation
         case "/api/send":
             if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
             sent = true; result = ["ok": true, "draft_removed": true]
+        case "/api/scheduled": result = scheduled
+        case "/api/schedule":
+            if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
+            let row: [String: Any] = ["id": 1, "account": "work", "folder": "Drafts", "uid": 20,
+                "send_at": body?["send_at"] as? String ?? "", "subject": "Re: A good place to pick this up",
+                "recipients": "jordan@example.org", "status": "pending"]
+            scheduled = [row]; result = row
+        case "/api/scheduled/cancel":
+            if !scheduled.isEmpty { scheduled[0]["status"] = "cancelled" }
         case "/api/chat/start": chatStarts += 1; revision = 0; result = ["ok": true, "chat": 1]
         case "/api/chat/events":
             if q["after"] == "0" { result = ["chat": 1, "seq": 1, "alive": true, "events": [["event": ["type": "ready"]]]] }

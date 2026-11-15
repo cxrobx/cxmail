@@ -4,8 +4,8 @@
 Reads come straight from the running app's SQLite database, opened read-only.
 Every change (archive, flag, move, draft) goes through the shared cxmail-mcp
 HTTP server, so IMAP stays the source of truth and the app hears about it over
-its bridge socket. Nothing here sends mail: drafts land in Drafts and are sent
-from CXMail on the Mac.
+its bridge socket. Reviewed sends, including companion schedules, invoke only
+CXMail's signed exact-draft helper on this Mac.
 
 Standard library only (macOS /usr/bin/python3 is 3.9), so there is no venv to
 break. See remote/README.md for the LaunchAgent and Tailscale Serve setup.
@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from scheduled import ScheduledQueue, ScheduleConflict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get(
@@ -52,6 +53,10 @@ T3_BIN = os.environ.get("CXMAIL_T3_BIN") or next(
 # CXMail Settings -> Claude repos. Must be a T3 project.
 T3_HOME_PROJECT = os.environ.get("CXMAIL_T3_HOME_PROJECT", os.path.expanduser("~"))
 SEND_BIN = os.environ.get("CXMAIL_SEND_BIN", "/Applications/CXMail.app/Contents/MacOS/cxmail-mcp")
+SCHEDULE_PATH = os.environ.get('CXMAIL_SCHEDULE_DB', os.path.expanduser(
+    '~/Library/Application Support/com.cxmail.remote/scheduled.sqlite'))
+SCHEDULES = None
+SCHEDULE_INIT_LOCK = threading.Lock()
 
 CATEGORIES = ("primary", "updates", "promotions", "social")
 PAGE = 50
@@ -600,6 +605,19 @@ def run_send_bin(*args):
     return data
 
 
+def schedules():
+    global SCHEDULES
+    with SCHEDULE_INIT_LOCK:
+        if SCHEDULES is None:
+            if DEV and not os.environ.get('CXMAIL_SCHEDULE_DB'):
+                raise ValueError('Dev mode requires an isolated CXMAIL_SCHEDULE_DB for send operations.')
+            if os.path.realpath(SCHEDULE_PATH) == os.path.realpath(DB_PATH):
+                raise ValueError('The schedule queue must be separate from the read-only mailbox database.')
+            SCHEDULES = ScheduledQueue(SCHEDULE_PATH, lambda *args: run_send_bin(*args),
+                                       lambda ref: PENDING.note(ref, gone=True))
+    return SCHEDULES
+
+
 def claude_prompt(msg, repo):
     """The desktop's Open in Claude prompt (claude_handoff.rs::build_prompt),
     minus the scratch folder and pre-fetched attachments a T3 thread has no
@@ -960,6 +978,8 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/drafts":
                 with db() as c:
                     return self._send(200, PENDING.apply(list_drafts(c, q.get("account"))))
+            if url.path == '/api/scheduled':
+                return self._send(200, schedules().list())
             if url.path == "/api/draft-preview":
                 ref = self._ref(q)
                 try:
@@ -1092,20 +1112,33 @@ class Handler(BaseHTTPRequestHandler):
                 except SendError as e:
                     return self._err(409, str(e))
                 return self._send(200, {"ok": True})
-            if url.path == "/api/send":
+            if url.path == '/api/scheduled/cancel':
+                schedules().cancel(int(data.get('id')))
+                return self._send(200, {'ok': True})
+            if url.path in ("/api/send", '/api/schedule'):
                 ref = (str(data.get("account", "")), str(data.get("folder", "")), int(data.get("uid")))
                 digest = str(data.get("digest", ""))
-                if not ref[0] or not ref[1] or len(digest) != 64:
+                if not ref[0] or not ref[1] or ref[2] <= 0 or not re.fullmatch('[a-fA-F0-9]{64}', digest):
                     return self._err(400, "account, folder, uid and the reviewed digest are required")
                 try:
-                    out = run_send_bin("send-draft", ref[0], ref[1], ref[2], digest)
+                    queue = schedules()
+                    if url.path == '/api/schedule':
+                        return self._send(200, queue.add(ref, digest, data.get('send_at')))
+                    with queue.operation_lock:
+                        if queue.active(ref):
+                            raise ScheduleConflict('This draft is scheduled. Cancel its schedule before sending now.')
+                        out = run_send_bin("send-draft", ref[0], ref[1], ref[2], digest)
+                        PENDING.note(ref, gone=True)
                 except SendError as e:
                     return self._err(502, str(e))
-                PENDING.note(ref, gone=True)
                 return self._send(200, dict(out, ok=True))
             return self._err(404, "not found")
+        except ScheduleConflict as e:
+            return self._err(409, str(e))
         except (ValueError, TypeError) as e:
             return self._err(400, "bad request: {}".format(e))
+        except (sqlite3.Error, OSError):
+            return self._err(503, 'The mini could not save the send state. Refresh Scheduled before trying again.')
         except McpError as e:
             return self._err(502, str(e))
 
@@ -1126,6 +1159,8 @@ def main():
     if not os.path.exists(DB_PATH):
         sys.exit("No CXMail database at {}".format(DB_PATH))
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    if not DEV:
+        schedules().start()
     sys.stderr.write("cxmail-remote on 127.0.0.1:{}{}\n".format(PORT, " (DEV: no login check)" if DEV else ""))
     srv.serve_forever()
 

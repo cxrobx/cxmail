@@ -16,6 +16,8 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 
 TMP = tempfile.mkdtemp()
 FIXTURE = os.path.join(TMP, "cxmail.db")
@@ -58,6 +60,7 @@ os.environ.update(
         "CXMAIL_SEND_BIN": FAKE_BIN,
         "CXMAIL_T3_BIN": FAKE_T3,
         "CXMAIL_T3_HOME_PROJECT": TMP,
+        "CXMAIL_SCHEDULE_DB": os.path.join(TMP, 'scheduled.sqlite'),
     }
 )
 os.environ.pop("CXMAIL_REMOTE_DEV", None)
@@ -183,6 +186,8 @@ class Api(unittest.TestCase):
     def setUp(self):
         server.PENDING.items.clear()
         server.FETCHED_BODIES.items.clear()
+        with server.schedules().db() as c:
+            c.execute('DELETE FROM sends')
 
     def req(self, path, body=None, login="owner@example.com", headers=None):
         h = dict(headers or {})
@@ -406,6 +411,33 @@ class Api(unittest.TestCase):
         self.assertEqual(self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": DIGEST},
                                   headers={"X-CXMail-Remote": "0"})[0], 400)
 
+    def test_schedule_review_idempotency_cancel_and_send_now_guard(self):
+        body = {'account': 'a1', 'folder': '[Gmail]/Drafts', 'uid': 3, 'digest': DIGEST,
+                'send_at': (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()}
+        row = self.j('/api/schedule', body=body)
+        self.assertEqual(row['status'], 'pending')
+        self.assertEqual(self.j('/api/schedule', body=body)['id'], row['id'])
+        self.assertEqual(len(self.j('/api/scheduled')), 1)
+        self.assertNotIn('digest', row)
+        self.assertEqual(self.req('/api/send', body=body)[0], 409)
+        self.assertEqual(self.req('/api/schedule', body=dict(body, send_at=(dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat()))[0], 409)
+        self.j('/api/scheduled/cancel', body={'id': row['id']})
+        self.assertEqual(self.j('/api/scheduled')[0]['status'], 'cancelled')
+        self.assertEqual(self.req('/api/scheduled/cancel', body={'id': row['id']})[0], 409)
+        self.assertTrue(self.j('/api/send', body=body)['ok'])
+
+    def test_schedule_rejects_stale_digest_bad_time_and_unauthenticated_requests(self):
+        body = {'account': 'a1', 'folder': '[Gmail]/Drafts', 'uid': 3, 'digest': 'b' * 64,
+                'send_at': (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()}
+        self.assertEqual(self.req('/api/schedule', body=body)[0], 400)
+        for bad in ('2020-01-01T09:00:00Z', '2027-01-01T09:00:00', 'not-a-date', None):
+            self.assertEqual(self.req('/api/schedule', body=dict(body, digest=DIGEST, send_at=bad))[0], 400)
+        self.assertEqual(self.j('/api/scheduled'), [])
+        for path, data in (('/api/schedule', body), ('/api/scheduled/cancel', {'id': 1})):
+            self.assertEqual(self.req(path, body=data, login=None)[0], 403)
+            self.assertEqual(self.req(path, body=data, headers={'X-CXMail-Remote': '0'})[0], 400)
+        self.assertEqual(self.req('/api/scheduled', login=None)[0], 403)
+
     def test_old_cxmail_build_says_ship_first(self):
         with self.assertRaises(server.SendError) as cm:
             server.run_send_bin("not-a-command")
@@ -511,6 +543,125 @@ class RealSchema(unittest.TestCase):
             self.assertFalse(cols - have, "{} is missing {}".format(table, cols - have))
         self.assertTrue(c.execute("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts'").fetchone())
         c.close()
+
+
+class ScheduleReliability(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, 'scheduled.sqlite')
+        self.ref = ('fiction', 'Drafts', 7)
+        self.calls, self.sent = [], []
+        self.changed = False
+        self.blocked = False
+        self.fail_send = False
+        self.when = dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+        self.queue = server.ScheduledQueue(self.path, self.helper, self.sent.append)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def helper(self, action, *args):
+        self.calls.append((action, args))
+        if action == 'preview-draft':
+            return dict(account_id=self.ref[0], folder=self.ref[1], uid=self.ref[2], digest=DIGEST,
+                        sendable=not self.blocked, subject='Fiction', to=[{'email': 'ann@example.org'}])
+        self.assertEqual(action, 'send-draft')
+        self.assertEqual(args, (*self.ref, DIGEST))
+        if self.changed:
+            raise server.SendError('The draft changed after review.')
+        if self.fail_send:
+            raise server.SendError('Connection lost after SMTP submission.')
+        return {'draft_removed': True}
+
+    def add(self):
+        return self.queue.add(self.ref, DIGEST, self.when.isoformat())
+
+    def test_survives_restart_correct_time_and_single_delivery(self):
+        self.add()
+        self.queue = server.ScheduledQueue(self.path, self.helper, self.sent.append)
+        self.queue.recover()
+        self.queue.run_due(self.when.timestamp() - 1)
+        self.assertEqual(self.sent, [])
+        self.queue.run_due(self.when.timestamp() + 1)
+        self.queue.run_due(self.when.timestamp() + 3600)
+        self.assertEqual(self.sent, [self.ref])
+        self.assertEqual(self.queue.list()[0]['status'], 'sent')
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    def test_two_connections_claim_once(self):
+        self.add()
+        other = server.ScheduledQueue(self.path, self.helper, self.sent.append)
+        barrier = threading.Barrier(2)
+        def run(queue):
+            barrier.wait(timeout=5)
+            queue.run_due(self.when.timestamp() + 1)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(run, (self.queue, other)))
+        self.assertEqual(self.sent, [self.ref])
+        self.assertEqual(sum(action == 'send-draft' for action, _ in self.calls), 1)
+
+    def test_interrupted_claim_is_visible_and_never_retried(self):
+        self.add()
+        with self.queue.db() as c:
+            c.execute("UPDATE sends SET status='sending'")
+        self.queue.recover()
+        self.queue.run_due(self.when.timestamp() + 1)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.queue.list()[0]['status'], 'uncertain')
+        self.assertIn('Check Sent', self.queue.list()[0]['note'])
+
+    def test_changed_draft_and_ambiguous_smtp_are_never_retried(self):
+        for change in ('changed', 'fail_send'):
+            with self.subTest(change=change):
+                with self.queue.db() as c:
+                    c.execute('DELETE FROM sends')
+                self.calls.clear()
+                self.changed = change == 'changed'
+                self.fail_send = change == 'fail_send'
+                self.add()
+                self.queue.run_due(self.when.timestamp() + 1)
+                self.queue.run_due(self.when.timestamp() + 100)
+                self.assertEqual(sum(action == 'send-draft' for action, _ in self.calls), 1)
+                self.assertEqual(self.queue.list()[0]['status'], 'uncertain')
+                self.assertEqual(self.sent, [])
+
+    def test_cancel_survives_restart_and_prevents_delivery(self):
+        row = self.add()
+        self.queue.cancel(row['id'])
+        restarted = server.ScheduledQueue(self.path, self.helper)
+        restarted.recover()
+        restarted.run_due(self.when.timestamp() + 1)
+        self.assertEqual(restarted.list()[0]['status'], 'cancelled')
+        self.assertFalse(any(action == 'send-draft' for action, _ in self.calls))
+
+    def test_cancel_after_claim_returns_conflict_without_waiting_for_smtp(self):
+        row = self.add()
+        entered, release = threading.Event(), threading.Event()
+        def slow_send(action, *args):
+            if action == 'send-draft':
+                entered.set()
+                self.assertTrue(release.wait(timeout=5))
+            return self.helper(action, *args)
+        self.queue.sender = slow_send
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            delivery = pool.submit(self.queue.run_due, self.when.timestamp() + 1)
+            try:
+                self.assertTrue(entered.wait(timeout=5))
+                with self.assertRaises(server.ScheduleConflict):
+                    self.queue.cancel(row['id'])
+            finally:
+                release.set()
+            delivery.result(timeout=5)
+        self.assertEqual(self.sent, [self.ref])
+
+    def test_equivalent_timezones_are_idempotent_and_blocked_drafts_refused(self):
+        first = self.add()
+        eastern = self.when.astimezone(dt.timezone(dt.timedelta(hours=-5)))
+        self.assertEqual(self.queue.add(self.ref, DIGEST, eastern.isoformat())['id'], first['id'])
+        self.queue.cancel(first['id'])
+        self.blocked = True
+        with self.assertRaises(ValueError):
+            self.add()
 
 
 if __name__ == "__main__":

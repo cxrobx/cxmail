@@ -15,6 +15,7 @@ API, authentication and exact-draft send review. The web client remains supporte
 | Archive, star, read/unread, move | calls the shared `cxmail-mcp` HTTP server (`127.0.0.1:18704`), which does the IMAP work and tells the app over the bridge socket |
 | Reply, reply all, new message | `compose_draft`, then optionally **Review & send** |
 | Drafts tab, **send** | `cxmail-mcp remote preview-draft` shows every From/To/Cc/Bcc and a SHA-256 of the stored draft; `cxmail-mcp remote send-draft` refetches it, refuses if the bytes changed, sends through the compose window's `smtp::send_email`, then expunges that one draft UID. Send needs two taps |
+| Native **Schedule send** | the same reviewed draft reference + digest, queued durably by this LaunchAgent; an atomic claim invokes the signed `send-draft` once when due. The phone can be closed. View outcomes or cancel pending sends from the clock in Drafts. |
 | Home Screen app | `apple-touch-icon` PNG, `viewport-fit=cover`, locked zoom, a floating glass tab bar (Inbox · Unread · Drafts · Sent · Search; New is the pencil top right) like Telly's, a pushed reader with a bottom action toolbar, edge-swipe back and pull to refresh (Safari's own gestures are gone in a standalone app) |
 | Long-press a message (right-click on a Mac) | Open in Claude (T3), Ask Claude in Chat, Reply, Reply all, Archive, Star, Mark read/unread, Move to…, Move to Trash (`delete_email` without `permanent`, so recoverable) |
 | **Open in Claude** | `t3 thread start` in the repo `resolve_project_repo` maps the sender to (the desktop's resolver), else the home project, with the desktop handoff's prompt. Uses `~/.t3/bin/t3` first: Homebrew's copy can lag the T3 server's database |
@@ -32,13 +33,38 @@ remote/install.sh uninstall   # stop it and remove the Serve entry
 
 Standard-library Python only (`/usr/bin/python3`, 3.9): no venv, nothing to break. Log: `~/Library/Logs/cxmail-remote.log`.
 
+## Companion schedules
+
+The native review has a floating glass send capsule: paper plane → final **Send
+now** confirmation; chevron → **Send now**, **Schedule send…**, or **Scheduled
+sends**. Scheduling shows all recipients, including Bcc, a date/time picker in
+the phone's timezone, and a separate final approval. Pending schedules can be
+cancelled; the draft remains in Drafts.
+
+`scheduled.py` keeps a private, separate SQLite queue at
+`~/Library/Application Support/com.cxmail.remote/scheduled.sqlite` (0600).
+The mailbox database remains read-only. This queue stores references, approved
+digests, due times, subject and To summary; no bodies, Bcc addresses or credentials.
+It is separate from desktop compose-window schedules. The resident service scans
+every 10 seconds, including after waking; the mini must be awake and online to
+deliver. An edited/deleted draft is refused by the signed helper at delivery.
+No send is automatically retried: an error or a restart during a claimed send
+shows **Check Sent before retrying**. A lost schedule-creation reply cannot queue
+the same draft twice. A pending/claimed schedule blocks an immediate phone send
+until cancelled. The worker is never started by fixture tests.
+
+Authenticated, CSRF-protected routes: `GET /api/scheduled`, `POST /api/schedule`
+(`account`, `folder`, `uid`, `digest`, timezone-aware `send_at`), and
+`POST /api/scheduled/cancel` (`id`). GET needs tailnet identity; both POST routes
+also require the JSON/header guard. No scheduling or send tool is added to MCP.
+
 ## Security
 
 - Bound to `127.0.0.1`; reachable only through Tailscale Serve.
 - Every request must carry a `Tailscale-User-Login` in `CXMAIL_REMOTE_LOGINS` (set by `install.sh` to this Mac's own Tailscale user). Serve adds that header; a request without it (a tagged device, a direct local hit) gets 403. The server refuses to start with the list empty.
 - **The MCP still cannot send.** The send path is two subcommands of the signed `cxmail-mcp` binary, not MCP tools, so an agent working through the MCP has no send (`send_email` stays refused). A process running as you could run the binary directly, as it could drive the app itself: the boundary is the MCP surface, not the user account. The subcommands only send a message from the account's Drafts folder, and only if it is byte-for-byte what you reviewed: a draft edited anywhere since gets refused. The Keychain trusts the binary by its signature, which is why it has to ship inside the app (`/ship`).
 - POSTs need `X-CXMail-Remote: 1` and a JSON body, which a cross-site form can't send without a preflight this server never answers.
-- `CXMAIL_REMOTE_DEV=1` turns the login check off for a localhost-only instance that agents and tests drive. Never give one a Serve entry, and point its `CXMAIL_MCP_URL` at a dead port unless you mean to change real mail (opening a message marks it read).
+- `CXMAIL_REMOTE_DEV=1` turns the login check off for a localhost-only instance that agents and tests drive. Never give one a Serve entry, and point its `CXMAIL_MCP_URL` at a dead port unless you mean to change real mail (opening a message marks it read). Send routes additionally require an isolated `CXMAIL_SCHEDULE_DB`; dev instances never start a scheduling worker. Fixture tests also set a fake `CXMAIL_SEND_BIN`.
 
 ## Not here, on purpose
 

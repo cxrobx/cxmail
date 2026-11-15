@@ -87,6 +87,29 @@ struct DraftPreview: Decodable {
 
 struct DraftResult: Decodable { var ok: Bool; var result: String?; var draft: MessageRef? }
 struct SendResult: Decodable { var ok: Bool; var draftRemoved: Bool; var note: String? }
+struct ScheduledSend: Decodable, Identifiable {
+    var id: Int
+    var account: String
+    var folder: String
+    var uid: Int
+    var sendAt: String
+    var subject: String
+    var recipients: String
+    var status: String
+    var note: String?
+    var ref: MessageRef { .init(account: account, folder: folder, uid: uid) }
+    var date: Date? { ISO8601DateFormatter().date(from: sendAt) }
+    var active: Bool { status == "pending" || status == "sending" }
+    var title: String {
+        switch status {
+        case "pending": "Scheduled"
+        case "sending": "Sending…"
+        case "sent": "Sent"
+        case "cancelled": "Cancelled"
+        default: "Check Sent before retrying"
+        }
+    }
+}
 struct OK: Decodable { var ok: Bool }
 
 enum MailTab: String, CaseIterable, Identifiable, Codable {

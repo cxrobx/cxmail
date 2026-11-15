@@ -22,3 +22,6 @@ assistant responses. Keep tool activity collapsed and permission controls explic
 Docked chat uses native columns with a draggable divider, at least 300pt per pane.
 Preserve the active division; narrow windows return to floating chat. Conversation,
 unsent input and split preference survive docking and popping out.
+Draft review ends with a compact trailing glass send capsule: a 48pt paper plane
+and 44pt options control. No opaque footer or full-width blue CTA. The menu offers
+Send now and Schedule send; scheduling uses native date and confirmation controls.

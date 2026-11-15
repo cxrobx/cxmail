@@ -56,7 +56,7 @@ final class APIClient {
     }
     static func timeout(for path: String) -> TimeInterval {
         if path == "/api/message" { return 210 }
-        if ["/api/send", "/api/draft-preview"].contains(path) { return 150 }
+        if ["/api/send", "/api/schedule", "/api/draft-preview"].contains(path) { return 150 }
         return path == "/api/chat/events" ? 35 : 100
     }
     func data(_ path: String, query: [URLQueryItem] = [], body: [String: Any]? = nil) async throws -> Data {

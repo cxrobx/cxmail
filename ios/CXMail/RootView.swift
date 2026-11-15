@@ -150,6 +150,7 @@ struct MailboxView: View {
     let split: Bool
     @Binding var settings: Bool
     var largeTitle = false
+    @State private var scheduled = false
     let categories = ["all", "primary", "starred", "updates", "promotions", "social"]
     var body: some View {
         List {
@@ -221,6 +222,14 @@ struct MailboxView: View {
         .background(Color("MailCanvas"))
         .navigationTitle(tab.title)
         .navigationBarTitleDisplayMode(split && !largeTitle ? .inline : .large)
+        .toolbar {
+            if tab == .drafts {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Scheduled sends", systemImage: "clock") { scheduled = true }.accessibilityIdentifier("scheduledSends")
+                }
+            }
+        }
+        .sheet(isPresented: $scheduled) { ScheduledSendsView(store: store) }
         .refreshable { await store.load() }
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {

@@ -27,6 +27,18 @@ final class CXMailUITests: XCTestCase {
         if matches.count == 2 { XCTAssertEqual(matches[0].frame, matches[1].frame) }
         matches[matches.count - 1].tap()
     }
+    func tapDraftsTab() {
+        let query = app.buttons.matching(identifier: "Drafts")
+        XCTAssertTrue(query.element(boundBy: 0).waitForExistence(timeout: 5))
+        if query.count == 2 {
+            // iPad's floating tab exposes a nested button inside its cell.
+            // Select that specific descendant, never an unrelated duplicate.
+            let nested = query.element(boundBy: 0).buttons.matching(identifier: "Drafts")
+            XCTAssertEqual(nested.count, 1); nested.element.tap()
+        } else {
+            XCTAssertEqual(query.count, 1); query.element.tap()
+        }
+    }
     func testInboxReaderReplyRecovery() {
         launch(); capture("Inbox")
         openMessage(); capture("Reader")
@@ -84,6 +96,46 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Send now"].waitForExistence(timeout: 5))
         confirmSend()
         XCTAssertTrue(app.alerts.staticTexts["Sent."].waitForExistence(timeout: 10))
+    }
+    func testCompactSendToolbarScheduleAndCancel() {
+        launch()
+        if app.frame.width >= 669 {
+            app.terminate(); XCUIDevice.shared.orientation = .landscapeLeft; launch(["--duo-flat"])
+        }
+        tapDraftsTab()
+        XCTAssertTrue(app.buttons["message-20"].waitForExistence(timeout: 10)); app.buttons["message-20"].tap()
+        let send = app.buttons["sendReviewedDraft"]
+        XCTAssertTrue(send.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertLessThanOrEqual(send.frame.width, 52, "The send action must stay an icon-sized control")
+        XCTAssertLessThanOrEqual(send.frame.height, 52)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        let options = app.buttons["sendOptions"]
+        XCTAssertLessThanOrEqual(options.frame.maxX - send.frame.minX, 112, "No full-width send banner")
+        capture("Compact glass send toolbar")
+        options.tap()
+        let scheduleOption = app.buttons["Schedule send…"]
+        XCTAssertTrue(scheduleOption.waitForExistence(timeout: 5)); capture("Send now and schedule options")
+        scheduleOption.tap()
+        XCTAssertTrue(app.buttons["scheduleDraft"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["copy@example.org"].exists, "Scheduling also shows Bcc recipients")
+        app.buttons["In one hour"].tap(); capture("Scheduled send date and recipient review")
+        app.buttons["scheduleDraft"].tap()
+        let confirm = app.buttons.matching(identifier: "confirmSchedule").firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        XCTAssertTrue(app.buttons["reviewSchedule"].waitForExistence(timeout: 10))
+        XCTAssertFalse(send.isEnabled, "An already queued draft cannot be sent twice from review")
+        capture("Draft scheduled on mini")
+        app.buttons["reviewSchedule"].tap()
+        let cancel = app.buttons["cancelSchedule-1"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); capture("Manage scheduled sends"); cancel.tap()
+        let confirmCancel = app.buttons.matching(identifier: "confirmCancelSchedule").firstMatch
+        XCTAssertTrue(confirmCancel.waitForExistence(timeout: 5)); confirmCancel.tap()
+        XCTAssertTrue(app.staticTexts["Cancelled"].waitForExistence(timeout: 5))
+        capture("Cancelled schedule keeps draft")
+        app.buttons["closeScheduled"].tap()
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
     }
     func testStaleDraftCannotSendOrBlindlyRetry() {
         launch(["--stale-draft"])

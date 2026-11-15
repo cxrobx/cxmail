@@ -83,6 +83,9 @@ struct ReviewView: View {
     @State private var sending = false
     @State private var attempted = false
     @State private var confirm = false
+    @State private var schedule = false
+    @State private var scheduled = false
+    @State private var currentSchedule: ScheduledSend?
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         Group {
@@ -90,6 +93,14 @@ struct ReviewView: View {
             else { NavigationStack { content.toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() }.disabled(sending) } } } }
         }
         .task(id: ref) { await load() }
+        .sheet(isPresented: $schedule, onDismiss: { Task { await load() } }) {
+            if let preview {
+                ScheduleSendView(store: store, preview: preview) {
+                    schedule = false; attempted = true
+                }
+            }
+        }
+        .sheet(isPresented: $scheduled, onDismiss: { Task { await load() } }) { ScheduledSendsView(store: store) }
     }
     private var content: some View {
         ScrollView {
@@ -106,6 +117,14 @@ struct ReviewView: View {
                             Text("Attachments: " + preview.attachments.joined(separator: ", ")).font(.subheadline)
                         }
                         Label("Remote images blocked", systemImage: "eye.slash").font(.caption).foregroundStyle(.secondary)
+                        if let currentSchedule {
+                            Button { scheduled = true } label: {
+                                Label {
+                                    if let date = currentSchedule.date { Text("Scheduled for \(date.formatted(date: .abbreviated, time: .shortened))") }
+                                    else { Text(currentSchedule.title) }
+                                } icon: { Image(systemName: "clock") }
+                            }.accessibilityIdentifier("reviewSchedule")
+                        }
                     }.padding(.horizontal, 20)
                     if let html { EmailHTMLView(html: html, height: $height).frame(height: height) }
                 }
@@ -120,15 +139,32 @@ struct ReviewView: View {
         }
         .navigationTitle("Review before sending").navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 8) {
-                Button { confirm = true } label: {
-                    HStack { if sending { ProgressView() }; Label(sending ? "Sending…" : "Send", systemImage: "paperplane.fill").frame(maxWidth: .infinity) }.frame(minHeight: 44)
+            HStack {
+                Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    Button { confirm = true } label: {
+                        ZStack {
+                            if sending { ProgressView() }
+                            else { Image(systemName: "paperplane.fill").font(.title3) }
+                        }.frame(width: 48, height: 44).contentShape(Rectangle())
+                    }
+                    .disabled(!canSend)
+                    .accessibilityLabel(sending ? "Sending…" : "Send now")
+                    .accessibilityHint("Review the final confirmation before sending")
+                    .accessibilityIdentifier("sendReviewedDraft")
+                    Divider().frame(height: 20).padding(.horizontal, 4)
+                    Menu {
+                        Button("Send now", systemImage: "paperplane") { confirm = true }.disabled(!canSend)
+                        Button("Schedule send…", systemImage: "clock") { schedule = true }.disabled(!canSend)
+                        Button("Scheduled sends", systemImage: "clock.arrow.circlepath") { scheduled = true }
+                    } label: {
+                        Image(systemName: "chevron.down").font(.subheadline.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .disabled(sending).accessibilityLabel("Send options").accessibilityIdentifier("sendOptions")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(loading || sending || attempted || preview?.sendable != true || html == nil)
-                .accessibilityIdentifier("sendReviewedDraft")
-                Text("Only the exact draft you reviewed can be sent.").font(.caption).foregroundStyle(.secondary)
-            }.padding(16).background(.bar)
+                .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                .padding(4).mailGlass(capsule: true)
+            }.padding(.horizontal, 16).padding(.vertical, 8)
         }
         .interactiveDismissDisabled(sending)
         .confirmationDialog("Send this reviewed draft?", isPresented: $confirm, titleVisibility: .visible) {
@@ -138,14 +174,16 @@ struct ReviewView: View {
             if let preview { Text("From \(preview.from.email) to \(preview.to.count + preview.cc.count + preview.bcc.count) recipients, including \(preview.bcc.count) Bcc. This sends immediately.") }
         }
     }
+    private var canSend: Bool { !loading && !sending && !attempted && currentSchedule == nil && preview?.sendable == true && html != nil }
     private func load() async {
-        loading = true; error = nil; html = nil; preview = nil; attempted = false
+        loading = true; error = nil; html = nil; preview = nil; attempted = false; currentSchedule = nil
         defer { loading = false }
         do {
             let p: DraftPreview = try await store.api.get("/api/draft-preview", query: ref.query)
             let body = try await store.api.html("/api/draft-body", query: p.ref.query + [.init(name: "digest", value: p.digest)])
+            let queue: [ScheduledSend] = try await store.api.get("/api/scheduled")
             guard !Task.isCancelled else { return }
-            preview = p; html = body
+            preview = p; html = body; currentSchedule = queue.first { $0.ref == p.ref && $0.active }
         } catch { if !Task.isCancelled { self.error = store.friendly(error) } }
     }
     private func send() async {
