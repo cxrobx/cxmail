@@ -40,3 +40,7 @@ rusqlite = { workspace = true }
 dirs = { workspace = true }
 # setxattr for the com.apple.quarantine flag on saved attachments (untrusted.rs).
 libc = "0.2"
+
+[dev-dependencies]
+# Builds DOCX fixtures for the read_attachment_text tests.
+zip = { version = "2", default-features = false, features = ["deflate"] }

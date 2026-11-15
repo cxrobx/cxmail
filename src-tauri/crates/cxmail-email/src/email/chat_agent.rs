@@ -77,6 +77,8 @@ pub const AUTO_CXMAIL_TOOLS: &[&str] = &[
     "list_calendar_events",
     "send_calendar_invites",
     "list_attachments",
+    // Text only: nothing reaches disk, so it needs no ask (download_attachment does).
+    "read_attachment_text",
     "list_groups",
     "list_nudges",
     "list_mail_rules",

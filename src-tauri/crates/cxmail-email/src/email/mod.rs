@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod attachment_file;
+pub mod attachment_safety;
 pub mod autoconfig;
 pub mod calendar;
 pub mod categorize;

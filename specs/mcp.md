@@ -42,12 +42,21 @@ and the client:
    (except iCloud Drive and `CloudStorage`) including through symlinks, and sets
    `com.apple.quarantine` on what it saves. Draft `attachments` get the same path refusal,
    because a draft is APPENDed to the provider before anyone reviews it.
+   `read_attachment_text` is the preferred way to read a document: the text comes out of the
+   inert extractor (`document_text`, by the type the bytes sniff as), invisible Unicode is
+   stripped, DOCX hidden/white/≤2 pt runs are surfaced in a separate section, and a
+   server note (a `_meta`-marked block `wrap_result` leaves unfenced) gives the real type and
+   flags from `email::attachment_safety`. PDF hidden text is not detectable and the note says
+   so. `mode="summary"` sends redacted text through the triage gate's `final_check` to a
+   tool-less model instead. `list_attachments` adds name-only flags the same way.
 3. **Client approval.** Only the client can ask the human. For Claude Code, a PreToolUse
    hook on `mcp__cxmail__.*` with this policy: ask for `delete_email`,
    `bulk_delete_emails`, `move_email` into Trash/Junk/Spam, `apply_mail_rule` with
    `dry_run=false`, mail-rule and voice-rule writes, `delete_group`, `send_email`, and
-   drafts with attachments; `download_attachment` allows `~/Downloads`, denies what the
-   server refuses, asks otherwise. CXMail's in-app chat already routes every mutating tool
+   drafts with attachments; `download_attachment` always asks (with a warning for risky
+   types) and denies what the server refuses. A second Bash hook asks before a shell
+   command runs, opens, unpacks or `chmod +x`es a quarantined file, or strips the flag,
+   since a shell never consults Gatekeeper. CXMail's in-app chat already routes every mutating tool
    to its own ask tier (`chat_agent::mutating_tools_are_never_auto_allowed`).
    `send_calendar_invites` needs the in-app approval card regardless.
 
