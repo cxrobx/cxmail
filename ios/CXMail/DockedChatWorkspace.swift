@@ -20,9 +20,9 @@ struct DockedChatWorkspace<MailContent: View>: View {
                     .toolbar(removing: .sidebarToggle)
                     .navigationSplitViewColumnWidth(min: width + gap - 1, ideal: width + gap - 1, max: width + gap - 1)
             } detail: {
-                ChatView(chat: chat, seed: store.chatSeed, docked: true, canDock: true,
+                ChatView(mail: store, chat: chat, docked: true, canDock: true,
                     onPresentationChange: { store.chatDocked = false; store.chatPresented = true },
-                    onClose: { store.chatDocked = false; chat.pause() }, contextTitle: store.chatContextTitle)
+                    onClose: { store.chatDocked = false; chat.pause() })
                     .navigationSplitViewColumnWidth(min: 300, ideal: 300, max: .infinity)
             }
             .navigationSplitViewStyle(.balanced)

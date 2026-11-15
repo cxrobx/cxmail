@@ -10,6 +10,8 @@ import Foundation
     static var sent = false
     static var revision = 0
     static var bodyRequests = 0
+    static var chatStarts = 0
+    static var lastChatText = ""
     static func message(_ uid: Int = 10, detail: Bool = false) -> [String: Any] {
         var value: [String: Any] = ["account": "work", "folder": "INBOX", "uid": uid,
             "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
@@ -72,7 +74,7 @@ import Foundation
         case "/api/send":
             if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
             sent = true; result = ["ok": true, "draft_removed": true]
-        case "/api/chat/start": revision = 0; result = ["ok": true, "chat": 1]
+        case "/api/chat/start": chatStarts += 1; revision = 0; result = ["ok": true, "chat": 1]
         case "/api/chat/events":
             if q["after"] == "0" { result = ["chat": 1, "seq": 1, "alive": true, "events": [["event": ["type": "ready"]]]] }
             else if revision == 1 {
@@ -90,7 +92,7 @@ import Foundation
                 revision = 4
                 result = ["chat": 1, "seq": 4, "alive": true, "events": [["event": ["type": "turn_done"]]]]
             } else { result = ["chat": 1, "seq": revision >= 4 ? 4 : revision == 2 ? 3 : 1, "alive": true, "events": []] }
-        case "/api/chat/send": revision = 1
+        case "/api/chat/send": lastChatText = body?["text"] as? String ?? ""; revision = 1
         case "/api/chat/interrupt": revision = 3
         case "/api/claude-thread": result = ["ok": true, "threadId": "fixture-thread"]
         default: break

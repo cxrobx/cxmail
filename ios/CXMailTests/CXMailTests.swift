@@ -161,4 +161,34 @@ final class CXMailTests: XCTestCase {
         XCTAssertFalse(chat.busy)
         chat.pause()
     }
+    func testChatContextReachesTransportWithoutResettingHistory() async {
+        let chat = ChatStore(api: api())
+        let original = MessageRef(account: "work", folder: "INBOX", uid: 10)
+        let other = MessageRef(account: "personal", folder: "Receipts", uid: 42)
+        await chat.start(seed: original)
+        let starts = Fixtures.chatStarts
+        let sent = await chat.send("Summarize this", context: other)
+        XCTAssertTrue(sent)
+        XCTAssertTrue(Fixtures.lastChatText.contains("\"account_id\":\"personal\""))
+        XCTAssertTrue(Fixtures.lastChatText.contains("\"uid\":42"))
+        XCTAssertEqual(chat.items.first?.text, "Summarize this", "Transport instructions do not appear in the user's bubble")
+        chat.draft = "Unsent question"
+        await chat.ensure(seed: other)
+        XCTAssertEqual(Fixtures.chatStarts, starts, "Changing context or presentation must not restart the provider")
+        XCTAssertEqual(chat.draft, "Unsent question")
+        XCTAssertEqual(chat.items.first?.text, "Summarize this")
+        XCTAssertTrue(ChatStore.requestText("Find receipts", context: nil).contains("all of my mail"))
+        chat.pause()
+    }
+    func testCurrentEmailContextFollowsSelectionWithoutFallingBack() {
+        let store = MailStore(api: api(), cache: cache())
+        store.chatContextScope = .currentEmail
+        store.selected = .init(account: "work", folder: "INBOX", uid: 10)
+        XCTAssertEqual(store.chatSeed?.uid, 10)
+        store.selected = .init(account: "work", folder: "INBOX", uid: 11)
+        XCTAssertEqual(store.chatSeed?.uid, 11)
+        store.selected = nil
+        XCTAssertNil(store.chatSeed)
+        XCTAssertEqual(store.chatContextScope, .currentEmail, "Opening the inbox must not silently select mailbox-wide context")
+    }
 }

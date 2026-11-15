@@ -1,5 +1,7 @@
 import SwiftUI
 
+enum ChatContextScope: String { case mail, currentEmail }
+
 @MainActor @Observable
 final class MailStore {
     let api: APIClient
@@ -25,7 +27,14 @@ final class MailStore {
     var chatDocked = false
     var chatCanDock = false
     var chatMailFraction: CGFloat = 0.5
-    var chatSeed: MessageRef?
+    var chatContextScope: ChatContextScope = .mail
+    var chatSeed: MessageRef? {
+        get { chatContextScope == .currentEmail ? selected : nil }
+        set {
+            chatContextScope = newValue == nil ? .mail : .currentEmail
+            if let newValue { selected = newValue }
+        }
+    }
     var chatContextTitle: String? {
         guard let ref = chatSeed else { return nil }
         return snapshot.messages[ref.id]?.subject ?? rows.first(where: { $0.ref == ref })?.subject

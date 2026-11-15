@@ -70,8 +70,16 @@ resize; both panes retain at least 300pt. While a vertical fold is active the
 division follows the hinge instead. Pop-out returns chat to its floating window
 and restores the normal mail layout. A narrow window also returns to floating
 chat. Conversation, permission state, unsent input and split preference are kept
-above these presentation changes. The context label identifies the original
-email, even while navigating other mail.
+above these presentation changes.
+
+Tap the composer's context label to choose “Your mail” or “Current email”. Current
+email follows the message open in the reader and shows its subject. Choosing a
+scope changes the next request without restarting Claude or clearing history or
+unsent text. If no message is open, email context is unavailable; an existing
+email-scoped draft requires selecting a message or choosing Your mail before send.
+The native client supplies the exact account/folder/UID reference per turn, keeping
+that transport context out of the user's visible message bubble. Prior turns remain
+in the conversation; this selector does not erase history or change mail permissions.
 
 ## Duo layout
 
@@ -143,6 +151,13 @@ an existing conversation and draft through docking, divider dragging, keyboard
 input and pop-out, and verify the restored mail toolbar. Light/dark captures and
 recorded transitions were inspected. The signed Release update was installed
 and launched on the Duo.
+
+Build 5 adds selectable per-turn mail/current-email context. The 16 unit checks,
+compact context/history/draft checks and 36 API regressions pass. A simulator
+startup failure passed on retry. The fresh open-layout rerun was interrupted by
+the build guard when the mini's machine load exceeded 150; it needs repeating
+when the machine is quiet. The signed update was installed and launched on the
+Duo without bypassing the guard.
 
 ## Current boundaries
 

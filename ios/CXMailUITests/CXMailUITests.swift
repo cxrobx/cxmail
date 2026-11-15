@@ -125,6 +125,29 @@ final class CXMailUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["## Next steps"].exists)
         XCTAssertEqual(app.buttons["chatSend"].label, "Send message")
         capture("Formatted chat transcript")
+        app.buttons["chatContext"].tap()
+        XCTAssertFalse(app.buttons["Current email"].isEnabled, "Email context requires an open message")
+        app.buttons["Your mail"].tap()
+    }
+    func testChatContextPickerKeepsConversationAndDraft() {
+        launch(["--show-reader", "--chat-rich"])
+        XCTAssertTrue(app.buttons["readerChat"].waitForExistence(timeout: 10)); app.buttons["readerChat"].tap()
+        let input = app.textFields["chatInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Write a short plan"); app.buttons["chatSend"].tap()
+        XCTAssertTrue(app.staticTexts["Next steps"].waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Keep this draft")
+        let context = app.buttons["chatContext"]
+        XCTAssertEqual(context.value as? String, "Current email")
+        context.tap(); capture("Chat context choices"); app.buttons["Your mail"].tap()
+        XCTAssertEqual(context.value as? String, "Your mail")
+        XCTAssertEqual(input.value as? String, "Keep this draft")
+        XCTAssertTrue(app.staticTexts["Next steps"].exists)
+        context.tap(); app.buttons["Current email"].tap()
+        XCTAssertEqual(context.value as? String, "Current email")
+        XCTAssertEqual(input.value as? String, "Keep this draft")
+        XCTAssertTrue(app.staticTexts["Next steps"].exists)
+        capture("Selectable chat context")
     }
     func testDockChatResizeAndPopOut() throws {
         XCUIDevice.shared.orientation = .landscapeLeft

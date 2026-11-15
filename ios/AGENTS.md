@@ -36,3 +36,6 @@ view. Docking must preserve the conversation, pending permissions and unsent tex
 Dismissal while moving into split chat must not pause its poll. Gate docking by
 usable width, not keyboard-reduced height. Test typing while docked, dragging the
 divider and popping back out, then assert the original mail toolbar and width.
+Context changes affect the next turn, not provider lifetime. Keep the exact
+message reference in the transport prompt, the user's original text in the UI,
+and history/draft intact. Never silently widen missing email context to all mail.

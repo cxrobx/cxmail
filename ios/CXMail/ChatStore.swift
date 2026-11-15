@@ -30,7 +30,7 @@ final class ChatStore {
     private var pollEpoch: UUID?
     init(api: APIClient) { self.api = api }
     func ensure(seed: MessageRef?) async {
-        if id == nil || self.seed != seed { await start(seed: seed) }
+        if id == nil { await start(seed: seed) }
         else { resume() }
     }
     func start(seed: MessageRef?) async {
@@ -38,7 +38,9 @@ final class ChatStore {
         starting = true; error = nil; pause()
         defer { starting = false }
         do {
-            let data = try await api.data("/api/chat/start", body: seed?.payload ?? [:])
+            // Scope is supplied per turn so choosing another email never
+            // restarts the provider or silently clears the conversation.
+            let data = try await api.data("/api/chat/start", body: [:])
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             guard let id = object?["chat"] as? Int else { throw MailError.unexpected }
             self.id = id; self.seed = seed; seq = 0; items = []; alive = true; busy = false
@@ -78,19 +80,30 @@ final class ChatStore {
             }
         }
     }
-    func send(_ text: String) async -> Bool {
+    func send(_ text: String, context: MessageRef? = nil) async -> Bool {
         guard !busy, !starting, !sending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        if !alive { await start(seed: seed) }
+        if !alive { await start(seed: context) }
         guard alive else { return false }
         busy = true; sending = true; error = nil
         defer { sending = false }
         // Put the outgoing turn before polling can append its streamed reply.
         items.append(.init(kind: .user, text: text))
         do {
-            let _: OK = try await api.post("/api/chat/send", body: ["text": text])
+            let _: OK = try await api.post("/api/chat/send", body: ["text": Self.requestText(text, context: context)])
             if draft == text { draft = "" }
             resume(); return true
         } catch { busy = false; self.error = "Couldn’t confirm delivery. Check the conversation before retrying. " + error.localizedDescription; return false }
+    }
+    static func requestText(_ text: String, context: MessageRef?) -> String {
+        let instruction: String
+        if let context {
+            let reference: [String: Any] = ["account_id": context.account, "folder": context.folder, "uid": context.uid]
+            let data = try! JSONSerialization.data(withJSONObject: reference, options: [.sortedKeys])
+            instruction = "Context for this request: the currently selected email, identified by this exact reference: " + String(decoding: data, as: UTF8.self) + ". Inspect it with the mail read/preview tools before answering. Do not substitute an email from an earlier turn."
+        } else {
+            instruction = "Context for this request: all of my mail. Do not assume an email selected in an earlier turn is the target unless this request refers to it."
+        }
+        return instruction + "\n\nUser request:\n" + text
     }
     func interrupt() async {
         do { let _: OK = try await api.post("/api/chat/interrupt", body: [:]) }

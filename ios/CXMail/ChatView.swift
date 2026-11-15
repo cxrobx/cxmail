@@ -1,13 +1,12 @@
 import SwiftUI
 
 struct ChatView: View {
+    @Bindable var mail: MailStore
     @Bindable var chat: ChatStore
-    let seed: MessageRef?
     let docked: Bool
     let canDock: Bool
     let onPresentationChange: () -> Void
     let onClose: () -> Void
-    var contextTitle: String? = nil
     @State private var newChat = false
     @State private var following = true
     @State private var nearBottom = true
@@ -73,9 +72,9 @@ struct ChatView: View {
                 }
             }
             .confirmationDialog("Start a new chat?", isPresented: $newChat, titleVisibility: .visible) {
-                Button("New chat") { Task { await chat.start(seed: seed) } }
+                Button("New chat") { Task { await chat.start(seed: mail.chatSeed) } }
             } message: { Text("The current chat will stop.") }
-            .task { await chat.ensure(seed: seed) }
+            .task { await chat.ensure(seed: mail.chatSeed) }
         }
     }
 
@@ -85,12 +84,11 @@ struct ChatView: View {
                 .font(.body).lineLimit(2...8).focused($focused)
                 .accessibilityIdentifier("chatInput").padding(.horizontal, 4)
             HStack(spacing: 8) {
-                Label(contextTitle ?? (seed == nil ? "Your mail" : "Email context"), systemImage: seed == nil ? "bubble.left.and.bubble.right" : "envelope")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                contextPicker
                 Spacer(minLength: 8)
                 Button {
                     if chat.busy { Task { await chat.interrupt() } }
-                    else { let text = chat.draft; Task { _ = await chat.send(text) } }
+                    else { let text = chat.draft; let context = mail.chatSeed; Task { _ = await chat.send(text, context: context) } }
                 } label: {
                     Image(systemName: chat.busy ? "stop.fill" : "arrow.up")
                         .font(.body.weight(.semibold)).foregroundStyle(.white)
@@ -107,15 +105,43 @@ struct ChatView: View {
         .frame(maxWidth: 720).padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity)
     }
     private var sendEnabled: Bool {
-        !chat.sending && !chat.starting && (chat.busy || !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        !chat.sending && !chat.starting && (chat.busy || ((mail.chatContextScope == .mail || mail.selected != nil) && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+    }
+    private var contextPicker: some View {
+        Menu {
+            Section("Context for next message") {
+                Button { mail.chatContextScope = .mail } label: {
+                    Label("Your mail", systemImage: mail.chatContextScope == .mail ? "checkmark" : "tray.2")
+                }
+                Button {
+                    guard mail.selected != nil else { return }
+                    mail.chatContextScope = .currentEmail
+                } label: {
+                    Label("Current email", systemImage: mail.chatContextScope == .currentEmail ? "checkmark" : "envelope")
+                }.disabled(mail.selected == nil)
+            }
+            if let subject = mail.selected.flatMap({ ref in mail.snapshot.messages[ref.id]?.subject ?? mail.rows.first(where: { $0.ref == ref })?.subject }) {
+                Text(subject)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: mail.chatContextScope == .mail ? "tray.2" : "envelope")
+                Text(mail.chatContextScope == .mail ? "Your mail" : mail.chatContextTitle ?? "Select an email").lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2)
+            }.font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
+        }
+        .disabled(chat.sending)
+        .accessibilityLabel("Chat context").accessibilityValue(mail.chatContextScope == .mail ? "Your mail" : "Current email")
+        .accessibilityHint("Choose the context for your next message without clearing this conversation")
+        .accessibilityIdentifier("chatContext")
     }
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 16) {
             Image(systemName: "bubble.left.and.bubble.right").font(.title).foregroundStyle(Color.accentColor)
-            Text(seed == nil ? "How can I help?" : "Ask about this email").font(.title2.weight(.semibold))
-            Text("Find a message, summarize a conversation, or work on a reply.").font(.subheadline).foregroundStyle(.secondary)
+            Text(mail.chatContextScope == .mail ? "How can I help?" : mail.selected == nil ? "Select an email" : "Ask about this email").font(.title2.weight(.semibold))
+            Text(mail.chatContextScope == .currentEmail && mail.selected == nil ? "Open a message, or choose Your mail in the context menu." : "Find a message, summarize a conversation, or work on a reply.").font(.subheadline).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
-                suggestion(seed == nil ? "Find mail I need to reply to" : "Summarize this email", symbol: "text.alignleft")
+                suggestion(mail.chatContextScope == .mail ? "Find mail I need to reply to" : "Summarize this email", symbol: "text.alignleft")
                 suggestion("Help me write a reply", symbol: "square.and.pencil")
             }
         }.frame(maxWidth: 400, alignment: .leading).padding(24)

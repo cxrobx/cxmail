@@ -30,9 +30,9 @@ struct RootView: View {
         .sheet(item: $store.composer) { draft in ComposerView(store: store, initial: draft) }
         .sheet(item: $store.review) { ref in ReviewView(store: store, ref: ref) }
         .sheet(isPresented: $store.chatPresented, onDismiss: { if !store.chatDocked { chat.pause() } }) {
-            ChatView(chat: chat, seed: store.chatSeed, docked: false, canDock: store.chatCanDock,
+            ChatView(mail: store, chat: chat, docked: false, canDock: store.chatCanDock,
                 onPresentationChange: { store.chatDocked = true; store.chatPresented = false },
-                onClose: { store.chatPresented = false }, contextTitle: store.chatContextTitle)
+                onClose: { store.chatPresented = false })
         }
         .onOpenURL { url in
             guard url.scheme == "cxmail" else { return }
@@ -225,7 +225,7 @@ struct MailboxView: View {
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 12) {
-                Button { store.chatSeed = nil; store.chatPresented = true } label: {
+                Button { store.chatPresented = true } label: {
                     Image(systemName: "bubble.left.and.bubble.right").font(.title3).frame(width: 48, height: 48)
                 }.mailGlass(capsule: true).accessibilityLabel("Chat").accessibilityIdentifier("openChat")
                 Spacer(minLength: 0)
