@@ -34,7 +34,7 @@ cxmail/
 │   ├── crates/             # lib-only members, no bin targets in any of them
 │   │   ├── cxmail-core/    # AppError · LockExt · secrets · keychain/ · EventSink/AppCtx
 │   │   │                   #   · mcp bridge · mail/ (the pure helpers db and email share)
-│   │   ├── cxmail-db/      # db/ — schema migrations (v59), message store, FTS5
+│   │   ├── cxmail-db/      # db/ — schema migrations, message store, FTS5
 │   │   ├── cxmail-email/   # email/ — IMAP, SMTP, OAuth2, parser, autoconfig, AI,
 │   │   │                   #   + its own build.rs (embed_ispdb) and resources/ispdb/
 │   │   └── cxmail-mcp/     # mcp/server.rs — the MCP tool surface
@@ -85,7 +85,7 @@ route and is a separate refactor.
 2. **HTML always sanitized** — ammonia processes all HTML before storage and display. No raw HTML rendering.
    - Pattern: `src-tauri/crates/cxmail-email/src/email/parser.rs`
 
-3. **Email rendered in sandbox** — iframe with `sandbox="allow-same-origin"`, no scripts allowed.
+3. **Email rendered in sandbox** — srcdoc iframe with `sandbox="allow-scripts allow-top-navigation-by-user-activation"` and no `allow-same-origin`; the only script that runs is CXMail's own `public/email-frame.js` (ammonia strips every email script; gotcha #29).
    - Pattern: `src/components/mail/EmailFrame.tsx`
 
 4. **Remote images blocked** — Default off, per-sender allowlist. Prevents tracking pixels from third parties.
@@ -124,7 +124,7 @@ All frontend-to-backend communication uses Tauri's typed invoke:
 
 ## Database
 
-- SQLite via `rusqlite` (bundled), migrations in `cxmail-db`'s `db/schema.rs` (currently at v59).
+- SQLite via `rusqlite` (bundled), migrations in `cxmail-db`'s `db/schema.rs`.
   Both the app (`lib.rs`) and the MCP binary (`bin/mcp.rs`) run `initialize()` independently at startup
 - App data at `~/Library/Application Support/com.cxmail.app/cxmail.db`
 - Full-text search: FTS5 table `messages_fts` inside the same DB, kept in sync by triggers (v40). Single engine `db::search::search()` serves UI commands and the MCP binary; never write to `messages_fts` directly (see gotcha #26)

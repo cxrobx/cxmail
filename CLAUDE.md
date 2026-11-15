@@ -45,7 +45,7 @@ and not a one-time step. It needs a Developer ID signing identity in your keycha
 
 1. **No credentials in SQLite** — encrypted file store (dev) or macOS Keychain (production)
 2. **HTML always sanitized** — ammonia processes all HTML before storage and display
-3. **Email rendered in sandbox** — iframe with `sandbox="allow-same-origin"`, no scripts
+3. **Email rendered in sandbox** — srcdoc iframe with `sandbox="allow-scripts allow-top-navigation-by-user-activation"` and no `allow-same-origin`; the only script that runs is CXMail's own `public/email-frame.js` (ammonia strips every email script; gotcha #29)
 4. **TLS enforced** — no plaintext fallback (IMAP native-tls, SMTP rustls — two stacks)
 5. **IPC validates all input** — Rust commands never trust frontend data
 
@@ -98,7 +98,7 @@ Full list with patterns in `.claude/rules/architecture.md`.
 - CSS utility: `cn()` from clsx + tailwind-merge
 - Rust errors: thiserror (typed) + anyhow (ad-hoc)
 - IPC: `#[tauri::command] async fn -> Result<T, AppError>`
-- DB migrations: `db/schema.rs` (currently at v59)
+- DB migrations: `db/schema.rs`
 
 ## Environment
 

@@ -18,7 +18,7 @@ file is in before you edit it — `crate::` means something different in each.
 | Crate | Path | Holds | Links Tauri |
 |---|---|---|---|
 | `cxmail-core` | `crates/cxmail-core/` | `AppError`, `LockExt`, `secrets`, `keychain/`, `EventSink`/`AppCtx`, the MCP socket `bridge`, and `mail/` — the pure helpers `db` and `email` both need | no |
-| `cxmail-db` | `crates/cxmail-db/` | `db/` — migrations (v58), message store, FTS5 | no |
+| `cxmail-db` | `crates/cxmail-db/` | `db/` — migrations, message store, FTS5 | no |
 | `cxmail-email` | `crates/cxmail-email/` | `email/` — IMAP, SMTP, OAuth2, parser, autoconfig, AI. Owns `build.rs` + `resources/ispdb/` | no |
 | `cxmail-mcp` | `crates/cxmail-mcp/` | `mcp/server.rs` | no |
 | `cxmail` (app) | `src/` | `lib.rs`, `commands/` (190 IPC commands), `idle.rs`, `notify*`, `plugins/`, `tracker/`, **all four `bin/` targets** | yes |
@@ -78,7 +78,7 @@ IPC commands in `src-tauri/src/commands/` — app package, each file a domain:
 
 ## Database Layer
 
-`cxmail-db`'s `db/` modules mirror command domains. Schema migrations in `db/schema.rs` (v58).
+`cxmail-db`'s `db/` modules mirror command domains. Schema migrations in `db/schema.rs`.
 
 Six migrations call helpers that live in `cxmail-core::mail` (`detect_events`, `dashes::scrub_profile_json`, `text::repair_double_encoded_utf8`, `text::normalize_unstructured_header`, `date::normalize_date_to_iso8601`, `message_id::compute_thread_root_id`). That is not incidental — those helpers were in `email/`, and the migrations needing them were half of what made `db` and `email` mutually dependent. Probe the chain against a copy of a real database with `cargo run -p cxmail-db --example migrate_probe -- <copy.db>`.
 
