@@ -11,7 +11,7 @@ struct RootView: View {
         TabView(selection: $store.tab) {
             ForEach(MailTab.allCases) { tab in
                 Tab(tab.title, systemImage: tab.symbol, value: tab) {
-                    MailWorkspace(store: store, tab: tab, settings: $settings)
+                    MailWorkspace(store: store, chat: chat, tab: tab, settings: $settings)
                 }
             }
         }
@@ -21,15 +21,18 @@ struct RootView: View {
             await store.load()
         }
         .onChange(of: phase) { _, value in
-            if value == .active { Task { await store.load() }; if store.chatPresented { chat.resume() } }
+            if value == .active { Task { await store.load() }; if store.chatPresented || store.chatDocked { chat.resume() } }
             else { chat.pause(); if let draft = store.composer { store.remember(draft) } }
         }
         .onChange(of: store.tab) { _, _ in store.selected = nil }
+        .onChange(of: store.chatPresented) { _, showing in if showing { store.chatDocked = false } }
         .sheet(isPresented: $settings) { SettingsView(store: store) }
         .sheet(item: $store.composer) { draft in ComposerView(store: store, initial: draft) }
         .sheet(item: $store.review) { ref in ReviewView(store: store, ref: ref) }
-        .sheet(isPresented: $store.chatPresented, onDismiss: { chat.pause() }) {
-            ChatView(chat: chat, seed: store.chatSeed)
+        .sheet(isPresented: $store.chatPresented, onDismiss: { if !store.chatDocked { chat.pause() } }) {
+            ChatView(chat: chat, seed: store.chatSeed, docked: false, canDock: store.chatCanDock,
+                onPresentationChange: { store.chatDocked = true; store.chatPresented = false },
+                onClose: { store.chatPresented = false }, contextTitle: store.chatContextTitle)
         }
         .onOpenURL { url in
             guard url.scheme == "cxmail" else { return }
@@ -44,6 +47,7 @@ struct RootView: View {
 
 struct MailWorkspace: View {
     @Bindable var store: MailStore
+    let chat: ChatStore
     let tab: MailTab
     @Binding var settings: Bool
     @State private var columns: NavigationSplitViewVisibility = .detailOnly
@@ -53,7 +57,16 @@ struct MailWorkspace: View {
         GeometryReader { geometry in
             let layout = geometry.mailLayout
             Group {
-                if layout.split || layout.overlay {
+                if store.chatDocked && store.tab == tab {
+                    DockedChatWorkspace(store: store, chat: chat) {
+                        if let ref = store.selected {
+                            destination(ref)
+                                .toolbar { ToolbarItem(placement: .topBarLeading) {
+                                    Button("Inbox", systemImage: "tray") { store.selected = nil }.accessibilityIdentifier("dockInbox")
+                                } }
+                        } else { MailboxView(store: store, tab: tab, split: true, settings: $settings) }
+                    }
+                } else if layout.split || layout.overlay {
                     NavigationSplitView(columnVisibility: $columns) {
                         MailboxView(store: store, tab: tab, split: true, settings: $settings, largeTitle: layout.overlay)
                             .padding(.trailing, max(0, layout.gap - 1))
@@ -102,6 +115,8 @@ struct MailWorkspace: View {
             .onChange(of: layout, initial: true) { _, new in
                 columns = new.overlay ? .detailOnly : .all
             }
+            .onChange(of: geometry.size.width >= 640, initial: true) { _, value in updateDockAvailability(value) }
+            .onChange(of: store.tab) { _, _ in updateDockAvailability(geometry.size.width >= 640) }
             .onChange(of: store.selected) { _, ref in
                 if layout.overlay, ref != nil { setColumns(.detailOnly) }
             }
@@ -109,6 +124,11 @@ struct MailWorkspace: View {
     }
     private func setColumns(_ value: NavigationSplitViewVisibility) {
         withAnimation(reduceMotion ? nil : .default) { columns = value }
+    }
+    private func updateDockAvailability(_ value: Bool) {
+        guard store.tab == tab else { return }
+        store.chatCanDock = value
+        if !value && store.chatDocked { store.chatDocked = false; store.chatPresented = true }
     }
     @ViewBuilder func destination(_ ref: MessageRef, split: Bool = false, sidebar: Bool = false) -> some View {
         if tab == .drafts { ReviewView(store: store, ref: ref, embedded: true) }
@@ -204,15 +224,15 @@ struct MailboxView: View {
         .refreshable { await store.load() }
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button { store.chatSeed = nil; store.chatPresented = true } label: {
-                    Label("Ask Claude", systemImage: "bubble.left.and.bubble.right").font(.subheadline).frame(minHeight: 44)
-                }.accessibilityIdentifier("openChat")
+                    Image(systemName: "bubble.left.and.bubble.right").font(.title3).frame(width: 48, height: 48)
+                }.mailGlass(capsule: true).accessibilityLabel("Chat").accessibilityIdentifier("openChat")
                 Spacer(minLength: 0)
                 Button { store.newDraft() } label: {
-                    Image(systemName: "square.and.pencil").font(.title3).frame(minWidth: 44, minHeight: 44)
-                }.accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
-            }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 4).mailGlass(capsule: true).padding(.horizontal, 12).padding(.vertical, 8)
+                    Image(systemName: "square.and.pencil").font(.title3).frame(width: 48, height: 48)
+                }.mailGlass(capsule: true).accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
+            }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 8)
         }
         .modifier(MailSearch(enabled: tab == .search, query: $store.query))
         .sensoryFeedback(.selection, trigger: store.category)

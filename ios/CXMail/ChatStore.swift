@@ -24,7 +24,10 @@ final class ChatStore {
     var busy = false
     var starting = false
     var error: String?
+    var draft = ""
+    var sending = false
     private var pollTask: Task<Void, Never>?
+    private var pollEpoch: UUID?
     init(api: APIClient) { self.api = api }
     func ensure(seed: MessageRef?) async {
         if id == nil || self.seed != seed { await start(seed: seed) }
@@ -42,12 +45,14 @@ final class ChatStore {
             resume()
         } catch { self.error = error.localizedDescription }
     }
-    func pause() { pollTask?.cancel(); pollTask = nil }
+    func pause() { pollTask?.cancel(); pollTask = nil; pollEpoch = nil }
     func resume() {
         guard pollTask == nil, id != nil, alive else { return }
-        pollTask = Task { [weak self] in await self?.poll() }
+        let epoch = UUID(); pollEpoch = epoch
+        pollTask = Task { [weak self] in await self?.poll(epoch: epoch) }
     }
-    private func poll() async {
+    private func poll(epoch: UUID) async {
+        defer { if pollEpoch == epoch { pollTask = nil; pollEpoch = nil } }
         while !Task.isCancelled, let id, alive {
             do {
                 let data = try await api.data("/api/chat/events", query: [.init(name: "chat", value: String(id)), .init(name: "after", value: String(seq))])
@@ -72,16 +77,19 @@ final class ChatStore {
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
             }
         }
-        pollTask = nil
     }
     func send(_ text: String) async -> Bool {
-        guard !busy, !starting, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard !busy, !starting, !sending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         if !alive { await start(seed: seed) }
         guard alive else { return false }
-        busy = true; error = nil
+        busy = true; sending = true; error = nil
+        defer { sending = false }
+        // Put the outgoing turn before polling can append its streamed reply.
+        items.append(.init(kind: .user, text: text))
         do {
             let _: OK = try await api.post("/api/chat/send", body: ["text": text])
-            items.append(.init(kind: .user, text: text)); resume(); return true
+            if draft == text { draft = "" }
+            resume(); return true
         } catch { busy = false; self.error = "Couldn’t confirm delivery. Check the conversation before retrying. " + error.localizedDescription; return false }
     }
     func interrupt() async {

@@ -52,6 +52,8 @@ final class CXMailUITests: XCTestCase {
         XCTAssertLessThanOrEqual(app.buttons["message-10"].frame.height, 104)
         XCTAssertTrue(app.buttons["message-13"].isHittable, "At least four realistic messages must fit on the closed Duo")
         XCTAssertLessThanOrEqual(app.buttons["compose"].frame.height, 52)
+        XCTAssertLessThanOrEqual(app.buttons["openChat"].frame.width, 52, "Chat is its own compact icon button")
+        XCTAssertLessThanOrEqual(app.buttons["compose"].frame.width, 52)
         XCTAssertTrue(app.buttons["All"].exists)
         XCTAssertLessThan(app.buttons["All"].frame.minX, app.buttons["Primary"].frame.minX)
         XCTAssertFalse(app.buttons["All mail"].exists)
@@ -103,6 +105,66 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(deny.waitForExistence(timeout: 10))
         capture("Claude permission")
         deny.tap(); XCTAssertTrue(app.staticTexts["Denied"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["chatSend"].label, "Stop Claude")
+        app.buttons["chatSend"].tap()
+        let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == 'Send message'"), object: app.buttons["chatSend"])
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 5), .completed)
+    }
+    func testChatMarkdownAndComposer() {
+        launch(["--chat-rich"])
+        app.buttons["openChat"].tap()
+        let input = app.textFields["chatInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Write a short plan")
+        capture("Chat multiline composer")
+        app.buttons["chatSend"].tap()
+        XCTAssertTrue(app.staticTexts["Next steps"].waitForExistence(timeout: 10))
+        app.scrollViews.containing(.staticText, identifier: "Next steps").firstMatch.swipeDown()
+        XCTAssertTrue(app.staticTexts["Reply to Jordan"].exists)
+        XCTAssertTrue(app.staticTexts["Tuesday works well."].exists)
+        XCTAssertFalse(app.staticTexts["## Next steps"].exists)
+        XCTAssertEqual(app.buttons["chatSend"].label, "Send message")
+        capture("Formatted chat transcript")
+    }
+    func testDockChatResizeAndPopOut() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        launch()
+        guard app.frame.width > 867 else { throw XCTSkip("Run docked chat on the open-width profile.") }
+        app.terminate(); launch(["--duo-flat", "--show-reader", "--chat-rich"])
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        app.buttons["readerChat"].tap()
+        let input = app.textFields["chatInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Write a short plan")
+        app.buttons["chatSend"].tap()
+        XCTAssertTrue(app.staticTexts["Next steps"].waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Keep this draft while docking.")
+        XCTAssertTrue(app.buttons["chatPresentation"].isEnabled); app.buttons["chatPresentation"].tap()
+        let divider = app.descendants(matching: .any)["chatDivider"]
+        XCTAssertTrue(divider.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Next steps"].exists, "Docking must retain the conversation")
+        XCTAssertEqual(input.value as? String, "Keep this draft while docking.")
+        let before = app.webViews.firstMatch.frame.width
+        capture("Email and chat split")
+        divider.press(forDuration: 0.2, thenDragTo: input)
+        XCTAssertGreaterThan(app.webViews.firstMatch.frame.width, before + 30)
+        capture("Resized chat split")
+        input.tap(); input.typeText(" Still docked.")
+        XCTAssertTrue(divider.exists, "Showing the keyboard must keep split chat docked")
+        let edited = input.value as? String ?? ""
+        XCTAssertTrue(edited.contains("Keep this draft while docking.")); XCTAssertTrue(edited.contains("Still docked."))
+        // The iPad keyboard pans the fixed-size virtual phone. Restore its
+        // viewport before testing navigation controls; real Duo windows resize.
+        app.keyboards.buttons["Hide keyboard"].tap()
+        app.buttons["chatPresentation"].tap()
+        XCTAssertTrue(app.buttons["chatPresentation"].waitForExistence(timeout: 5))
+        XCTAssertEqual(input.value as? String, edited)
+        XCTAssertFalse(divider.exists)
+        app.buttons["closeChat"].tap()
+        XCTAssertTrue(app.buttons["readerReply"].isHittable)
+        XCTAssertGreaterThan(app.webViews.firstMatch.frame.width, 500, "Undocking restores the original mail reader")
+        capture("Mail toolbar restored")
     }
     func testSearchAndAccountSelection() {
         launch()

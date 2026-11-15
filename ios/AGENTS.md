@@ -30,3 +30,9 @@ sidebar can fall back to 320pt. Assert the actual 455.5pt inbox boundary and
 40pt division, as well as the 400pt portrait drawer and its single close control.
 When changing layout, preserve the root-owned selection, draft and chat state,
 check both appearances and XXXL type, and inspect the test captures/recordings.
+
+Chat input and poll ownership live in the shared ChatStore, never the presented
+view. Docking must preserve the conversation, pending permissions and unsent text.
+Dismissal while moving into split chat must not pause its poll. Gate docking by
+usable width, not keyboard-reduced height. Test typing while docked, dragging the
+divider and popping back out, then assert the original mail toolbar and width.

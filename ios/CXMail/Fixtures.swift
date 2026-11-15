@@ -72,14 +72,26 @@ import Foundation
         case "/api/send":
             if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
             sent = true; result = ["ok": true, "draft_removed": true]
-        case "/api/chat/start": result = ["ok": true, "chat": 1]
+        case "/api/chat/start": revision = 0; result = ["ok": true, "chat": 1]
         case "/api/chat/events":
             if q["after"] == "0" { result = ["chat": 1, "seq": 1, "alive": true, "events": [["event": ["type": "ready"]]]] }
             else if revision == 1 {
                 revision = 2
-                result = ["chat": 1, "seq": 3, "alive": true, "events": [["event": ["type": "assistant_text", "text": "Jordan is asking to meet next week. Tuesday or Thursday works for them."]], ["event": ["type": "permission_request", "request_id": "permission-1", "tool_name": "compose_draft", "display_name": "Write a reply", "input": ["to": ["jordan@example.org"]], "rememberable": true, "context": ["account": "me@example.com"]]]]]
-            } else { result = ["chat": 1, "seq": revision == 2 ? 3 : 1, "alive": true, "events": []] }
+                if ProcessInfo.processInfo.arguments.contains("--chat-rich") {
+                    result = ["chat": 1, "seq": 3, "alive": true, "events": [
+                        ["event": ["type": "tool_use", "id": "search-1", "name": "search_email", "input": ["query": "Jordan"]]],
+                        ["event": ["type": "tool_result", "tool_use_id": "search-1", "text": "Two matching messages"]],
+                        ["event": ["type": "assistant_text", "text": "## Next steps\n\nHere’s the **short version**:\n\n- Reply to Jordan\n- Pick **Tuesday** or Thursday\n\n> Nothing is sent until you review it.\n\n```text\nTuesday works well.\n```"]],
+                        ["event": ["type": "turn_done"]]]]
+                } else {
+                    result = ["chat": 1, "seq": 3, "alive": true, "events": [["event": ["type": "assistant_text", "text": "Jordan is asking to meet next week. Tuesday or Thursday works for them."]], ["event": ["type": "permission_request", "request_id": "permission-1", "tool_name": "compose_draft", "display_name": "Write a reply", "input": ["to": ["jordan@example.org"]], "rememberable": true, "context": ["account": "me@example.com"]]]]]
+                }
+            } else if revision == 3 {
+                revision = 4
+                result = ["chat": 1, "seq": 4, "alive": true, "events": [["event": ["type": "turn_done"]]]]
+            } else { result = ["chat": 1, "seq": revision >= 4 ? 4 : revision == 2 ? 3 : 1, "alive": true, "events": []] }
         case "/api/chat/send": revision = 1
+        case "/api/chat/interrupt": revision = 3
         case "/api/claude-thread": result = ["ok": true, "threadId": "fixture-thread"]
         default: break
         }

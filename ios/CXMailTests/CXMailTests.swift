@@ -141,4 +141,24 @@ final class CXMailTests: XCTestCase {
         XCTAssertEqual(chat.items[1].permissionState, "No longer waiting")
         XCTAssertFalse(chat.busy); XCTAssertFalse(chat.alive)
     }
+    func testChatMarkdownKeepsBlocksAndUnfinishedStreamingCode() {
+        let blocks = ChatMarkdownBlock.parse("## Next steps\n\nA **short** reply.\n\n- Tuesday\n1. Review\n> Quoted\n\n```swift\nlet day = 2")
+        XCTAssertEqual(blocks, [.heading("Next steps"), .paragraph("A **short** reply."),
+            .list("•", "Tuesday"), .list("1.", "Review"), .quote("Quoted"), .code("swift", "let day = 2")])
+    }
+    func testChatSendKeepsUserBeforeStreamAndPreservesEditedDraft() async {
+        let chat = ChatStore(api: api())
+        await chat.start(seed: nil)
+        chat.draft = "Find my mail"
+        let sent = await chat.send(chat.draft)
+        XCTAssertTrue(sent)
+        XCTAssertEqual(chat.items.first?.kind, .user)
+        XCTAssertEqual(chat.draft, "")
+        chat.draft = "A follow-up in progress"
+        chat.apply(["type": "text_delta", "text": "Found it."])
+        chat.apply(["type": "turn_done"])
+        XCTAssertEqual(chat.draft, "A follow-up in progress")
+        XCTAssertFalse(chat.busy)
+        chat.pause()
+    }
 }

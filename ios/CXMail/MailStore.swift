@@ -22,7 +22,14 @@ final class MailStore {
     var recoveredDraft: LocalDraft?
     var review: MessageRef?
     var chatPresented = false
+    var chatDocked = false
+    var chatCanDock = false
+    var chatMailFraction: CGFloat = 0.5
     var chatSeed: MessageRef?
+    var chatContextTitle: String? {
+        guard let ref = chatSeed else { return nil }
+        return snapshot.messages[ref.id]?.subject ?? rows.first(where: { $0.ref == ref })?.subject
+    }
     private var generation = 0
     var listKey: String { "\(tab.rawValue)|\(category)|\(account)|\(query)" }
 

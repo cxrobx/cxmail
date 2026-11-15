@@ -57,6 +57,22 @@ floating action capsules; earlier systems use a material fallback. The list is
 dense and unboxed. The icon uses the actual desktop CXMail artwork, adapted to
 the opaque iOS mask by `scripts/icon.swift`.
 
+## Chat
+
+The mailbox has separate glass chat and compose icons. The chat uses T3's input
+and transcript patterns: a multiline composer with send/stop inside its lower
+edge, quiet user bubbles, formatted assistant headings/lists/quotes/code, copy
+actions and collapsed tool activity. Mail permissions remain explicit.
+
+The header can dock chat beside mail on the open Duo, with the email on the left
+and chat on the right. Drag the divider or use its accessibility adjustment to
+resize; both panes retain at least 300pt. While a vertical fold is active the
+division follows the hinge instead. Pop-out returns chat to its floating window
+and restores the normal mail layout. A narrow window also returns to floating
+chat. Conversation, permission state, unsent input and split preference are kept
+above these presentation changes. The context label identifies the original
+email, even while navigating other mail.
+
 ## Duo layout
 
 The layout uses available geometry, not a device-name or size-class guess.
@@ -119,6 +135,14 @@ portrait reader, 400pt drawer, selection and explicit open/close controls.
 Light/dark, XXXL text and recorded drawer transitions were inspected. The signed
 Release update was installed on the Duo; a physical UI run and automatic launch
 were blocked by the phone being locked.
+
+Build 4 adds the T3-style chat composer/transcript, separate icon actions and
+resizable mail/chat docking. Verification passed 14 unit checks, 11 compact UI
+flows, 3 open-window flows and 36 API checks. Extended large-text checks retain
+an existing conversation and draft through docking, divider dragging, keyboard
+input and pop-out, and verify the restored mail toolbar. Light/dark captures and
+recorded transitions were inspected. The signed Release update was installed
+and launched on the Duo.
 
 ## Current boundaries
 

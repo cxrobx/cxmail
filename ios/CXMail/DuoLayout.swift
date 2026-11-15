@@ -20,6 +20,9 @@ struct DuoLayout: Equatable {
 
 extension GeometryProxy {
     var mailLayout: DuoLayout {
+        .resolve(width: size.width, height: size.height, fold: mailFold)
+    }
+    var mailFold: CGRect? {
         var fold: CGRect?
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--uitesting") && ProcessInfo.processInfo.arguments.contains("--duo-wide") {
@@ -27,6 +30,6 @@ extension GeometryProxy {
         }
         #endif
         if #available(iOS 27.1, *), fold == nil { fold = reservedRegions(kind: .division).first?.frame }
-        return .resolve(width: size.width, height: size.height, fold: fold)
+        return fold
     }
 }
