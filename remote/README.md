@@ -4,6 +4,9 @@ A thin web client that puts the Mac's CXMail on a phone, over Tailscale only.
 It is not a second mail client: there is no sync, no IMAP and no credentials here.
 Sending goes through CXMail's own signed binary, after you review the draft.
 
+The native SwiftUI phone companion in [`../ios/`](../ios/README.md) uses this same
+API, authentication and exact-draft send review. The web client remains supported.
+
 | Does | How |
 |---|---|
 | Inbox (Primary / Unread / Starred / Updates / Promotions / Social / All), per account | reads `cxmail.db` **read-only** (`mode=ro` + `PRAGMA query_only`) |

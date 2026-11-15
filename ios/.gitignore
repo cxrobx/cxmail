@@ -1,0 +1,5 @@
+Config/Local.xcconfig
+CXMail.xcodeproj/
+.DS_Store
+build/
+*.xcuserstate

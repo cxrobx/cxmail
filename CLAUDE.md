@@ -77,6 +77,7 @@ Full list with patterns in `.claude/rules/architecture.md`.
 | `src-tauri/crates/cxmail-db/` | SQLite schema, CRUD, FTS5 search (28 modules) |
 | `src-tauri/crates/cxmail-email/` | IMAP, SMTP, OAuth2, parser, autoconfig, AI, categorize (29 modules) |
 | `src-tauri/crates/cxmail-mcp/` | MCP server (`mcp/server.rs`) |
+| `ios/` | Native SwiftUI remote companion; XcodeGen source `ios/project.yml`, build/test/install workflow in `ios/README.md`. Reuses `remote/` HTTPS API. |
 
 > `src-tauri/` is a Cargo **workspace**: the app package at `src-tauri/src/` plus four
 > lib-only crates under `crates/`, depending downward as `core <- db <- email <- mcp <- app`.

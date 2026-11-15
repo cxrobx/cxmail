@@ -1,0 +1,72 @@
+#if DEBUG
+import Foundation
+
+/// Fiction-only, in-process transport. UI tests can never touch a real mailbox.
+@MainActor enum Fixtures {
+    static var archived = Set<Int>()
+    static var starred = Set<Int>()
+    static var read = Set<Int>()
+    static var saved = false
+    static var sent = false
+    static var revision = 0
+    static func message(_ uid: Int = 10, detail: Bool = false) -> [String: Any] {
+        var value: [String: Any] = ["account": "work", "folder": "INBOX", "uid": uid,
+            "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
+            "from_name": uid == 10 ? "Jordan Lee" : "Alex Morgan", "from_email": "jordan@example.org",
+            "date": "2026-11-14T17:30:00+00:00", "snippet": "Thanks for the thoughtful notes. Here’s what I’m thinking for next week.",
+            "read": read.contains(uid), "starred": starred.contains(uid), "attachments": true, "category": "primary", "recipients": ["Chris"]]
+        if detail {
+            value.merge(["to": [["email": "me@example.com", "name": "Chris"]], "cc": [["email": "alex@example.org", "name": "Alex"]],
+                "cached": true, "has_html": true, "attachment_names": ["Project outline.pdf"], "thread": uid == 10 ? [message(11)] : [],
+                "account_email": "me@example.com", "images_trusted": false], uniquingKeysWith: { _, new in new })
+        }
+        return value
+    }
+    static let html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font:17px -apple-system;line-height:1.6;padding:20px;color:#202124;background:white'><p>Hi Chris,</p><p>Thanks for the thoughtful notes. I’ve had a chance to work through the outline, and I think we have a good place to pick this up.</p><p>Could we find a little time next week to talk through the next steps? Tuesday or Thursday would work well on my end.</p><p>I especially liked the idea of keeping the first version focused. Let’s start with what we’ll actually use, then take it from there.</p><p>Talk soon,<br>Jordan</p></body></html>"
+    static func response(_ path: String, query: [URLQueryItem], body: [String: Any]?) throws -> Data {
+        let q = Dictionary(query.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { _, n in n })
+        var result: Any = ["ok": true]
+        switch path {
+        case "/api/accounts": result = [["id": "work", "email": "me@example.com", "name": "Work", "hidden": false], ["id": "personal", "email": "personal@example.com", "name": "Personal", "hidden": false]]
+        case "/api/messages":
+            if ProcessInfo.processInfo.arguments.contains("--offline") { throw URLError(.notConnectedToInternet) }
+            if ProcessInfo.processInfo.arguments.contains("--empty") || (q["q"] != nil && q["q"] != "project") { result = [[String: Any]]() }
+            else { result = [message(), message(11), message(12)].filter { !archived.contains($0["uid"] as! Int) && (q["view"] != "unread" || !($0["read"] as! Bool)) && (q["view"] != "starred" || ($0["starred"] as! Bool)) } }
+        case "/api/message": result = message(Int(q["uid"] ?? "10") ?? 10, detail: true)
+        case "/api/body", "/api/draft-body": return Data(html.utf8)
+        case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
+        case "/api/drafts":
+            var draft = message(20); draft["draft"] = true; draft["folder"] = "Drafts"; draft["subject"] = "Re: A good place to pick this up"
+            result = sent ? [] : [draft]
+        case "/api/action":
+            let uid = body?["uid"] as? Int ?? 0
+            switch body?["action"] as? String {
+            case "archive", "move", "trash": archived.insert(uid)
+            case "star": starred.insert(uid)
+            case "unstar": starred.remove(uid)
+            case "read": read.insert(uid)
+            case "unread": read.remove(uid)
+            default: break
+            }
+        case "/api/draft":
+            saved = true
+            result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 20]]
+        case "/api/draft-preview": result = ["account_id": "work", "folder": "Drafts", "uid": 20, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "attachments": [], "sendable": true, "digest": String(repeating: "a", count: 64)]
+        case "/api/send":
+            if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
+            sent = true; result = ["ok": true, "draft_removed": true]
+        case "/api/chat/start": result = ["ok": true, "chat": 1]
+        case "/api/chat/events":
+            if q["after"] == "0" { result = ["chat": 1, "seq": 1, "alive": true, "events": [["event": ["type": "ready"]]]] }
+            else if revision == 1 {
+                revision = 2
+                result = ["chat": 1, "seq": 3, "alive": true, "events": [["event": ["type": "assistant_text", "text": "Jordan is asking to meet next week. Tuesday or Thursday works for them."]], ["event": ["type": "permission_request", "request_id": "permission-1", "tool_name": "compose_draft", "display_name": "Write a reply", "input": ["to": ["jordan@example.org"]], "rememberable": true, "context": ["account": "me@example.com"]]]]]
+            } else { result = ["chat": 1, "seq": revision == 2 ? 3 : 1, "alive": true, "events": []] }
+        case "/api/chat/send": revision = 1
+        case "/api/claude-thread": result = ["ok": true, "threadId": "fixture-thread"]
+        default: break
+        }
+        return try JSONSerialization.data(withJSONObject: result)
+    }
+}
+#endif

@@ -1,0 +1,20 @@
+# Native CXMail companion
+
+Read `README.md`, `.claude/rules/design-system.md` and `../remote/README.md` first.
+`project.yml` is the source of the generated Xcode project. Local endpoint/team
+configuration is ignored; no provisioning key or machine hostname belongs in git.
+
+The mini remains the only mail engine. Never add phone-side IMAP credentials,
+expose the MCP directly, bypass Tailscale identity, or weaken certificate checks.
+Preserve the reviewed-draft digest, full recipient review and explicit final
+send confirmation. Never automatically retry a mutation after an ambiguous error.
+
+Before a phone install, run `scripts/verify.sh` on compact Duo + wide iPad
+simulators. Fixtures are fiction-only and in-process; real mail must never be
+mutated by tests. Assert rendered HTML, not just that the reader screen exists.
+Keep primary actions in the safe content area: the Duo's side-rail hit testing
+can misroute taps to the inbox underneath (caught by chat-open UI regression).
+
+The exact-width test is a geometry harness, not physical hinge automation.
+When changing layout, preserve the root-owned selection, draft and chat state,
+check both appearances and XXXL type, and inspect the test captures/recordings.
