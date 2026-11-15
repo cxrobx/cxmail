@@ -61,6 +61,7 @@ os.environ.update(
         "CXMAIL_T3_BIN": FAKE_T3,
         "CXMAIL_T3_HOME_PROJECT": TMP,
         "CXMAIL_SCHEDULE_DB": os.path.join(TMP, 'scheduled.sqlite'),
+        "CXMAIL_DRAFT_STATE": os.path.join(TMP, 'missing-drafts.json'),
     }
 )
 os.environ.pop("CXMAIL_REMOTE_DEV", None)
@@ -80,6 +81,7 @@ CREATE TABLE message_bodies (account_id TEXT, folder_name TEXT, uid INTEGER, pla
 CREATE TABLE attachments (account_id TEXT, folder_name TEXT, message_uid INTEGER, filename TEXT,
   is_inline INTEGER DEFAULT 0);
 CREATE TABLE trusted_image_senders (sender_email TEXT PRIMARY KEY);
+CREATE TABLE sync_state (account_id TEXT, folder_name TEXT, uidvalidity INTEGER);
 CREATE VIRTUAL TABLE messages_fts USING fts5(subject, sender, recipients, body, attachment_names);
 """
 
@@ -87,6 +89,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(subject, sender, recipients, body, 
 def build_fixture():
     c = sqlite3.connect(FIXTURE)
     c.executescript(SCHEMA)
+    c.execute("INSERT INTO sync_state VALUES ('a1','[Gmail]/Drafts',100)")
     c.executemany(
         "INSERT INTO accounts (id, email, hidden_from_aggregates) VALUES (?, ?, ?)",
         [("a1", "me@example.com", 0), ("a2", "hidden@example.com", 1)],
@@ -186,6 +189,8 @@ class Api(unittest.TestCase):
     def setUp(self):
         server.PENDING.items.clear()
         server.FETCHED_BODIES.items.clear()
+        server.MISSING_DRAFTS.items.clear()
+        server.MISSING_DRAFTS._save()
         with server.schedules().db() as c:
             c.execute('DELETE FROM sends')
 
@@ -401,6 +406,62 @@ class Api(unittest.TestCase):
         self.assertEqual(open(CALLS).read().splitlines()[-1], "remote send-draft a1 [Gmail]/Drafts 3 " + DIGEST)
         self.assertEqual(self.j("/api/drafts"), [])  # gone before the app syncs
 
+    def test_missing_draft_returns_typed_gone_and_stays_out_after_service_restart(self):
+        old = server.run_send_bin
+        def gone(*args):
+            raise server.SendError('Not found: That draft is gone: it was sent, deleted, or edited (an edit saves it under a new UID). Reopen Drafts.')
+        try:
+            self.j('/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3')
+            server.run_send_bin = gone
+            for path, body in (('/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3', None),
+                               ('/api/send', {'account':'a1','folder':'[Gmail]/Drafts','uid':3,'digest':DIGEST})):
+                code, _, raw = self.req(path, body=body)
+                self.assertEqual(code, 410)
+                self.assertEqual(json.loads(raw)['code'], 'draft_gone')
+            self.assertEqual(self.j('/api/drafts'), [])
+            self.assertIsNone(server.PREVIEWS.get('a1', '[Gmail]/Drafts', 3, DIGEST))
+            server.MISSING_DRAFTS = server.MissingDrafts(os.environ['CXMAIL_DRAFT_STATE'])
+            server.PENDING.items.clear()
+            self.assertEqual(self.j('/api/drafts'), [], 'Missing cache rows must not resurrect after restart/overlay expiry')
+            with server.db() as c:
+                self.assertIsNotNone(c.execute("SELECT 1 FROM messages WHERE account_id='a1' AND folder_name='[Gmail]/Drafts' AND uid=3").fetchone(), 'Do not delete from the mailbox DB')
+        finally:
+            server.run_send_bin = old
+
+    def test_draft_transport_or_account_error_never_hides_the_draft(self):
+        old = server.run_send_bin
+        try:
+            for message in ('IMAP connection timed out', 'Not found: Account not found', 'The draft changed after you reviewed it.'):
+                def fail(*args):
+                    raise server.SendError(message)
+                server.run_send_bin = fail
+                self.assertEqual(self.req('/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3')[0], 502)
+                self.assertEqual(len(self.j('/api/drafts')), 1)
+                self.assertEqual(server.MISSING_DRAFTS.items, {})
+        finally:
+            server.run_send_bin = old
+
+    def test_changed_cache_revision_or_uidvalidity_does_not_hide_a_reused_uid(self):
+        ref = ('a1', '[Gmail]/Drafts', 3)
+        for field, replacement, original, table in (('uidvalidity', 200, 100, 'sync_state'), ('message_id', '<new-draft@example.org>', '<d1@x>', 'messages')):
+            with self.subTest(field=field):
+                with server.db() as c:
+                    server.MISSING_DRAFTS.note(ref, server.draft_cache_token(c, ref))
+                self.assertEqual(self.j('/api/drafts'), [])
+                c = sqlite3.connect(FIXTURE)
+                try:
+                    c.execute('UPDATE '+table+' SET '+field+"=? WHERE account_id='a1' AND folder_name='[Gmail]/Drafts'", (replacement,)); c.commit()
+                    self.assertEqual(len(self.j('/api/drafts')), 1)
+                finally:
+                    c.execute('UPDATE '+table+' SET '+field+"=? WHERE account_id='a1' AND folder_name='[Gmail]/Drafts'", (original,)); c.commit(); c.close()
+
+    def test_successful_fresh_preview_clears_a_missing_marker(self):
+        with server.db() as c:
+            server.MISSING_DRAFTS.note(('a1','[Gmail]/Drafts',3), server.draft_cache_token(c, ('a1','[Gmail]/Drafts',3)))
+        self.assertEqual(self.j('/api/drafts'), [])
+        self.j('/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3')
+        self.assertEqual(len(self.j('/api/drafts')), 1)
+
     def test_send_refuses_changed_draft_and_bad_input(self):
         code, _, raw = self.req("/api/send", {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3, "digest": "b" * 64})
         self.assertEqual(code, 502)
@@ -534,6 +595,7 @@ class RealSchema(unittest.TestCase):
         "message_bodies": {"id", "account_id", "folder_name", "uid", "plain_text", "sanitized_html"},
         "attachments": {"account_id", "folder_name", "message_uid", "filename", "is_inline"},
         "trusted_image_senders": {"sender_email"},
+        "sync_state": {"account_id", "folder_name", "uidvalidity"},
     }
 
     def test_columns_exist(self):

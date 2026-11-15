@@ -12,12 +12,14 @@ break. See remote/README.md for the LaunchAgent and Tailscale Serve setup.
 """
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -327,6 +329,15 @@ def get_message(conn, account, folder, uid):
     return msg
 
 
+def draft_cache_token(conn, ref):
+    """A missing UID applies only to this cached revision/UIDVALIDITY epoch."""
+    row = conn.execute(
+        'SELECT m.message_id,m.date,s.uidvalidity FROM messages m LEFT JOIN sync_state s '
+        'ON s.account_id=m.account_id AND s.folder_name=m.folder_name '
+        'WHERE m.account_id=? AND m.folder_name=? AND m.uid=?', ref).fetchone()
+    return hashlib.sha256(json.dumps(tuple(row)).encode()).hexdigest() if row else None
+
+
 def list_drafts(conn, account):
     accts = accounts(conn)
     ids = [a["id"] for a in accts if (a["id"] == account if account else not a["hidden"])]
@@ -339,14 +350,14 @@ def list_drafts(conn, account):
             row_summary(r)
             for r in conn.execute(
                 "SELECT {} FROM messages m WHERE m.account_id = ? AND m.folder_name = ? "
-                "ORDER BY m.date DESC LIMIT {}".format(SUMMARY_COLS, PAGE),
+                "ORDER BY m.date DESC LIMIT {}".format(SUMMARY_COLS, PAGE + MISSING_DRAFTS.count(aid, name)),
                 (aid, name),
             ).fetchall()
         ]
     rows.sort(key=lambda r: r["date"], reverse=True)
     for r in rows:
         r["draft"] = True
-    return rows[:PAGE]
+    return MISSING_DRAFTS.apply(conn, rows)[:PAGE]
 
 
 def get_html(conn, account, folder, uid):
@@ -562,6 +573,81 @@ class Pending:
 
 
 PENDING = Pending()
+
+
+class MissingDrafts:
+    """Persist only authoritative missing revisions, never transport failures.
+
+    This is a private display-cache exclusion, not a mailbox deletion. A changed
+    cache revision or UIDVALIDITY makes the same UID eligible again. Keep it
+    across service restarts so stale desktop rows don't reappear every 15 min.
+    """
+    def __init__(self, path):
+        self.path, self.lock, self.items = path, threading.Lock(), {}
+        if path:
+            try:
+                with open(path) as f:
+                    for entry in json.load(f):
+                        if (isinstance(entry, list) and len(entry) == 4
+                                and isinstance(entry[0], str) and isinstance(entry[1], str)
+                                and isinstance(entry[2], int) and isinstance(entry[3], str)):
+                            self.items[tuple(entry[:3])] = entry[3]
+            except (OSError, ValueError, TypeError):
+                pass
+
+    def _save(self):
+        if not self.path:
+            return
+        parent = os.path.dirname(self.path)
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', dir=parent, delete=False) as f:
+                temporary = f.name
+                json.dump([list(k) + [v] for k, v in self.items.items()], f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.path)  # NamedTemporaryFile is private (0600).
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def note(self, ref, token):
+        if token is None:
+            return
+        with self.lock:
+            self.items[tuple(ref)] = token
+            self._save()
+
+    def count(self, account, folder):
+        with self.lock:
+            return sum(k[:2] == (account, folder) for k in self.items)
+
+    def clear(self, ref):
+        with self.lock:
+            if tuple(ref) in self.items:
+                del self.items[tuple(ref)]
+                self._save()
+
+    def apply(self, conn, rows):
+        with self.lock:
+            out, changed = [], False
+            for row in rows:
+                ref = (row['account'], row['folder'], row['uid'])
+                old = self.items.get(ref)
+                if old is not None:
+                    if draft_cache_token(conn, ref) == old:
+                        continue
+                    del self.items[ref]
+                    changed = True
+                out.append(row)
+            if changed:
+                self._save()
+            return out
+
+
+MISSING_DRAFTS = MissingDrafts(os.environ.get('CXMAIL_DRAFT_STATE') or (None if DEV else
+    os.path.expanduser('~/Library/Application Support/com.cxmail.remote/missing-drafts.json')))
 EFFECT = {
     "archive": {"gone": True},
     "move": {"gone": True},
@@ -574,6 +660,12 @@ EFFECT = {
 
 class SendError(Exception):
     pass
+
+
+def draft_is_gone(error):
+    # Match the signed helper's specific authoritative IMAP existence failure.
+    # Account/folder errors, timeouts and digest mismatches must never hide mail.
+    return str(error).startswith('Not found: That draft is gone:')
 
 
 def run_send_bin(*args):
@@ -833,6 +925,10 @@ class PreviewCache:
             hit = self.items.get((account, folder, uid, digest))
             return hit[1] if hit and hit[0] > time.time() else None
 
+    def discard(self, ref):
+        with self.lock:
+            self.items = {k: v for k, v in self.items.items() if k[:3] != tuple(ref)}
+
 
 PREVIEWS = PreviewCache()
 _SAVED = re.compile(r"Draft saved to (.+?) \(UID (\d+)\)")
@@ -982,10 +1078,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, schedules().list())
             if url.path == "/api/draft-preview":
                 ref = self._ref(q)
+                with db() as c:
+                    token = draft_cache_token(c, ref)
                 try:
                     p = run_send_bin("preview-draft", *ref)
                 except SendError as e:
-                    return self._err(502, str(e))
+                    return self._draft_error(ref, token, e)
+                MISSING_DRAFTS.clear(ref)
                 PREVIEWS.put(p)
                 p = dict(p)
                 p.pop("sanitized_html", None)
@@ -1016,7 +1115,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(404, "not found")
         except ValueError as e:
             return self._err(400, str(e))
-        except sqlite3.Error as e:
+        except (sqlite3.Error, OSError) as e:
             return self._err(503, "database unavailable: {}".format(e))
 
     def do_POST(self):
@@ -1120,6 +1219,8 @@ class Handler(BaseHTTPRequestHandler):
                 digest = str(data.get("digest", ""))
                 if not ref[0] or not ref[1] or ref[2] <= 0 or not re.fullmatch('[a-fA-F0-9]{64}', digest):
                     return self._err(400, "account, folder, uid and the reviewed digest are required")
+                with db() as c:
+                    token = draft_cache_token(c, ref)
                 try:
                     queue = schedules()
                     if url.path == '/api/schedule':
@@ -1130,7 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
                         out = run_send_bin("send-draft", ref[0], ref[1], ref[2], digest)
                         PENDING.note(ref, gone=True)
                 except SendError as e:
-                    return self._err(502, str(e))
+                    return self._draft_error(ref, token, e)
                 return self._send(200, dict(out, ok=True))
             return self._err(404, "not found")
         except ScheduleConflict as e:
@@ -1143,6 +1244,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(502, str(e))
 
     # Helpers ------------------------------------------------------------
+    def _draft_error(self, ref, token, error):
+        if draft_is_gone(error):
+            MISSING_DRAFTS.note(ref, token)
+            PREVIEWS.discard(ref)
+            return self._send(410, {'error': 'That draft changed or was removed. Choose its latest version from Drafts.',
+                                    'code': 'draft_gone'})
+        return self._err(502, str(error))
+
     def _ref(self, q):
         if not q.get("account") or not q.get("folder") or not q.get("uid"):
             raise ValueError("account, folder and uid are required")

@@ -1,12 +1,13 @@
 import Foundation
 
 enum MailError: LocalizedError {
-    case configuration, server(String), unexpected
+    case configuration, server(String), unexpected, draftUnavailable
     var errorDescription: String? {
         switch self {
         case .configuration: "The mini’s HTTPS address is missing. Rebuild with scripts/configure.sh."
         case .server(let message): message
         case .unexpected: "The mini returned an unexpected response."
+        case .draftUnavailable: "That draft changed or was removed. Choose its latest version from Drafts."
         }
     }
 }
@@ -68,6 +69,7 @@ final class APIClient {
         guard let response = response as? HTTPURLResponse else { throw MailError.unexpected }
         guard (200..<300).contains(response.statusCode) else {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            if response.statusCode == 410 && error?["code"] as? String == "draft_gone" { throw MailError.draftUnavailable }
             if response.statusCode == 403 { throw MailError.server("Access denied. Connect Tailscale using the mini’s allowed account.") }
             throw MailError.server(error?["error"] as? String ?? "The mini returned HTTP \(response.statusCode).")
         }

@@ -35,6 +35,10 @@ account, set `CXMAIL_ASC_KEY_PATH`, `CXMAIL_ASC_KEY_ID`, and
   review-before-send. From/To/Cc/Bcc and body are fetched from the mini; sending
   requires separate confirmation and the exact reviewed digest. No automatic
   send retry after an ambiguous connection failure.
+- If a draft was edited, sent or removed elsewhere, an authoritative missing
+  revision clears that obsolete reference from all phone caches and refreshes
+  Drafts. Choose the current draft for a fresh review. Network failures retain
+  the draft and its retry action; locally typed replies are preserved.
 - Compact glass send controls, Send now and Schedule send with an explicit final
   confirmation. The mini persists schedules while the phone is closed; the clock
   in Drafts opens pending sends, cancellation and delivery outcomes.
@@ -182,6 +186,16 @@ were inspected. The live authenticated HTTPS queue endpoint was verified without
 mutating mail. The signed Release update was installed and its build number
 confirmed on the Duo. Launch was refused because the phone was locked; open
 CXMail manually after unlocking.
+
+Build 7 handles confirmed missing draft revisions with an inline Drafts update,
+invalidates their phone caches and refreshes the list. Connection failures remain
+retryable and preserve the draft; local composer recovery is unaffected. The
+service persists cache-only exclusions and invalidates them when the cached
+revision or UIDVALIDITY changes. Verification passed 18 unit checks, 15 compact
+UI flows, five open-window flows and 49 fixture API checks. Light/XXXL recovery
+and the recorded transitions were inspected. Three failing live references were
+confirmed obsolete and excluded without sending, editing or deleting any mail.
+The signed Release build 7 was installed on the Duo.
 
 ## Current boundaries
 

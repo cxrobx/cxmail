@@ -23,6 +23,7 @@ final class MailStore {
     var composer: LocalDraft?
     var recoveredDraft: LocalDraft?
     var review: MessageRef?
+    var unavailableDraft: MessageRef?
     var chatPresented = false
     var chatDocked = false
     var chatCanDock = false
@@ -157,6 +158,20 @@ final class MailStore {
     func persist() {
         do { try cache.save(snapshot, name: "mail-v2.json") }
         catch { notice = "Mail is available now, but this phone couldn’t save an offline copy." }
+    }
+    func refreshAfterMissingDraft(_ ref: MessageRef) async {
+        // The mini confirmed this exact server revision is gone. Invalidate
+        // every saved list, keeping unrelated drafts and locally typed replies.
+        generation += 1; loading = false; loadingMore = false
+        rows.removeAll { $0.ref == ref }
+        for key in snapshot.lists.keys { snapshot.lists[key]?.removeAll { $0.ref == ref } }
+        snapshot.messages.removeValue(forKey: ref.id); snapshot.html.removeValue(forKey: ref.id)
+        persist()
+        await load()
+        // A different selection made during refresh belongs to the user.
+        if selected == ref { selected = nil }
+        if review == ref { review = nil }
+        unavailableDraft = ref
     }
     func clearCache() {
         snapshot = .init(accounts: snapshot.accounts); rows = []; selected = nil; cache.remove("mail-v2.json")

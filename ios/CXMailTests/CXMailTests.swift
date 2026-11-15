@@ -3,13 +3,15 @@ import XCTest
 
 final class FailingProtocol: URLProtocol {
     static var calls = 0
+    static var responseCode = 502
+    static var responseBody = #"{"error":"The mini is unavailable"}"#
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.calls += 1
-        let response = HTTPURLResponse(url: request.url!, statusCode: 502, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        let response = HTTPURLResponse(url: request.url!, statusCode: Self.responseCode, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data(#"{"error":"The mini is unavailable"}"#.utf8))
+        client?.urlProtocol(self, didLoad: Data(Self.responseBody.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() { }
@@ -90,6 +92,39 @@ final class CXMailTests: XCTestCase {
         XCTAssertGreaterThan(APIClient.timeout(for: "/api/draft-preview"), 120)
         XCTAssertGreaterThan(APIClient.timeout(for: "/api/action"), 90)
         XCTAssertGreaterThan(APIClient.timeout(for: "/api/chat/events"), 25)
+    }
+    func testOnlyAuthoritativeDraftGoneResponseIsTypedWithoutRetry() async {
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FailingProtocol.self]
+        let client = APIClient(baseURL: URL(string: "https://mini.example.ts.net"), session: URLSession(configuration: config))
+        defer { FailingProtocol.responseCode = 502; FailingProtocol.responseBody = #"{"error":"The mini is unavailable"}"# }
+        for (status, code, missing) in [(410, "draft_gone", true), (502, "draft_gone", false), (410, "other", false)] {
+            FailingProtocol.calls = 0; FailingProtocol.responseCode = status
+            FailingProtocol.responseBody = "{\"error\":\"Unavailable\",\"code\":\"\(code)\"}"
+            do { let _: DraftPreview = try await client.get("/api/draft-preview"); XCTFail("Must fail") }
+            catch MailError.draftUnavailable { XCTAssertTrue(missing) }
+            catch { XCTAssertFalse(missing) }
+            XCTAssertEqual(FailingProtocol.calls, 1)
+        }
+    }
+    func testMissingDraftClearsAllCachedReferencesAndPreservesLocalReply() async throws {
+        Fixtures.missingDrafts = [20]
+        defer { Fixtures.missingDrafts = [] }
+        let store = MailStore(api: api(), cache: cache()); store.tab = .drafts
+        var old = try APIClient.decoder.decode(MailMessage.self, from: JSONSerialization.data(withJSONObject: Fixtures.message()))
+        old.folder = "Drafts"; old.uid = 20
+        var other = old; other.uid = 21
+        store.rows = [old, other]; store.selected = old.ref; store.review = old.ref
+        store.snapshot.lists = [store.listKey: [old, other], "saved-search": [old, other]]
+        store.snapshot.messages[old.id] = old; store.snapshot.html[old.id] = "Old draft body"
+        let reply = LocalDraft(account: "work", to: "jordan@example.org", body: "Keep my unsent typing")
+        store.remember(reply)
+        await store.refreshAfterMissingDraft(old.ref)
+        XCTAssertFalse(store.snapshot.lists.values.flatMap { $0 }.contains { $0.ref == old.ref })
+        XCTAssertEqual(store.snapshot.lists["saved-search"], [other])
+        XCTAssertNil(store.snapshot.messages[old.id]); XCTAssertNil(store.snapshot.html[old.id])
+        XCTAssertNil(store.selected); XCTAssertNil(store.review)
+        XCTAssertEqual(store.recoveredDraft, reply)
+        XCTAssertEqual(MailStore(api: api(), cache: store.cache).recoveredDraft, reply)
     }
     func testAccountFolderUIDIdentityDoesNotCollide() {
         XCTAssertNotEqual(MessageRef(account: "ab", folder: "c", uid: 1).id, MessageRef(account: "a", folder: "bc", uid: 1).id)

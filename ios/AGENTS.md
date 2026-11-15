@@ -12,6 +12,10 @@ Send review uses a compact floating glass capsule, never a full-width send CTA.
 Scheduling must preserve the reviewed digest and Bcc review, require a separate
 final approval and persist on the mini. Keep cancellation and uncertain delivery
 outcomes visible; a pending schedule blocks immediate send of that same draft.
+Only a typed `410 / draft_gone` response may evict a missing draft revision from
+phone caches. Preserve unrelated drafts, local composer recovery and a newer
+selection made during refresh. Connection failures and digest mismatches retain
+the draft; never guess a replacement by subject or transfer send approval to it.
 
 Before a phone install, run `scripts/verify.sh` on compact Duo + wide iPad
 simulators. Fixtures are fiction-only and in-process; real mail must never be

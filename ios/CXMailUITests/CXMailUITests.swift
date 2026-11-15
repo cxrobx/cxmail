@@ -147,6 +147,34 @@ final class CXMailUITests: XCTestCase {
         XCTAssertFalse(send.isEnabled)
         capture("Changed draft refused")
     }
+    func testMissingDraftRefreshesListAndOpensCurrentDraft() {
+        launch(["--missing-draft"])
+        if app.frame.width >= 669 {
+            app.terminate(); XCUIDevice.shared.orientation = .landscapeLeft; launch(["--duo-flat", "--missing-draft"])
+        }
+        tapDraftsTab()
+        let stale = app.buttons["message-20"]
+        XCTAssertTrue(stale.waitForExistence(timeout: 10)); stale.tap()
+        let explanation = app.descendants(matching: .any)["draftUpdated"]
+        XCTAssertTrue(explanation.waitForExistence(timeout: 10)); capture("Missing draft clears and refreshes")
+        XCTAssertFalse(stale.exists, "An obsolete revision must not remain a tappable ghost")
+        let current = app.buttons["message-21"]
+        XCTAssertTrue(current.waitForExistence(timeout: 10)); current.tap()
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].isEnabled)
+        capture("Current draft opens after stale revision")
+    }
+    func testDraftConnectionFailureKeepsDraftAndCanRetryReview() {
+        launch(["--draft-preview-unavailable"])
+        tapDraftsTab()
+        XCTAssertTrue(app.buttons["message-20"].waitForExistence(timeout: 10)); app.buttons["message-20"].tap()
+        XCTAssertTrue(app.staticTexts["sendError"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["sendReviewedDraft"].isEnabled)
+        capture("Connection failure keeps draft retryable")
+        app.buttons["Refresh review"].tap()
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].isEnabled)
+    }
     func testClaudePermissionAndStopControls() {
         launch()
         XCTAssertTrue(app.buttons["openChat"].waitForExistence(timeout: 10)); app.buttons["openChat"].tap()

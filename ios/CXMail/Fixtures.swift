@@ -13,6 +13,8 @@ import Foundation
     static var chatStarts = 0
     static var lastChatText = ""
     static var scheduled: [[String: Any]] = []
+    static var missingDrafts = Set<Int>()
+    static var draftPreviewRequests = 0
     static func message(_ uid: Int = 10, detail: Bool = false) -> [String: Any] {
         var value: [String: Any] = ["account": "work", "folder": "INBOX", "uid": uid,
             "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
@@ -57,7 +59,12 @@ import Foundation
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
         case "/api/drafts":
             var draft = message(20); draft["draft"] = true; draft["folder"] = "Drafts"; draft["subject"] = "Re: A good place to pick this up"
-            result = sent ? [] : [draft]
+            var drafts = [draft]
+            if ProcessInfo.processInfo.arguments.contains("--missing-draft") {
+                var current = draft; current["uid"] = 21; current["subject"] = "A current draft to review"
+                drafts.append(current)
+            }
+            result = sent ? [] : drafts.filter { !missingDrafts.contains($0["uid"] as! Int) }
         case "/api/action":
             let uid = body?["uid"] as? Int ?? 0
             switch body?["action"] as? String {
@@ -71,7 +78,14 @@ import Foundation
         case "/api/draft":
             saved = true
             result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 20]]
-        case "/api/draft-preview": result = ["account_id": "work", "folder": "Drafts", "uid": 20, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "attachments": [], "sendable": true, "digest": String(repeating: "a", count: 64)]
+        case "/api/draft-preview":
+            let uid = Int(q["uid"] ?? "20") ?? 20
+            draftPreviewRequests += 1
+            if ProcessInfo.processInfo.arguments.contains("--missing-draft") && uid == 20 {
+                missingDrafts.insert(uid); throw MailError.draftUnavailable
+            }
+            if ProcessInfo.processInfo.arguments.contains("--draft-preview-unavailable") && draftPreviewRequests == 1 { throw URLError(.timedOut) }
+            result = ["account_id": "work", "folder": "Drafts", "uid": uid, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "attachments": [], "sendable": true, "digest": String(repeating: "a", count: 64)]
         case "/api/send":
             if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
             sent = true; result = ["ok": true, "draft_removed": true]

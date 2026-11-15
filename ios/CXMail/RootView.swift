@@ -154,6 +154,20 @@ struct MailboxView: View {
     let categories = ["all", "primary", "starred", "updates", "promotions", "social"]
     var body: some View {
         List {
+            if tab == .drafts, let ref = store.unavailableDraft, store.account.isEmpty || store.account == ref.account {
+                Section {
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Drafts updated", systemImage: "arrow.clockwise").font(.headline)
+                            Text(MailError.draftUnavailable.localizedDescription).font(.subheadline).foregroundStyle(.secondary)
+                        }.accessibilityElement(children: .combine).accessibilityIdentifier("draftUpdated")
+                        Spacer(minLength: 0)
+                        Button { store.unavailableDraft = nil } label: {
+                            Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
+                        }.buttonStyle(.borderless).accessibilityLabel("Dismiss draft update")
+                    }.padding(.vertical, 8)
+                }
+            }
             if let error = store.error {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -180,6 +194,7 @@ struct MailboxView: View {
                 } else {
                     ForEach(store.rows) { message in
                         Button {
+                            store.unavailableDraft = nil
                             if tab == .drafts && !split { store.review = message.ref }
                             else { store.selected = message.ref }
                         } label: { MessageRow(message: message, sent: tab == .sent) }

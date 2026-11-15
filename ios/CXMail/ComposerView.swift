@@ -184,6 +184,9 @@ struct ReviewView: View {
             let queue: [ScheduledSend] = try await store.api.get("/api/scheduled")
             guard !Task.isCancelled else { return }
             preview = p; html = body; currentSchedule = queue.first { $0.ref == p.ref && $0.active }
+        } catch MailError.draftUnavailable {
+            guard !Task.isCancelled else { return }
+            await store.refreshAfterMissingDraft(ref)
         } catch { if !Task.isCancelled { self.error = store.friendly(error) } }
     }
     private func send() async {
@@ -196,6 +199,8 @@ struct ReviewView: View {
             store.snapshot.lists = [:]; store.persist(); store.review = nil; store.selected = nil
             dismiss(); store.notice = result.draftRemoved ? "Sent." : result.note ?? "Sent. Check Drafts on the Mac for the remaining copy."
             await store.load()
+        } catch MailError.draftUnavailable {
+            await store.refreshAfterMissingDraft(ref)
         } catch {
             // Never silently retry a send: a dropped reply may follow successful SMTP.
             self.error = store.friendly(error) + " Check Sent before trying again. Refresh the review to continue."

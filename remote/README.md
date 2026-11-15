@@ -33,6 +33,20 @@ remote/install.sh uninstall   # stop it and remove the Serve entry
 
 Standard-library Python only (`/usr/bin/python3`, 3.9): no venv, nothing to break. Log: `~/Library/Logs/cxmail-remote.log`.
 
+## Draft freshness
+
+Draft list metadata comes from the mini's read-only cache. If the signed helper
+confirms a particular revision no longer exists on IMAP, preview/send returns
+HTTP 410 with `code: draft_gone`. The native app removes that exact reference
+from its cached lists and refreshes Drafts instead of retrying an obsolete UID.
+Confirmed missing revisions are excluded in the service's private
+`missing-drafts.json` cache across restarts. The exclusion is scoped to the
+account, folder, UID, cached message identity/date and UIDVALIDITY; a new mailbox
+generation or changed cached revision can appear again. A successful fresh
+preview also clears it. No mailbox row or server message is deleted. Connection,
+account and digest errors never exclude a draft. New revisions still arrive
+through the mini's normal folder sync; replacements are never guessed by subject.
+
 ## Companion schedules
 
 The native review has a floating glass send capsule: paper plane → final **Send

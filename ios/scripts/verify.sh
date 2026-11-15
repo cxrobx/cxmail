@@ -10,7 +10,7 @@ mkdir -p "$OUT"
 xcodegen generate
 for PROFILE in compact wide; do
   SIM=$COMPACT; ONLY=(-skip-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -skip-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -skip-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut)
-  if [ "$PROFILE" = wide ]; then SIM=$WIDE; ONLY=(-only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -only-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -only-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut -only-testing:CXMailUITests/CXMailUITests/testCompactSendToolbarScheduleAndCancel); fi
+  if [ "$PROFILE" = wide ]; then SIM=$WIDE; ONLY=(-only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -only-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -only-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut -only-testing:CXMailUITests/CXMailUITests/testCompactSendToolbarScheduleAndCancel -only-testing:CXMailUITests/CXMailUITests/testMissingDraftRefreshesListAndOpensCurrentDraft); fi
   LOG="$OUT/$PROFILE-$RUN.log"
   xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Debug \
     -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath "$OUT" \
