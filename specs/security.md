@@ -141,3 +141,17 @@ Email HTML is rendered in an `<iframe>` with strict sandboxing:
 - No arbitrary filesystem access from frontend
 - Attachment downloads use Tauri dialog plugin (user picks destination via save panel)
 - No temp files with sensitive content — everything goes through Keychain or SQLite
+
+## Attachment Text Extraction
+
+PDF and DOCX text (search indexing, `parse_message`, the MCP's `read_attachment_text`) is
+extracted by `cxmail-extract`, a bundled helper run under `sandbox-exec`: no network, no file
+writes, no forking, no reads under the user's home folder, 5 s of CPU, a 512 MB allocator cap
+(macOS does not enforce `RLIMIT_AS`) and a 10 s wall-clock kill. The parsers are memory-safe
+Rust (`pdf-extract` has no `unsafe`, `lopdf` forbids it, deflate is `miniz_oxide`), so the
+memory-corruption class behind native-renderer PDF CVEs does not apply; the helper contains
+what Rust does not prevent. Measured: a 2 MB PDF holding a 2 GB deflate bomb aborts at the
+memory cap in 0.09 s. Release builds never fall back to in-process parsing; a missing helper
+means no text. The native macOS parsers (Spotlight's importer, Quick Look) still see any PDF
+that is *saved to disk*, which is why downloads always ask and `read_attachment_text` is the
+preferred route. Tests: `document_text::sandbox_tests` (the 10 s wall-clock test is `--ignored`).

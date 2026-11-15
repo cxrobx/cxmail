@@ -1,11 +1,127 @@
-//! Text extraction from bounded, inert attachment bytes. No disk paths or
-//! processes; a malformed document never fails parsing the email around it.
-use std::io::{Cursor, Read};
+//! Text extraction from bounded, inert attachment bytes. No disk paths; a
+//! malformed document never fails parsing the email around it.
+//!
+//! **PDF and DOCX are parsed in a separate, sandboxed process**
+//! (`cxmail-extract`, src/bin/extract.rs): no network, no file writes, no
+//! forking, no reads under the user's home folder, 5 s of CPU, 512 MB of
+//! memory, and a wall-clock kill. The parsers are memory-safe Rust, so this is
+//! not about the overrun bugs behind native-renderer PDF CVEs; it is about what
+//! Rust does not stop: a loop or a decompression bomb in a crafted file would
+//! otherwise stall a sync or an MCP call, or exhaust memory. Plain text stays
+//! in-process.
+//!
+//! Release builds never fall back to in-process parsing of a complex format:
+//! if the helper is missing, the attachment simply has no text. Debug builds
+//! and tests (where the app package's bins are not built) parse in-process.
+use std::io::{Cursor, Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 pub const MAX_BYTES: usize = 5 * 1024 * 1024;
 const MAX_TEXT: usize = 100_000;
+const HELPER: &str = "cxmail-extract";
+const WALL_CLOCK: Duration = Duration::from_secs(10);
 
+/// SBPL for the helper. `HOME` and `BIN` are substituted at spawn time. The
+/// last matching rule wins, so the helper's own binary is re-allowed after the
+/// blanket home-folder denial (a dev build lives under ~/Projects).
+pub const SANDBOX_PROFILE: &str = r#"(version 1)
+(allow default)
+(deny network*)
+(deny file-write*)
+(allow file-write-data (literal "/dev/null"))
+(deny process-fork)
+(deny file-read* (subpath "HOME"))
+(allow file-read* (literal "BIN"))
+"#;
+
+fn is_complex(name: &str, mime: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    mime == "application/pdf"
+        || n.ends_with(".pdf")
+        || n.ends_with(".docx")
+        || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+}
+
+fn helper_path() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?.parent()?.join(HELPER);
+    p.is_file().then_some(p)
+}
+
+/// Text from an attachment. PDF/DOCX go through the sandboxed helper.
 pub fn extract(name: &str, mime: &str, bytes: &[u8]) -> Option<String> {
+    if bytes.len() > MAX_BYTES {
+        return None;
+    }
+    if !is_complex(name, mime) {
+        return extract_in_process(name, mime, bytes);
+    }
+    match helper_path() {
+        Some(bin) => extract_isolated(&bin, name, mime, bytes),
+        None if cfg!(debug_assertions) => extract_in_process(name, mime, bytes),
+        None => {
+            log::warn!("{HELPER} not found next to {:?}; skipping text extraction", std::env::current_exe().ok());
+            None
+        }
+    }
+}
+
+/// Run the helper under `sandbox-exec`, feed it the bytes, and give it
+/// `WALL_CLOCK` to answer. Any failure is "no text", never an error that
+/// could fail the email around the attachment.
+pub fn extract_isolated(bin: &std::path::Path, name: &str, mime: &str, bytes: &[u8]) -> Option<String> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let profile = SANDBOX_PROFILE
+        .replace("HOME", &home.to_string_lossy().replace('"', ""))
+        .replace("BIN", &bin.to_string_lossy().replace('"', ""));
+    let mut child = Command::new("/usr/bin/sandbox-exec")
+        .arg("-p")
+        .arg(profile)
+        .arg(bin)
+        .arg(name.replace('\0', ""))
+        .arg(mime.replace('\0', ""))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = child.stdin.take()?;
+    let input = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    });
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = (&mut stdout).take((MAX_TEXT * 4 + 1) as u64).read_to_end(&mut out);
+        out
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if start.elapsed() < WALL_CLOCK => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                log::warn!("{HELPER} timed out on {name:?}");
+                break None;
+            }
+        }
+    };
+    let _ = writer.join();
+    let out = reader.join().ok()?;
+    if !status?.success() {
+        return None;
+    }
+    let text: String = String::from_utf8_lossy(&out).chars().take(MAX_TEXT).collect();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// The parser itself. Only the helper binary and debug fallback call this for
+/// complex formats.
+pub fn extract_in_process(name: &str, mime: &str, bytes: &[u8]) -> Option<String> {
     if bytes.len() > MAX_BYTES {
         return None;
     }
@@ -61,6 +177,52 @@ pub fn extract(name: &str, mime: &str, bytes: &[u8]) -> Option<String> {
     .flatten()?;
     let text: String = text.chars().take(MAX_TEXT).collect();
     (!text.trim().is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    //! Prove the profile, not the parser: stand-in binaries try what a
+    //! compromised extractor would. macOS only (sandbox-exec).
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_sandbox_denies_reads_in_home_but_the_helper_protocol_works_elsewhere() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let inside = home.join(format!(".cxm-sandbox-probe-{}", std::process::id()));
+        std::fs::write(&inside, "secret-in-home").unwrap();
+        let outside = std::env::temp_dir().join(format!("cxm-sandbox-probe-{}", std::process::id()));
+        std::fs::write(&outside, "fine-outside").unwrap();
+        // `cat <name> <mime>` prints both files when allowed.
+        let got_inside = extract_isolated(Path::new("/bin/cat"), inside.to_str().unwrap(), "/dev/null", b"");
+        let got_outside = extract_isolated(Path::new("/bin/cat"), outside.to_str().unwrap(), "/dev/null", b"");
+        let _ = std::fs::remove_file(&inside);
+        let _ = std::fs::remove_file(&outside);
+        assert!(got_inside.is_none(), "read inside HOME must be denied: {got_inside:?}");
+        assert_eq!(got_outside.as_deref(), Some("fine-outside"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn the_sandbox_denies_writes() {
+        let target = std::env::temp_dir().join(format!("cxm-sandbox-write-{}", std::process::id()));
+        let _ = extract_isolated(Path::new("/usr/bin/touch"), target.to_str().unwrap(), "/dev/null", b"");
+        assert!(!target.exists(), "a write from inside the sandbox must fail");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "takes WALL_CLOCK (10 s); run with --ignored"]
+    fn a_hung_extractor_is_killed_at_the_wall_clock() {
+        let t = Instant::now();
+        // `tail -f /dev/null` is silent and never exits, so only the wall clock
+        // can end it. (`yes` is the wrong probe: the output cap closes the pipe
+        // and SIGPIPE ends it in milliseconds, which is the cap working.)
+        assert!(extract_isolated(Path::new("/usr/bin/tail"), "-f", "/dev/null", b"").is_none());
+        let took = t.elapsed();
+        assert!(took >= WALL_CLOCK && took < WALL_CLOCK + Duration::from_secs(3), "{took:?}");
+    }
 }
 
 #[cfg(test)]

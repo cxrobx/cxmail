@@ -51,6 +51,14 @@ path = "src/bin/tracker.rs"
 name = "cxmail-helper"
 path = "src/bin/helper.rs"
 
+# Sandboxed PDF/DOCX text extraction (email::document_text). Must sit next to
+# every binary that parses mail, which a [[bin]] here guarantees: the bundler
+# copies app-package bins into Contents/MacOS, and target/release holds them
+# beside cxmail-mcp.
+[[bin]]
+name = "cxmail-extract"
+path = "src/bin/extract.rs"
+
 # Dependency debug symbols dominate target/debug (~10 GB of the ~15 GB across
 # ~900 crates), so they carry none.
 [profile.dev.package."*"]
