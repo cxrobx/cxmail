@@ -89,7 +89,17 @@ and the client:
    shown, never raised on (5% false positives). The rules alone caught 0/17. Off switch:
    credential `ai:risk:model` = `off`. Needs the OpenAI provider configured in CXMail.
 
-Not covered: clients without a hook (Codex, other MCP hosts) get layers 1, 2 and 4 only.
+**Codex** has no `ask` in its `PreToolUse` (only `deny`), so it gets the same policy split in
+two: per-tool `approval_mode = "prompt"` under `[mcp_servers.cxmail.tools.<tool>]` in
+`~/.codex/config.toml` for every tool the Claude hook asks about (all moves and all
+`apply_mail_rule` calls prompt, since config cannot see arguments), and the hook run as
+`cxmail-approval.py --codex` from `~/.codex/hooks.json`, which only denies: the dangerous
+paths, plus downloads from an email stored as HIGH risk. Verified with `codex exec`: a
+`delete_email` call fails with "MCP tool call requires approval" before reaching the server.
+Codex runs a new hook only after the user trusts it once. Draft attachments are not
+prompted in Codex; the server's path refusal still applies.
+
+Not covered: other MCP hosts get layers 1, 2 and 4 only.
 
 ## Tool Definitions
 

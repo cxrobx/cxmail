@@ -94,28 +94,38 @@ Default: **block all remote images** (prevents tracking pixels).
 
 ## Frontend Rendering Sandbox
 
-Email HTML is rendered in an `<iframe>` with strict sandboxing:
+The reading pane renders sanitized email HTML in a `srcdoc` iframe
+(`src/components/mail/EmailFrame.tsx`):
 
 ```html
 <iframe
-  sandbox="allow-same-origin"
-  srcdoc={sanitizedHtml}
-  style="border: none; width: 100%; height: 100%;"
+  sandbox="allow-scripts allow-top-navigation-by-user-activation"
+  srcDoc={frameDocument}
 />
 ```
 
-### What `sandbox="allow-same-origin"` means
-- NO JavaScript execution
-- NO form submission
-- NO popups/new windows
-- NO plugins
-- YES same-origin access (needed for srcdoc to work)
+### What this sandbox means
+- **No `allow-same-origin`**: the frame has an opaque origin, so nothing in it can reach the
+  app's DOM, storage, cookies or Tauri IPC.
+- **Scripts run, but only CXMail's own.** ammonia strips every `<script>` and event handler
+  from email HTML before storage, and the frame inherits the app CSP (`script-src 'self'`),
+  which blocks inline script. The one script that runs is `public/email-frame.js`, loaded by
+  URL (height reporting, selection feedback, image trust). Gotcha #29: it must stay an
+  external file, never inline or hash-allowed. Test: `EmailFrameCsp.test.ts`.
+- NO form submission, NO popups, NO plugins.
+- Top-level navigation only on a real user click.
+
+Hover previews in the message list use `sandbox=""` (no flags at all).
 
 ### Link Interception
-- Listen for click events on the iframe
-- Intercept all `<a>` clicks
-- Open URLs in system browser via `@tauri-apps/plugin-shell` open()
-- Never navigate the iframe to an external URL
+- The frame document carries `<base target="_top">`, so a clicked link navigates the top frame.
+- Tauri's `on_navigation` handler catches that navigation and opens the URL in the system
+  browser; the app webview never navigates to an external URL.
+
+### Agents (MCP)
+What reaches an AI agent through the MCP, and what an agent may do with it, is a separate
+boundary: fenced untrusted output, server-side file limits, client approval hooks and the
+per-message risk check. See `specs/mcp.md` § Agent boundary.
 
 ## TLS / Network Security
 
