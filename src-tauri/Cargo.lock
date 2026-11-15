@@ -1483,6 +1483,7 @@ dependencies = [
  "cxmail-email",
  "dirs",
  "futures",
+ "libc",
  "log",
  "mail-builder",
  "regex",

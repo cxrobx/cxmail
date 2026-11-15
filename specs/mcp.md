@@ -17,6 +17,42 @@ Built-in MCP server so Claude can interact with email. Embedded in the Tauri Rus
 
 Approve tier timeout: 60 seconds. Default on timeout: **reject**.
 
+> **What actually holds today (2026-11-15).** The tiers above describe the app-embedded
+> design. The standalone `cxmail-mcp` (stdio, and the shared `--http` server) has no UI, so
+> the Approve modal never runs there, and `confirmed=true` on the delete tools is a flag the
+> agent sets itself. The real controls are in § Agent boundary below.
+
+## Agent boundary
+
+The MCP runs inside agent sessions that also have a shell, files and the web, and it hands
+them mail written by strangers. Three layers, in `crates/cxmail-mcp/src/mcp/untrusted.rs`
+and the client:
+
+1. **Fenced output.** Every tool in `UNTRUSTED_OUTPUT` (anything that can carry a body,
+   subject, sender name, attachment filename or invitation text) returns its text between
+   `<<<UNTRUSTED_EMAIL_CONTENT nonce=…>>>` and `<<<END_UNTRUSTED_EMAIL_CONTENT nonce=…>>>`,
+   a fresh random nonce per call, with marker-shaped text inside defanged. The convention
+   is also sent as server `instructions` at initialize. Wrapping happens once, in the
+   hand-written `call_tool` (not `#[tool_handler]`, which in rmcp-macros 1.3 always
+   generates its own). Every tool must be listed in exactly one of `UNTRUSTED_OUTPUT` /
+   `SERVER_AUTHORED_OUTPUT`; `every_tool_is_classified_for_untrusted_output` fails
+   otherwise. Draft tools stay server-authored: the chat panel parses their result line.
+2. **Server hard limits** (no agent can lift them): `download_attachment` never overwrites
+   (`name (1).ext`, `create_new`), refuses dot-files, hidden directories and `~/Library`
+   (except iCloud Drive and `CloudStorage`) including through symlinks, and sets
+   `com.apple.quarantine` on what it saves. Draft `attachments` get the same path refusal,
+   because a draft is APPENDed to the provider before anyone reviews it.
+3. **Client approval.** Only the client can ask the human. For Claude Code, a PreToolUse
+   hook on `mcp__cxmail__.*` with this policy: ask for `delete_email`,
+   `bulk_delete_emails`, `move_email` into Trash/Junk/Spam, `apply_mail_rule` with
+   `dry_run=false`, mail-rule and voice-rule writes, `delete_group`, `send_email`, and
+   drafts with attachments; `download_attachment` allows `~/Downloads`, denies what the
+   server refuses, asks otherwise. CXMail's in-app chat already routes every mutating tool
+   to its own ask tier (`chat_agent::mutating_tools_are_never_auto_allowed`).
+   `send_calendar_invites` needs the in-app approval card regardless.
+
+Not covered: clients without a hook (Codex, other MCP hosts) get layers 1 and 2 only.
+
 ## Tool Definitions
 
 ### Read Tools (Open Tier)

@@ -5,3 +5,4 @@
 pub use cxmail_core::bridge;
 
 pub mod server;
+pub mod untrusted;

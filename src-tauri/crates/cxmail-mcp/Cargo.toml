@@ -38,3 +38,5 @@ sha2 = "0.10"
 rusqlite = { workspace = true }
 # Downloads / home dir for the attachment tools.
 dirs = { workspace = true }
+# setxattr for the com.apple.quarantine flag on saved attachments (untrusted.rs).
+libc = "0.2"
