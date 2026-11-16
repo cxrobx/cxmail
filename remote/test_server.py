@@ -13,7 +13,10 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from unittest.mock import patch
+import subprocess
 import urllib.error
 import urllib.request
 import datetime as dt
@@ -69,6 +72,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server  # noqa: E402
 
 SCHEMA = """
+CREATE TABLE intelligence_accounts(account_id TEXT PRIMARY KEY,semantic_search INTEGER DEFAULT 0);
+INSERT INTO intelligence_accounts VALUES('a1',1),('a2',1);
 CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT, display_name TEXT, color TEXT,
   is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0, hidden_from_aggregates INTEGER DEFAULT 0);
 CREATE TABLE folders (account_id TEXT, name TEXT, display_name TEXT, folder_type TEXT);
@@ -255,9 +260,93 @@ class Api(unittest.TestCase):
         self.assertEqual(code, 200, raw)
         return json.loads(raw)
 
+    def test_hybrid_search_hydrates_helper_results_and_pins_cursor_scope(self):
+        # Shape is the real Rust SearchPage contract; only references/snippets
+        # come from the helper. Authoritative mailbox summaries are hydrated here.
+        hit = {"account_id":"a1", "folder_name":"INBOX", "uid":10,
+               "snippet":"Email: semantic\ue000 passage\ue001", "semantic_match": True}
+        result = subprocess.CompletedProcess([],0,json.dumps({"results":[hit]*51,"semantic_status":"partial"}),"")
+        with patch.object(server.subprocess,"run",return_value=result) as run:
+            first=self.j("/api/search?q=accommodation&account=a1")
+            self.assertEqual(first["results"][0]["subject"],"Quarterly budget")
+            self.assertEqual(first["results"][0]["snippet"],"Email: semantic passage")
+            self.assertTrue(first["results"][0]["semantic_match"])
+            cursor=urllib.parse.quote(first["next_cursor"])
+            second=self.j("/api/search?q=accommodation&account=a1&cursor="+cursor)
+            self.assertEqual(len(second["results"]),1)
+            self.assertIsNone(second["next_cursor"])
+            with sqlite3.connect(FIXTURE) as writer:
+                writer.execute("UPDATE intelligence_accounts SET semantic_search=0 WHERE account_id='a1'")
+            try:
+                revoked=self.j("/api/search?q=accommodation&account=a1&cursor="+cursor)
+                self.assertEqual(revoked["results"],[],"Cached pages must recheck semantic opt-out")
+            finally:
+                with sqlite3.connect(FIXTURE) as writer:
+                    writer.execute("UPDATE intelligence_accounts SET semantic_search=1 WHERE account_id='a1'")
+            self.assertEqual(run.call_count,1,"Pagination must reuse the exact ranked snapshot")
+            self.assertEqual(self.req("/api/search?q=other&account=a1&cursor="+cursor)[0],410)
+            self.assertEqual(self.req("/api/search?q=accommodation&account=a2&cursor="+cursor)[0],410)
+            run.assert_called_once()
+
+    def test_current_query_waits_for_abandoned_search_slots(self):
+        ready,release=threading.Event(),threading.Event()
+        lock=threading.Lock()
+        count=[0]
+        def helper(args, **kwargs):
+            with lock:
+                count[0]+=1
+                if count[0]==2: ready.set()
+            if args[3] != 'xrf meeting notes':
+                self.assertTrue(release.wait(timeout=3))
+            return subprocess.CompletedProcess([],0,json.dumps({"results":[],"semantic_status":"ready"}),"")
+        with patch.object(server.subprocess,'run',side_effect=helper), ThreadPoolExecutor(max_workers=3) as pool:
+            old=[pool.submit(self.req,'/api/search?q='+urllib.parse.quote(q)) for q in ['xrf','xrf meeting']]
+            try:
+                self.assertTrue(ready.wait(timeout=3))
+                current=pool.submit(self.req,'/api/search?q=xrf+meeting+notes')
+                time.sleep(0.05)
+                self.assertFalse(current.done(),"Current query must queue, not fail busy immediately")
+            finally: release.set()
+            self.assertEqual(current.result(timeout=3)[0],200)
+            self.assertTrue(all(f.result(timeout=3)[0]==200 for f in old))
+
+    def test_superseded_queued_generation_never_starts_a_helper(self):
+        server.register_search('fictional-client',1)
+        server.register_search('fictional-client',2)
+        with patch.object(server.subprocess,'run') as run:
+            with self.assertRaises(server.SearchSuperseded):
+                server.search_helper('old words','a1',client='fictional-client',generation=1)
+            run.assert_not_called()
+        result=subprocess.CompletedProcess([],0,json.dumps({'results':[],'semantic_status':'ready'}),'')
+        with patch.object(server.subprocess,'run',return_value=result) as run:
+            server.search_helper('current words','a1',client='fictional-client',generation=2)
+            run.assert_called_once()
+
+    def test_expired_search_cursor_has_typed_recovery_error(self):
+        code,_,raw=self.req('/api/search?q=budget&cursor=expired:50')
+        self.assertEqual(code,410)
+        self.assertEqual(json.loads(raw)['code'],'search_expired')
+
+    def test_malformed_search_helper_json_fails_without_crashing(self):
+        for value in [[],None,1,'wrong']:
+            with patch.object(server.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(value),'')):
+                code,_,_=self.req('/api/search?q=budget')
+                self.assertEqual(code,400)
+
+    def test_hybrid_search_timeout_and_hidden_account_never_silently_succeed(self):
+        with patch.object(server.subprocess,"run",side_effect=subprocess.TimeoutExpired("fixture",8)):
+            code,_,body=self.req("/api/search?q=budget")
+            self.assertEqual(code,400)
+            self.assertIn(b"Keyword results are still available",body)
+        hit={"account_id":"a2","folder_name":"INBOX","uid":1,"snippet":"hidden"}
+        result=subprocess.CompletedProcess([],0,json.dumps({"results":[hit],"semantic_status":"ready"}),"")
+        with patch.object(server.subprocess,"run",return_value=result):
+            self.assertEqual(self.j("/api/search?q=budget")["results"],[])
+            self.assertEqual(len(self.j("/api/search?q=budget&account=a2")["results"]),1)
+
     # auth --------------------------------------------------------------
     def test_no_login_is_refused(self):
-        for path in ("/", "/api/accounts", "/api/messages"):
+        for path in ("/", "/api/accounts", "/api/messages", "/api/search?q=budget"):
             self.assertEqual(self.req(path, login=None)[0], 403, path)
 
     def test_wrong_login_is_refused(self):

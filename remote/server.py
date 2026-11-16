@@ -19,6 +19,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
+import secrets
 import tempfile
 import urllib.error
 import urllib.parse
@@ -55,6 +57,7 @@ T3_BIN = os.environ.get("CXMAIL_T3_BIN") or next(
 # CXMail Settings -> Claude repos. Must be a T3 project.
 T3_HOME_PROJECT = os.environ.get("CXMAIL_T3_HOME_PROJECT", os.path.expanduser("~"))
 SEND_BIN = os.environ.get("CXMAIL_SEND_BIN", "/Applications/CXMail.app/Contents/MacOS/cxmail-mcp")
+SEARCH_BIN = os.environ.get("CXMAIL_SEARCH_BIN", SEND_BIN)
 SCHEDULE_PATH = os.environ.get('CXMAIL_SCHEDULE_DB', os.path.expanduser(
     '~/Library/Application Support/com.cxmail.remote/scheduled.sqlite'))
 SCHEDULES = None
@@ -257,6 +260,118 @@ def search(conn, q, account, before):
         "WHERE {} ORDER BY m.date DESC LIMIT {}".format(SUMMARY_COLS, " AND ".join(where), PAGE)
     )
     return [row_summary(r) for r in conn.execute(sql, args).fetchall()]
+
+
+# Immutable, bounded ranked snapshots: Load more cannot skip equal-date mail or
+# reorder results if a new message arrives / indexing advances between pages.
+SEARCH_LOCK = threading.Lock()
+SEARCH_SLOTS = threading.BoundedSemaphore(2)
+SEARCH_CACHE = OrderedDict()
+SEARCH_TTL = 300
+SEARCH_GENERATIONS = OrderedDict()
+
+
+class SearchBusy(ValueError):
+    pass
+
+
+class SearchExpired(ValueError):
+    pass
+
+
+class SearchSuperseded(ValueError):
+    pass
+
+
+def register_search(client, generation):
+    if client is None:
+        return
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}",client) or not 0 <= generation < 10**12:
+        raise ValueError("Invalid search client generation")
+    with SEARCH_LOCK:
+        if generation < SEARCH_GENERATIONS.get(client, -1):
+            raise SearchSuperseded("A newer search replaced this query")
+        SEARCH_GENERATIONS[client] = generation
+        SEARCH_GENERATIONS.move_to_end(client)
+        while len(SEARCH_GENERATIONS)>64:
+            SEARCH_GENERATIONS.popitem(last=False)
+
+
+def search_is_current(client,generation):
+    with SEARCH_LOCK:
+        return client is None or generation == SEARCH_GENERATIONS.get(client)
+
+
+def search_helper(query, account, keyword=False, client=None, generation=0):
+    register_search(client,generation)
+    # Queue a bounded wait so an abandoned request cannot reject the finished
+    # query while its predecessor is still embedding. Native retries busy once.
+    if not SEARCH_SLOTS.acquire(timeout=20):
+        raise SearchBusy("Search is busy. Try again.")
+    try:
+        if not search_is_current(client,generation):
+            raise SearchSuperseded("A newer search replaced this query")
+        p = subprocess.run([SEARCH_BIN, "remote", "search-keywords" if keyword else "search", query, account or ""],
+            capture_output=True, text=True, timeout=18, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, CXMAIL_MCP_IDLE_GRACE_SECS="0"))
+        data = json.loads(p.stdout.strip().splitlines()[-1])
+        if p.returncode or not isinstance(data,dict) or not isinstance(data.get("results"), list) or any(not isinstance(h,dict) or not isinstance(h.get("account_id"),str) or not isinstance(h.get("folder_name"),str) or not isinstance(h.get("uid"),int) or not isinstance(h.get("snippet",""),str) for h in data["results"]):
+            raise ValueError("Invalid search helper response")
+        return data
+    except SearchSuperseded:
+        raise
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        raise ValueError("Hybrid search is unavailable. Keyword results are still available.")
+    finally:
+        SEARCH_SLOTS.release()
+
+
+def hybrid_search(conn, query, account=None, cursor=None, keyword=False, client=None, generation=0):
+    if not query.strip() or len(query) > 2000:
+        raise ValueError("Enter a query of 1–2,000 characters")
+    now = time.monotonic()
+    if cursor:
+        token, offset = cursor.rsplit(":", 1)
+        offset = int(offset)
+        with SEARCH_LOCK:
+            cached = SEARCH_CACHE.get(token)
+        if not cached or now - cached[0] > SEARCH_TTL or cached[1:3] != (query, account):
+            raise SearchExpired("Search expired. Search again to refresh the results.")
+        if offset < 0 or offset % PAGE:
+            raise ValueError("Invalid search cursor")
+        hits, status = cached[3:]
+    else:
+        data = search_helper(query, account, keyword, client, generation)
+        hits = data["results"][:1500]
+        status = data.get("semantic_status", "unavailable")
+        token = secrets.token_urlsafe(18)
+        offset = 0
+        with SEARCH_LOCK:
+            for key in list(SEARCH_CACHE):
+                if now - SEARCH_CACHE[key][0] > SEARCH_TTL:
+                    del SEARCH_CACHE[key]
+            SEARCH_CACHE[token] = (now, query, account, hits, status)
+            while len(SEARCH_CACHE) > 20:
+                SEARCH_CACHE.popitem(last=False)
+    # Hydrate through this request's read-only connection; don't trust stale
+    # cached metadata for account visibility or pending mutations.
+    allowed = {a["id"] for a in accounts(conn) if a["id"] == account or (not account and not a["hidden"])}
+    enabled = {r[0] for r in conn.execute("SELECT account_id FROM intelligence_accounts WHERE semantic_search=1")}
+    rows = []
+    for hit in hits[offset:offset + PAGE]:
+        if hit.get("semantic_match") and hit.get("account_id") not in enabled:
+            continue
+        if hit.get("account_id") not in allowed:
+            continue
+        row = conn.execute("SELECT {} FROM messages m WHERE m.account_id=? AND m.folder_name=? AND m.uid=?".format(SUMMARY_COLS),
+            (hit["account_id"], hit["folder_name"], hit["uid"])).fetchone()
+        if row:
+            summary = row_summary(row)
+            summary["snippet"] = hit.get("snippet", summary["snippet"]).replace("\ue000", "").replace("\ue001", "")
+            summary["semantic_match"] = bool(hit.get("semantic_match"))
+            rows.append(summary)
+    return {"results": PENDING.apply(rows), "semantic_status": status,
+            "next_cursor": "{}:{}".format(token, offset + PAGE) if len(hits) > offset + PAGE else None}
 
 
 def get_message(conn, account, folder, uid):
@@ -1103,6 +1218,16 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/accounts":
                 with db() as c:
                     return self._send(200, accounts(c))
+            if url.path == "/api/search":
+                with db() as c:
+                    try:
+                        return self._send(200, hybrid_search(c, q.get("q", ""), q.get("account") or None, q.get("cursor"), q.get("mode") == "keyword", q.get("client"), int(q.get("generation", "0"))))
+                    except SearchExpired as e:
+                        return self._send(410,{"error":str(e),"code":"search_expired"})
+                    except SearchSuperseded as e:
+                        return self._send(409,{"error":str(e),"code":"search_superseded"})
+                    except SearchBusy as e:
+                        return self._send(429,{"error":str(e),"code":"search_busy"})
             if url.path == "/api/messages":
                 with db() as c:
                     if q.get("q"):
@@ -1339,6 +1464,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, f.read(), ctype, extra)
 
 
+def index_search_loop():
+    while True:
+        delay = 120
+        try:
+            p = subprocess.run([SEARCH_BIN, "remote", "index-search"], capture_output=True,
+                text=True, timeout=60, stdin=subprocess.DEVNULL,
+                env=dict(os.environ, CXMAIL_MCP_IDLE_GRACE_SECS="0"))
+            result = json.loads(p.stdout.strip().splitlines()[-1])
+            if not isinstance(result,dict):
+                raise ValueError("Invalid indexing helper response")
+            if p.returncode:
+                sys.stderr.write("Local mail indexing unavailable: {}\n".format(str(result.get("error","helper failed"))[:240]))
+            elif result.get("pending", 0) > 0:
+                delay = 5
+            if result.get("embedded", 0):
+                sys.stderr.write("Mail indexing: {} passages, {} pending\n".format(result["embedded"], result["pending"]))
+        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+            sys.stderr.write("Local mail indexing could not complete\n")
+        time.sleep(delay)
+
+
 def main():
     if not DEV and not ALLOWED_LOGINS:
         sys.exit("CXMAIL_REMOTE_LOGINS is empty: refusing to start with nobody allowed in.")
@@ -1347,6 +1493,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     if not DEV:
         schedules().start()
+        threading.Thread(target=index_search_loop, daemon=True).start()
     sys.stderr.write("cxmail-remote on 127.0.0.1:{}{}\n".format(PORT, " (DEV: no login check)" if DEV else ""))
     srv.serve_forever()
 

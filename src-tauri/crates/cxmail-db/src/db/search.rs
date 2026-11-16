@@ -44,6 +44,9 @@ pub struct SearchFilters {
     pub larger_bytes: Option<i64>,
     pub smaller_bytes: Option<i64>,
     pub account_ids: Option<Vec<String>>,
+    /// Companion default: exclude bins and duplicate virtual folders.
+    #[serde(default)]
+    pub exclude_bins: bool,
 }
 
 impl SearchFilters {
@@ -180,6 +183,15 @@ pub fn search(
     offset: u32,
     prefix: bool,
 ) -> Result<Vec<SearchResult>, AppError> {
+    search_ordered(conn, f, limit, offset, prefix, false)
+}
+
+/// Relevance-first lane for hybrid retrieval; the desktop's chronological
+/// search contract stays unchanged.
+pub fn ranked_search(conn: &Connection, f: &SearchFilters, limit: u32, prefix: bool) -> Result<Vec<SearchResult>, AppError> {
+    search_ordered(conn, f, limit, 0, prefix, true)
+}
+fn search_ordered(conn: &Connection, f: &SearchFilters, limit: u32, offset: u32, prefix: bool, relevance: bool) -> Result<Vec<SearchResult>, AppError> {
     if let Some(ids) = &f.account_ids {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -235,12 +247,14 @@ pub fn search(
                     m.date, m.is_read, m.has_attachments,
                     snippet(messages_fts, -1, '{hs}', '{he}', ' … ', 12) AS snip,
                     (bm25(messages_fts, 8.0, 4.0, 2.0, 1.0, 3.0)
-                      + (julianday('now') - coalesce(julianday(m.date), 2440587.5)) * 0.02) AS rank
+                      + (julianday('now') - coalesce(julianday(m.date), 2440587.5)) * {recency}) AS rank
              FROM messages_fts
              JOIN messages m ON m.id = messages_fts.rowid
              WHERE {where_clause}
-             ORDER BY datetime(m.date) DESC, rank ASC
+             ORDER BY {ordering}
              LIMIT ?{idx} OFFSET ?{off}",
+            ordering = if relevance { "rank ASC, datetime(m.date) DESC, m.id DESC" } else { "datetime(m.date) DESC, rank ASC" },
+            recency = if relevance { 0.0 } else { 0.02 },
             hs = HIGHLIGHT_START,
             he = HIGHLIGHT_END,
             off = idx + 1,
@@ -296,6 +310,9 @@ pub(crate) fn metadata_predicates(
     let mut conditions = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = start;
+    if f.exclude_bins {
+        conditions.push("COALESCE(m.category,'') <> 'junk' AND m.folder_name NOT IN (SELECT name FROM folders f WHERE f.account_id=m.account_id AND f.folder_type IN ('trash','spam','drafts','important','starred'))".into());
+    }
     if let Some(ref from) = f.from {
         conditions.push(format!(
             "(m.from_email LIKE ?{idx} OR m.from_name LIKE ?{idx})"

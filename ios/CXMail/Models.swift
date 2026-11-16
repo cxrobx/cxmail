@@ -178,3 +178,9 @@ struct LocalDraft: Codable, Equatable, Identifiable {
         return .init(account: message.account, to: direct.joined(separator: ", "), cc: cc.joined(separator: ", "), subject: message.subject.lowercased().hasPrefix("re:") ? message.subject : "Re: " + message.subject, reply: message.ref)
     }
 }
+
+struct SearchPage: Decodable {
+    var results: [MailMessage]
+    var nextCursor: String?
+    var semanticStatus: String
+}

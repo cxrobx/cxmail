@@ -11,6 +11,22 @@ final class MailStore {
     var category = "primary"
     var account = ""
     var query = ""
+    var searchStatus: String?
+    private var searchCursor: String?
+    private var searchAccount: String?
+    var searchStatusText: String? {
+        switch searchStatus {
+        case "ready": "Keyword + meaning matches"
+        case "partial": "Keyword + meaning matches · older mail is still indexing"
+        case "indexing": "Keyword results · meaning search is still indexing"
+        case "disabled": "Keyword results · enable meaning search in desktop Settings"
+        case "exact": "Exact search · phrases and exclusions respected"
+        case "keyword": "Keyword matches · checking meaning matches"
+        case "busy": "Keyword results · search is busy, try again shortly"
+        case "unavailable": "Keyword results · meaning search is temporarily unavailable"
+        default: nil
+        }
+    }
     var selected: MessageRef?
     var rows: [MailMessage] = []
     var loading = false
@@ -56,20 +72,38 @@ final class MailStore {
         generation += 1; let token = generation; let key = listKey
         if more { loadingMore = true } else {
             loading = true; loadingMore = false
-            rows = snapshot.lists[key] ?? []; error = nil
+            if tab != .search || searchAccount != account {
+                rows = snapshot.lists[key] ?? []
+                searchStatus = nil
+            }
+            error = nil; searchCursor = nil
+            if tab == .search { searchAccount = account } else { searchAccount = nil }
         }
         defer { if token == generation { loading = false; loadingMore = false } }
         if tab == .search && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { rows = []; hasMore = false; return }
         do {
             let accounts: [MailAccount] = try await api.get("/api/accounts")
-            guard token == generation, !Task.isCancelled else { return }
+            guard token == generation, key == listKey, !Task.isCancelled else { return }
             snapshot.accounts = accounts
             var items = [URLQueryItem(name: "account", value: account)]
-            if tab == .search { items.append(.init(name: "q", value: query)) }
+            if tab == .search {
+                items += [.init(name: "q", value: query), .init(name: "client", value: api.searchSession), .init(name: "generation", value: String(token))]
+            }
             else { items.append(.init(name: "view", value: tab == .inbox ? category : tab.rawValue)) }
+            if tab == .search {
+                do {
+                    try await loadSearch(items: items, more: more, token: token, key: key)
+                } catch MailError.searchBusy {
+                    guard token == generation, key == listKey, !Task.isCancelled else { return }
+                    searchStatus = "busy"
+                }
+                guard token == generation, key == listKey, !Task.isCancelled else { return }
+                online = true; error = nil
+                snapshot.lists[key] = rows; snapshot.savedAt = Date(); persist(); return
+            }
             if more, let last = rows.last { items.append(.init(name: "before", value: last.date)) }
             let fetched: [MailMessage] = try await api.get(tab == .drafts ? "/api/drafts" : "/api/messages", query: items)
-            guard token == generation, !Task.isCancelled else { return }
+            guard token == generation, key == listKey, !Task.isCancelled else { return }
             var seen = Set<String>()
             rows = (more ? rows + fetched : fetched).filter { seen.insert($0.id).inserted }
             hasMore = fetched.count == 50 && tab != .drafts
@@ -80,9 +114,42 @@ final class MailStore {
             if snapshot.lists.count > 20 { snapshot.lists = [key: rows] }
             snapshot.savedAt = Date(); persist()
         } catch {
-            guard token == generation, !Task.isCancelled else { return }
+            guard token == generation, key == listKey, !Task.isCancelled else { return }
             online = false; self.error = friendly(error)
         }
+    }
+    private func searchPage(_ items: [URLQueryItem]) async throws -> SearchPage {
+        do { return try await api.get("/api/search", query: items) }
+        catch MailError.searchBusy {
+            try await Task.sleep(for: .seconds(1))
+            return try await api.get("/api/search", query: items)
+        }
+    }
+    private func loadSearch(items: [URLQueryItem], more: Bool, token: Int, key: String) async throws {
+        let page: SearchPage
+        var append = more
+        if more, let cursor = searchCursor {
+            do { page = try await searchPage(items + [.init(name: "cursor", value: cursor)]) }
+            catch MailError.searchExpired {
+                // A ranked snapshot expiring is not a connection failure.
+                // Refresh page one instead of retrying the same dead cursor.
+                page = try await searchPage(items); append = false
+            }
+        } else {
+            let keyword: SearchPage = try await searchPage(items + [.init(name: "mode", value: "keyword")])
+            guard token == generation, key == listKey, !Task.isCancelled else { return }
+            rows = keyword.results; searchStatus = "keyword"
+            searchCursor = keyword.nextCursor; hasMore = keyword.nextCursor != nil
+            do { page = try await searchPage(items) }
+            catch {
+                guard token == generation, key == listKey, !Task.isCancelled else { return }
+                searchStatus = "unavailable"; return
+            }
+        }
+        guard token == generation, key == listKey, !Task.isCancelled else { return }
+        var seen = Set<String>()
+        rows = (append ? rows + page.results : page.results).filter { seen.insert($0.id).inserted }
+        searchCursor = page.nextCursor; hasMore = page.nextCursor != nil; searchStatus = page.semanticStatus
     }
     func message(_ ref: MessageRef) async throws -> MailMessage {
         let message: MailMessage = try await api.get("/api/message", query: ref.query)

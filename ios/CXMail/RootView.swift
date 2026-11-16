@@ -123,6 +123,10 @@ struct MailWorkspace: View {
                 if layout.overlay, ref != nil { setColumns(.detailOnly) }
             }
         }
+        // Choose navigation from the window, not keyboard-reduced space.
+        // Otherwise a wide Duo drops below 500pt, destroys the focused search
+        // navigator, dismisses its keyboard and immediately becomes wide again.
+        .ignoresSafeArea(.keyboard, edges: tab == .search && !store.chatDocked ? .bottom : [])
     }
     private func setColumns(_ value: NavigationSplitViewVisibility) {
         withAnimation(reduceMotion ? nil : .default) { columns = value }
@@ -186,12 +190,20 @@ struct MailboxView: View {
                     }.accessibilityIdentifier("recoverDraft")
                 }
             }
+            if tab == .search, !store.query.isEmpty, let status = store.searchStatusText {
+                Section {
+                    HStack {
+                        Text(status).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("searchStatus")
+                        if store.loading { Spacer(); ProgressView().controlSize(.small) }
+                    }
+                }
+            }
             Section {
                 if store.loading && store.rows.isEmpty {
                     ForEach(0..<5) { _ in MessageRow(message: Self.placeholder, sent: false).redacted(reason: .placeholder).accessibilityHidden(true) }
                 } else if store.rows.isEmpty {
-                    ContentUnavailableView(tab == .search ? "Search your mail" : "You’re all caught up", systemImage: tab.symbol,
-                        description: Text(tab == .search ? "Find a sender, subject, or phrase across your accounts." : "Pull to refresh or choose another mailbox."))
+                    ContentUnavailableView(tab == .search ? (store.query.isEmpty ? "Search your mail" : "No matching mail") : "You’re all caught up", systemImage: tab.symbol,
+                        description: Text(tab == .search ? (store.query.isEmpty ? "Find words, people, or describe what you remember." : "Try different words or choose another account.") : "Pull to refresh or choose another mailbox."))
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(store.rows) { message in

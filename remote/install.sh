@@ -24,6 +24,9 @@ if [[ "${1:-}" == "uninstall" ]]; then
   exit 0
 fi
 
+SEARCH_BIN=${CXMAIL_SEARCH_BIN:-/Applications/CXMail.app/Contents/MacOS/cxmail-mcp}
+[[ -x "$SEARCH_BIN" ]] || { echo "Missing signed search helper: $SEARCH_BIN" >&2; exit 1; }
+
 LOGIN=${CXMAIL_REMOTE_LOGINS:-$("$TS" status --json | /usr/bin/python3 -c '
 import json, sys
 s = json.load(sys.stdin)
@@ -40,6 +43,7 @@ cat > "$PLIST" <<EOF
   <array><string>/usr/bin/python3</string><string>$HERE/server.py</string></array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>CXMAIL_SEARCH_BIN</key><string>$SEARCH_BIN</string>
     <key>CXMAIL_REMOTE_PORT</key><string>$PORT</string>
     <key>CXMAIL_REMOTE_LOGINS</key><string>$LOGIN</string>
   </dict>

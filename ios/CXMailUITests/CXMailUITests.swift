@@ -349,6 +349,8 @@ final class CXMailUITests: XCTestCase {
         capture("Resized chat split")
         input.tap(); input.typeText(" Still docked.")
         XCTAssertTrue(divider.exists, "Showing the keyboard must keep split chat docked")
+        XCTAssertTrue(input.isHittable,"Docked input must remain reachable with the keyboard open")
+        XCTAssertLessThanOrEqual(input.frame.maxY,app.keyboards.firstMatch.frame.minY,"Docked composer must sit above the software keyboard")
         let edited = input.value as? String ?? ""
         XCTAssertTrue(edited.contains("Keep this draft while docking.")); XCTAssertTrue(edited.contains("Still docked."))
         // The iPad keyboard pans the fixed-size virtual phone. Restore its
@@ -363,13 +365,63 @@ final class CXMailUITests: XCTestCase {
         XCTAssertGreaterThan(app.webViews.firstMatch.frame.width, 500, "Undocking restores the original mail reader")
         capture("Mail toolbar restored")
     }
+    func tapSearchTab() {
+        let tabs = app.buttons.matching(identifier: "Search")
+        XCTAssertTrue(tabs.firstMatch.waitForExistence(timeout: 5))
+        let nested = tabs.firstMatch.buttons.matching(identifier: "Search")
+        if nested.count == 1 { nested.element.tap() }
+        else { XCTAssertEqual(tabs.count,1); tabs.element.tap() }
+    }
+    func testSearchKeyboardInActualWideWindow() {
+        launch()
+        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertGreaterThan(app.frame.width,867,"Use the iPad's real landscape window for keyboard avoidance")
+        tapSearchTab()
+        let search=app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout:5))
+        XCTAssertTrue(app.otherElements["detailPane"].exists)
+        search.tap(); search.typeText("project")
+        XCTAssertEqual(search.value as? String,"project")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.otherElements["detailPane"].exists,"The keyboard must not replace the split navigator")
+        XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout:10))
+        search.typeText(" notes")
+        XCTAssertEqual(search.value as? String,"project notes")
+        capture("Real wide window with focused search")
+    }
     func testSearchAndAccountSelection() {
         launch()
-        app.buttons["Search"].tap()
+        tapSearchTab()
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("project")
         XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10))
         capture("Search")
+    }
+    func testWideSearchKeepsKeyboardAndTypedQuery() {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        launch(["--duo-wide", "-fixtureAppearance", "light", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"])
+        let tabs = app.buttons.matching(identifier: "Search")
+        XCTAssertTrue(tabs.firstMatch.waitForExistence(timeout: 5))
+        let nested = tabs.firstMatch.buttons.matching(identifier: "Search")
+        if nested.count == 1 { nested.element.tap() } else { tabs.firstMatch.tap() }
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        let pane = app.otherElements["detailPane"]
+        XCTAssertTrue(pane.exists)
+        search.tap()
+        search.typeText("pro")
+        XCTAssertEqual(search.value as? String, "pro")
+        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(pane.exists, "Keyboard must not replace the split navigator")
+        search.typeText("ject")
+        XCTAssertEqual(search.value as? String, "project")
+        XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10))
+        search.typeText(" notes")
+        XCTAssertEqual(search.value as? String, "project notes", "Results must not steal focus")
+        XCTAssertTrue(app.staticTexts["searchStatus"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["message-10"].exists)
+        capture("Wide search with keyboard and continuous typing")
     }
     func testOfflineAndEmptyStates() {
         launch(["--offline"])

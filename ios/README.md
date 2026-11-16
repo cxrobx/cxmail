@@ -262,6 +262,45 @@ Light/dark captures were inspected; fixture preferences are separate from normal
 app preferences. Email documents retain their original colors. Signed Release
 build 10 was installed and launched on the physical Duo.
 
+Build 11 stabilizes search navigation against keyboard-reduced height and adds
+hybrid native search. Fast keyword matches appear before the shared Rust engine
+returns BM25/document/semantic rank fusion, Gmail-copy deduplication and stable
+cursor pagination. Stale query responses are rejected during the debounce window.
+Meaning-search coverage/failure is visible; exact phrases/exclusions remain exact.
+“Most recent XRF meeting notes” treats the opening phrase as ordering intent.
+The local vault embedding service is supported without a new external provider.
+
+Validation: the full compact suite (25 unit/WebKit checks and 20 UI flows, with one
+unrelated orientation skip), ten wide UI flows, and a final 27-unit/three-search-flow
+run passed. The actual-window and constrained-width search tests retain typed text
+and focus. Both before-fix simulator variants also passed, so this does not claim
+a reproduction of the physical Duo's reported flicker; confirm on the installed
+Duo. The signed Release build 11 was installed and launched successfully. Remote
+API, Rust workspace, frontend checks/build and the fiction-only live local
+embedding relevance/null-case probe passed. The approved independent review identified passage-exclusion leakage and
+queued-search starvation; build 12 corrects both.
+
+Build 12 keeps results visible while typing, uses the same Rust engine for the
+fast keyword pass, supersedes obsolete queued queries, retries busy search once,
+and refreshes expired ranked cursors without marking the mini offline. The
+keyboard-height guard applies only to undocked Search; docked chat retains normal
+keyboard avoidance and its test measures the composer above the software keyboard.
+Model cold starts have a bounded allowance. Whole-email exclusions, latest exact
+matches, malformed helper results and smaller local indexing batches are covered
+by the review follow-up checks. Final checks passed: 30 unit/WebKit checks, 20 compact UI flows (one unrelated
+orientation skip), 11 wide flows, and a final light/XXXL search run. The revised
+docked-chat test proves the composer remains above the software keyboard. All 64
+remote API checks, 1,004 Rust workspace checks, frontend tests/build and the design
+preflight passed. A live fictional 16-passage test verifies shared two-at-a-time
+GPU submission, and the optimized synthetic 44k-vector scan took 0.78 seconds.
+The authenticated typing-burst probe completed the final query with hybrid
+results; the unrelated probe returned none. Indexing resumed beyond its former
+GPU-failing batch. Captures were inspected; the simulator recording contained
+blank compositor frames, so physical transition/frame-rate behavior remains a
+manual check. Signed build 12 was installed; automatic launch was refused because
+the Duo was locked. Open CXMail after unlocking. The desktop compatibility bundle
+is prepared separately and requires approval before replacing the running app.
+
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still

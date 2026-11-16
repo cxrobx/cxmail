@@ -35,6 +35,70 @@ final class ImageDocumentProtocol: URLProtocol {
 final class CXMailTests: XCTestCase {
     func api() -> APIClient { APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), fixture: true) }
     func cache() -> MailCache { MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
+    func testHybridSearchUsesRankedResultsAndStatus() async throws {
+        let store=MailStore(api:api(),cache:cache())
+        store.tab = .search; store.query = "project"
+        await store.load()
+        XCTAssertEqual(store.rows.map(\.uid),[10,11])
+        XCTAssertEqual(store.searchStatus,"ready")
+        XCTAssertFalse(store.hasMore)
+        store.query = "no match"
+        await store.load()
+        XCTAssertTrue(store.rows.isEmpty)
+        XCTAssertEqual(store.searchStatus,"ready")
+    }
+    func testChangedQueryInvalidatesInFlightSemanticResponseBeforeNextLoad() async throws {
+        Fixtures.searchDelay = .milliseconds(100)
+        defer { Fixtures.searchDelay = .zero }
+        let store=MailStore(api:api(),cache:cache())
+        store.tab = .search; store.query = "project"
+        let oldKey=store.listKey
+        let load=Task { await store.load() }
+        try await Task.sleep(for: .milliseconds(30))
+        store.query = "no match"
+        await load.value
+        XCTAssertNil(store.searchStatus, "Old query cannot install its semantic status or cursor during debounce")
+        XCTAssertNil(store.snapshot.lists[oldKey], "Old response must not be committed as current search state")
+        await store.load()
+        XCTAssertTrue(store.rows.isEmpty)
+        XCTAssertEqual(store.searchStatus,"ready")
+    }
+    func testExpiredSearchRefreshesFirstPageAndStaysOnline() async throws {
+        Fixtures.expireSearchCursor = true
+        defer { Fixtures.expireSearchCursor = false }
+        let store=MailStore(api:api(),cache:cache())
+        store.tab = .search; store.query = "project"
+        await store.load()
+        XCTAssertTrue(store.hasMore)
+        await store.load(more:true)
+        XCTAssertFalse(Fixtures.expireSearchCursor)
+        XCTAssertFalse(store.hasMore)
+        XCTAssertEqual(store.rows.map(\.uid),[10,11])
+        XCTAssertTrue(store.online); XCTAssertNil(store.error)
+    }
+    func testBusySemanticSearchRetriesOnce() async throws {
+        Fixtures.searchBusyCount = 1
+        defer { Fixtures.searchBusyCount = 0 }
+        let store=MailStore(api:api(),cache:cache())
+        store.tab = .search; store.query = "project"
+        await store.load()
+        XCTAssertEqual(store.searchStatus,"ready")
+        XCTAssertTrue(store.online)
+    }
+    func testTypingRetainsResultsWhileNextQueryIsLoading() async throws {
+        let store=MailStore(api:api(),cache:cache())
+        store.tab = .search; store.query = "project"
+        await store.load()
+        let previous=store.rows
+        Fixtures.searchDelay = .milliseconds(100)
+        defer { Fixtures.searchDelay = .zero }
+        store.query = "no match"
+        let load=Task { await store.load() }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(store.rows,previous,"Typing must not blank to skeletons on every query")
+        await load.value
+        XCTAssertTrue(store.rows.isEmpty)
+    }
     func testAutomaticImagesRequireTrustAuthenticationAndMatchingSender() throws {
         let json = #"{"account":"work","folder":"INBOX","uid":10,"subject":"Notes","from_email":"jordan@example.org","date":"2026-11-15T12:00:00Z","snippet":"Hi","read":true,"starred":false,"attachments":false,"image_policy":{"authentication":{"status":"passed","domain":"example.org","provider":"Google","explanation":"Domain authenticated, not content verified."},"sender_email":"jordan@example.org","sender_trusted":true,"auto_load":true,"suspicious":false,"has_remote_images":true}}"#
         let message = try APIClient.decoder.decode(MailMessage.self, from: Data(json.utf8))

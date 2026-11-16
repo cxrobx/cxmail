@@ -12,3 +12,6 @@ src-tauri/binaries/cxmail-helper-x86_64-apple-darwin
 # Maintainer-only notes, loaded by Claude Code locally
 CLAUDE.local.md
 docs/internal
+
+# Python remote-service/test bytecode
+__pycache__/

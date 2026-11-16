@@ -16,6 +16,7 @@ pub mod gcal_invite;
 pub mod gcal_sync;
 pub mod imap;
 pub mod image_policy;
+pub mod hybrid_search;
 pub mod import;
 pub mod inference;
 pub mod inline_styles;

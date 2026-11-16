@@ -542,7 +542,7 @@ pub async fn hybrid_hits(
         let c = state.open_read_conn()?;
         db::knowledge::retrieve(&c, filters, Some((&client.key(), &vector)), 30)?
     };
-    hits.extend(more);
+    hits.extend(more.into_iter().filter(|h| h.result.score <= -client.minimum_similarity()));
     Ok((hits, None))
 }
 

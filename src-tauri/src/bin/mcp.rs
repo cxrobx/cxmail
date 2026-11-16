@@ -72,6 +72,32 @@ async fn main() -> anyhow::Result<()> {
         return cxmail_mcp::risk_eval::run(&db_path).await;
     }
 
+    // Search is read-only, including startup: the resident app owns migrations.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len()==3 && args[1]=="remote" && matches!(args[2].as_str(), "enable-local-search" | "index-search") {
+        let result = if args[2]=="enable-local-search" {
+            cxmail_lib::email::hybrid_search::enable_local(&db_path).map(|_|serde_json::json!({"ok":true}))
+        } else { cxmail_lib::email::hybrid_search::index_local(&db_path).await };
+        match result {
+            Ok(value) => println!("{value}"),
+            Err(e) => { println!("{}",serde_json::json!({"error":e.to_string()}));std::process::exit(1); }
+        }
+        return Ok(());
+    }
+    if args.get(1).map(String::as_str) == Some("remote") && matches!(args.get(2).map(String::as_str), Some("search" | "search-keywords")) {
+        let result = if (4..=6).contains(&args.len()) {
+            match args.get(5).map_or(Ok(0), |s| s.parse::<usize>()) {
+                Ok(offset) => cxmail_lib::email::hybrid_search::search(&db_path, &args[3], args.get(4).map(String::as_str).filter(|s| !s.is_empty()), offset, args[2]=="search").await,
+                Err(_) => Err(cxmail_lib::error::AppError::General("Invalid search offset".into())),
+            }
+        } else { Err(cxmail_lib::error::AppError::General("Invalid search arguments".into())) };
+        match result {
+            Ok(page) => println!("{}", serde_json::to_string(&page)?),
+            Err(e) => { println!("{}", serde_json::json!({"error": e.to_string()})); std::process::exit(1); }
+        }
+        return Ok(());
+    }
+
     tracing::info!("CXMail MCP server starting, DB: {:?}", db_path);
 
     // Run schema migrations. The Tauri app also runs these on startup, but the

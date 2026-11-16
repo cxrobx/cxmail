@@ -23,7 +23,7 @@ and legacy binary Office files are unsupported. Older attachments can be indexed
 explicitly by fetching their original message; new downloads/parses index locally.
 
 Semantic indexing is a separate per-account opt-in. An OpenAI-compatible embeddings
-endpoint supplies real vectors. Default endpoint: local Ollama; alternatively use
+endpoint supplies real vectors. Local endpoints: Ollama or the existing loopback-only vault EmbeddingGemma 2 service; alternatively use
 the configured OpenAI/compatible AI provider. Vectors are keyed by endpoint and
 model so incompatible indices cannot mix; only their fingerprint is stored in SQLite.
 Indexing never holds a DB lock across network I/O. A remote endpoint has a daily
@@ -33,7 +33,13 @@ pass time-boxed below the two-minute tick. Settings shows indexed / pending coun
 over exactly the chunks the indexer will pick up.
 Hidden accounts are excluded from background generation and indexing. Nomic models
 receive their documented `search_document` / `search_query` task prefixes.
-Disabling an account excludes its vectors.
+Disabling an account excludes its vectors, including semantic-only hits in cached native pagination.
+Native search fuses ranked keyword, document and semantic candidates with RRF,
+deduplicates mailbox copies within each account, and keeps immutable ranked cursors.
+Model-specific similarity gates reject weak matches; the local fiction-only live
+probe covers paraphrases and null queries. “Most recent” is explicit date-ordering
+intent. The local companion indexer is bounded, newest-first, and independent of
+the desktop window. It never uses a remote embedding provider.
 Keyword and semantic hits share all metadata/account filters. Keyword results remain
 available without an embeddings provider. Source-linked answers are explicit,
 use only retrieved content, and validate citation ids against actual results.

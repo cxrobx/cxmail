@@ -1,12 +1,14 @@
 import Foundation
 
 enum MailError: LocalizedError {
-    case configuration, server(String), unexpected, draftUnavailable
+    case configuration, server(String), unexpected, draftUnavailable, searchExpired, searchBusy
     var errorDescription: String? {
         switch self {
         case .configuration: "The mini’s HTTPS address is missing. Rebuild with scripts/configure.sh."
         case .server(let message): message
         case .unexpected: "The mini returned an unexpected response."
+        case .searchExpired: "Search expired. Search again to refresh the results."
+        case .searchBusy: "Search is busy. Try again shortly."
         case .draftUnavailable: "That draft changed or was removed. Choose its latest version from Drafts."
         }
     }
@@ -25,6 +27,7 @@ struct ImageDocument { var html: String; var imagesAllowed: Bool }
 final class APIClient {
     let baseURL: URL?
     let fixture: Bool
+    let searchSession = UUID().uuidString
     private let session: URLSession
     static var decoder: JSONDecoder {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase; return decoder
@@ -58,6 +61,7 @@ final class APIClient {
         return request
     }
     static func timeout(for path: String) -> TimeInterval {
+        if path == "/api/search" { return 45 }
         if path == "/api/message" { return 210 }
         if ["/api/send", "/api/schedule", "/api/draft-preview", "/api/body", "/api/image-trust"].contains(path) { return 150 }
         return path == "/api/chat/events" ? 35 : 100
@@ -68,6 +72,7 @@ final class APIClient {
     private func transfer(_ path: String, query: [URLQueryItem], body: [String: Any]?) async throws -> (Data, HTTPURLResponse) {
         #if DEBUG
         if fixture {
+            if path == "/api/search" { try await Task.sleep(for: Fixtures.searchDelay) }
             if path == "/api/action", body?["action"] as? String == "read",
                ProcessInfo.processInfo.arguments.contains("--slow-read") {
                 try await Task.sleep(for: .seconds(30))
@@ -84,6 +89,8 @@ final class APIClient {
         guard let response = response as? HTTPURLResponse else { throw MailError.unexpected }
         guard (200..<300).contains(response.statusCode) else {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            if response.statusCode == 410 && error?["code"] as? String == "search_expired" { throw MailError.searchExpired }
+            if response.statusCode == 429 && error?["code"] as? String == "search_busy" { throw MailError.searchBusy }
             if response.statusCode == 410 && error?["code"] as? String == "draft_gone" { throw MailError.draftUnavailable }
             if response.statusCode == 403 { throw MailError.server("Access denied. Connect Tailscale using the mini’s allowed account.") }
             throw MailError.server(error?["error"] as? String ?? "The mini returned HTTP \(response.statusCode).")

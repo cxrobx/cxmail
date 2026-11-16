@@ -3,6 +3,9 @@ import Foundation
 
 /// Fiction-only, in-process transport. UI tests can never touch a real mailbox.
 @MainActor enum Fixtures {
+    static var expireSearchCursor = false
+    static var searchBusyCount = 0
+    static var searchDelay: Duration = .zero
     static var archived = Set<Int>()
     static var starred = Set<Int>()
     static var read = Set<Int>()
@@ -71,6 +74,11 @@ import Foundation
             if ProcessInfo.processInfo.arguments.contains("--offline") { throw URLError(.notConnectedToInternet) }
             if ProcessInfo.processInfo.arguments.contains("--empty") || (q["q"] != nil && q["q"] != "project") { result = [[String: Any]]() }
             else { result = (10...17).map { message($0) }.filter { !archived.contains($0["uid"] as! Int) && (q["view"] != "unread" || !($0["read"] as! Bool)) && (q["view"] != "starred" || ($0["starred"] as! Bool)) } }
+        case "/api/search":
+            if q["cursor"] != nil && expireSearchCursor { expireSearchCursor = false; throw MailError.searchExpired }
+            if q["mode"] != "keyword" && searchBusyCount > 0 { searchBusyCount -= 1; throw MailError.searchBusy }
+            let matches = ["project", "project notes"].contains(q["q"] ?? "")
+            result = ["results": matches ? [message(10), message(11)] : [], "semantic_status": q["mode"] == "keyword" ? "keyword" : "ready", "next_cursor": expireSearchCursor ? "fixture:50" : NSNull()]
         case "/api/message":
             var body = message(Int(q["uid"] ?? "10") ?? 10, detail: true)
             bodyRequests += 1

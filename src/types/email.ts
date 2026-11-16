@@ -312,7 +312,7 @@ export interface AiSearchResponse {
 
 export interface ReplySuggestion { body: string; created_at: string; model: string }
 export interface IntelligenceAccount { account_id: string; auto_draft: boolean; semantic_search: boolean }
-export interface EmbeddingSettings { source: "local" | "provider"; model: string }
+export interface EmbeddingSettings { source: "local" | "local-vault" | "provider"; model: string }
 export interface IntelligenceStatus {
   accounts: IntelligenceAccount[];
   embeddings: EmbeddingSettings;

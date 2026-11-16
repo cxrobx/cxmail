@@ -173,6 +173,21 @@ pub fn progress(c: &Connection, key: &str) -> Result<IndexProgress, AppError> {
     )?)
 }
 
+/// Same index coverage, restricted to the companion's authoritative account
+/// scope. Another account's vectors must not make this scope appear ready.
+pub fn progress_in_accounts(c: &Connection, key: &str, ids: &[String]) -> Result<IndexProgress, AppError> {
+    if ids.is_empty() { return Ok(IndexProgress::default()); }
+    let placeholders=(2..ids.len()+2).map(|i|format!("?{i}")).collect::<Vec<_>>().join(",");
+    let mut bind: Vec<&dyn rusqlite::types::ToSql> = vec![&key];
+    for id in ids { bind.push(id); }
+    Ok(c.query_row(&format!("SELECT count(*),
+        COALESCE(sum(k.embedding_key=?1 AND k.embedding IS NOT NULL AND k.embedding<>'[]'),0),
+        COALESCE(sum(k.embedding IS NULL OR COALESCE(k.embedding_key,'')<>?1),0)
+        FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id
+        JOIN intelligence_accounts i ON i.account_id=m.account_id
+        WHERE i.semantic_search=1 AND m.account_id IN ({placeholders})"),bind.as_slice(),|r|Ok(IndexProgress {chunks:r.get(0)?,embedded:r.get(1)?,pending:r.get(2)?}))?)
+}
+
 pub fn save_embedding(
     c: &Connection,
     chunk: &PendingChunk,
@@ -279,6 +294,13 @@ pub fn retrieve(
     vector: Option<(&str, &[f32])>,
     limit: usize,
 ) -> Result<Vec<KnowledgeHit>, AppError> {
+    retrieve_ordered(c, f, vector, limit, false)
+}
+
+pub fn ranked_documents(c: &Connection, f: &SearchFilters, limit: usize) -> Result<Vec<KnowledgeHit>, AppError> {
+    retrieve_ordered(c, f, None, limit, true)
+}
+fn retrieve_ordered(c: &Connection, f: &SearchFilters, vector: Option<(&str, &[f32])>, limit: usize, relevance: bool) -> Result<Vec<KnowledgeHit>, AppError> {
     if f.account_ids.as_ref().is_some_and(|ids| ids.is_empty()) {
         return Ok(Vec::new());
     }
@@ -302,9 +324,10 @@ pub fn retrieve(
         idx += 1;
     }
     let sql=format!("SELECT m.account_id,m.folder_name,m.uid,m.subject,m.from_name,m.from_email,m.date,m.is_read,m.has_attachments,
-        k.source,k.text,k.embedding FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id {} WHERE {} {}",
+        k.source,k.text,k.embedding,{} FROM knowledge_chunks k JOIN messages m ON m.id=k.message_id {} WHERE {} {}",
+        if lexical && relevance {"bm25(knowledge_fts)"}else{"0.0"},
         if lexical{"JOIN knowledge_fts ON knowledge_fts.rowid=k.id"}else{""},conditions.join(" AND "),
-        if lexical{format!("ORDER BY datetime(m.date) DESC LIMIT ?{idx}")}else{String::new()});
+        if lexical{format!("ORDER BY {} LIMIT ?{idx}", if relevance {"bm25(knowledge_fts), datetime(m.date) DESC, k.id"} else {"datetime(m.date) DESC"})}else{String::new()});
     if lexical {
         bind.push(Box::new((limit * 4) as i64));
     }
@@ -324,7 +347,7 @@ pub fn retrieve(
                     is_read: r.get(7)?,
                     has_attachments: r.get(8)?,
                     snippet: String::new(),
-                    score: 0.0,
+                    score: r.get(12)?,
                     semantic_match: !lexical,
                 },
                 source: r.get(9)?,

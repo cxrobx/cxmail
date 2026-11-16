@@ -76,12 +76,12 @@ export default function IntelligenceSection() {
         })}
       </div>
       <label className="block text-xs text-content-secondary">Embedding service
-        <select className="mt-1 w-full rounded border border-border bg-input p-1.5 text-content" value={settings.source} disabled={busy} onChange={(e) => setSettings({ source: e.target.value as EmbeddingSettings["source"], model: e.target.value === "local" ? "nomic-embed-text" : "text-embedding-3-small" })}>
-          <option value="local">Local Ollama</option><option value="provider">My OpenAI-compatible provider</option>
+        <select className="mt-1 w-full rounded border border-border bg-input p-1.5 text-content" value={settings.source} disabled={busy} onChange={(e) => setSettings({ source: e.target.value as EmbeddingSettings["source"], model: e.target.value === "local" ? "nomic-embed-text" : e.target.value === "local-vault" ? "embeddinggemma-2" : "text-embedding-3-small" })}>
+          <option value="local">Local Ollama</option><option value="local-vault">Local vault embedding service</option><option value="provider">My OpenAI-compatible provider</option>
         </select>
       </label>
-      <p className="text-[11px] leading-relaxed text-content-muted">{settings.source === "local" ? "Requires Ollama running with the selected model installed. Message contents stay on this computer during indexing." : "Indexing sends redacted passages to your configured AI provider. Anthropic does not offer this embedding endpoint."} Ask mail sends the retrieved passages to your AI provider when you click it.</p>
-      <label className="block text-xs text-content-secondary">Embedding model<input className="mt-1 w-full rounded border border-border bg-input px-2 py-1.5 text-content" value={settings.model} disabled={busy} onChange={(e) => setSettings({ ...settings, model: e.target.value })} /></label>
+      <p className="text-[11px] leading-relaxed text-content-muted">{settings.source === "local-vault" ? "Uses the existing local vault embedding service. Message contents stay on this computer during indexing." : settings.source === "local" ? "Requires Ollama running with the selected model installed. Message contents stay on this computer during indexing." : "Indexing sends redacted passages to your configured AI provider. Anthropic does not offer this embedding endpoint."} Ask mail sends the retrieved passages to your AI provider when you click it.</p>
+      <label className="block text-xs text-content-secondary">Embedding model<input className="mt-1 w-full rounded border border-border bg-input px-2 py-1.5 text-content" value={settings.model} disabled={busy || settings.source === "local-vault"} onChange={(e) => setSettings({ ...settings, model: e.target.value })} /></label>
       <div className="flex flex-wrap gap-2">
         <button className={button} disabled={busy || !settings.model.trim()} onClick={() => void configure(false)}>Save</button>
         <button className={button} disabled={busy || !settings.model.trim()} onClick={() => void configure(true)}>Save & test</button>
