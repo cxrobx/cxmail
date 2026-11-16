@@ -3,6 +3,8 @@ use crate::{error::AppError, keychain};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub const LOCAL_VAULT_MIN_SIMILARITY: f32 = 0.70;
+
 const SETTINGS_KEY: &str = "ai:embedding:settings";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +92,7 @@ impl EmbeddingClient {
     /// relevance probe (scripts/eval-mail-retrieval.py) measures both positives
     /// and hard negatives; cosine scales are not interchangeable across models.
     pub fn minimum_similarity(&self) -> f32 {
-        if self.model == "embeddinggemma-2" { 0.65 } else { 0.35 }
+        if self.model == "embeddinggemma-2" { LOCAL_VAULT_MIN_SIMILARITY } else { 0.35 }
     }
     pub fn is_local(&self) -> bool {
         self.local_vault || self.client.embedding_is_local()

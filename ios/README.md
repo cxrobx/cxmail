@@ -299,7 +299,15 @@ GPU-failing batch. Captures were inspected; the simulator recording contained
 blank compositor frames, so physical transition/frame-rate behavior remains a
 manual check. Signed build 12 was installed; automatic launch was refused because
 the Duo was locked. Open CXMail after unlocking. The desktop compatibility bundle
-is prepared separately and requires approval before replacing the running app.
+was installed after explicit approval. App, mail helper and shared MCP were
+restarted from `/Applications`; the phone service now uses its bundled helper.
+Installed executable hashes and signatures matched the prepared bundle. Prior
+bundles were preserved for rollback. Final live keyword/hybrid/no-match checks
+passed. As indexing expanded, a weak semantic-only hit at 0.6535 crossed the
+initial gate; the shared model-specific gate was tightened to 0.70 and verified
+against seven fictional positive cases and 36 unrelated pairs, including long
+mail and similar-topic distractors. The approved desktop update was rebuilt and
+reinstalled with that correction. Physical Duo typing remains the manual check.
 
 ## Current boundaries
 

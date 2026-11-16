@@ -125,7 +125,7 @@ coverage remains cached mail and extracted attachment text, not uncached IMAP.
 
 `local-vault` uses the existing loopback-only EmbeddingGemma 2 service on :11436,
 with its actual Ollama-compatible `/api/embed` protocol and distinct document/query
-task prefixes. Its vectors use a separate endpoint/model fingerprint. A 0.65
+task prefixes. Its vectors use a separate endpoint/model fingerprint. A 0.70
 minimum cosine gate replaces the inappropriate generic 0.35 cutoff for this model.
 Run `python3 scripts/eval-mail-retrieval.py` from the repo root for the live,
 fiction-only positive/null-case check. This small check is a smoke benchmark, not
