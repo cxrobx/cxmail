@@ -170,3 +170,18 @@ Activating `local-vault` requires the updated desktop bundle as well as the sign
 companion helper: older desktop builds cannot decode that new service choice.
 The helper can be deployed first for the phone, but finish the desktop bundle
 swap through the repository's shipping gate to restore its intelligence Settings.
+
+## Search result previews
+
+The native search list displays the same saved message preview as Inbox. If it is
+missing, the service uses a bounded excerpt from the already-cached plain body;
+if neither exists, the preview stays empty. Retrieval snippets are never used as
+human previews: FTS may select its matching recipient column, whose storage is
+JSON, and semantic/document hits describe passages rather than the mail's opening.
+Ranking, matched references and cursor ordering are unaffected. No body fetch or
+mail mutation is performed to populate list previews. `remote/test_server.py`
+reproduces the real FTS recipient-JSON behavior and covers saved-preview,
+cached-body and missing-body cases. The deployed keyword and hybrid paths were
+checked against canonical message text for 50 live results each, without opening
+or changing mail. This service-side fix requires refreshing Search, not a new iOS
+build.

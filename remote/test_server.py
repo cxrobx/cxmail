@@ -269,7 +269,7 @@ class Api(unittest.TestCase):
         with patch.object(server.subprocess,"run",return_value=result) as run:
             first=self.j("/api/search?q=accommodation&account=a1")
             self.assertEqual(first["results"][0]["subject"],"Quarterly budget")
-            self.assertEqual(first["results"][0]["snippet"],"Email: semantic passage")
+            self.assertEqual(first["results"][0]["snippet"],"snip", "Search cards use the mail preview even when retrieval matched a passage")
             self.assertTrue(first["results"][0]["semantic_match"])
             cursor=urllib.parse.quote(first["next_cursor"])
             second=self.j("/api/search?q=accommodation&account=a1&cursor="+cursor)
@@ -287,6 +287,45 @@ class Api(unittest.TestCase):
             self.assertEqual(self.req("/api/search?q=other&account=a1&cursor="+cursor)[0],410)
             self.assertEqual(self.req("/api/search?q=accommodation&account=a2&cursor="+cursor)[0],410)
             run.assert_called_once()
+
+    def test_search_preview_is_message_text_even_when_recipient_metadata_matched(self):
+        # This is the actual shared FTS schema/behavior: -1 picks the matching
+        # recipients column, whose stored form is JSON. It is search evidence,
+        # not a human message preview.
+        with sqlite3.connect(FIXTURE) as c:
+            original=c.execute("SELECT recipients FROM messages_fts WHERE rowid=1").fetchone()[0]
+            c.execute("UPDATE messages_fts SET recipients=? WHERE rowid=1",(json.dumps([{"email":"troy@example.org","name":"Troy"}]),))
+            raw=c.execute("SELECT snippet(messages_fts,-1,'','',' ... ',12) FROM messages_fts WHERE rowid=1 AND messages_fts MATCH ?",(server.fts_query('Troy'),)).fetchone()[0]
+            c.execute("UPDATE messages_fts SET recipients=? WHERE rowid=1",(original,))
+        self.assertIn('"email"',raw)
+        hit={"account_id":"a1","folder_name":"INBOX","uid":10,"snippet":raw,"semantic_match":False}
+        result=subprocess.CompletedProcess([],0,json.dumps({"results":[hit],"semantic_status":"ready"}),"")
+        with patch.object(server.subprocess,'run',return_value=result):
+            page=self.j('/api/search?q=Troy')
+            self.assertEqual(page['results'][0]['snippet'],'snip')
+            self.assertNotIn('"email"',page['results'][0]['snippet'])
+        # A missing saved preview falls back to the already-cached plain body.
+        with sqlite3.connect(FIXTURE) as c:
+            c.execute("UPDATE messages SET snippet='' WHERE id=1")
+        try:
+            with patch.object(server.subprocess,'run',return_value=result):
+                page=self.j('/api/search?q=Troy')
+                self.assertEqual(page['results'][0]['snippet'],'hi')
+        finally:
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE messages SET snippet='snip' WHERE id=1")
+
+    def test_search_preview_without_cached_body_never_falls_back_to_metadata(self):
+        hit={"account_id":"a1","folder_name":"INBOX","uid":11,"snippet":'[{"email":"troy@example.org"}]',"semantic_match":True}
+        result=subprocess.CompletedProcess([],0,json.dumps({"results":[hit],"semantic_status":"partial"}),"")
+        with sqlite3.connect(FIXTURE) as c:
+            c.execute("UPDATE messages SET snippet='' WHERE id=2")
+        try:
+            with patch.object(server.subprocess,'run',return_value=result):
+                self.assertEqual(self.j('/api/search?q=Troy')['results'][0]['snippet'],'')
+        finally:
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE messages SET snippet='snip' WHERE id=2")
 
     def test_current_query_waits_for_abandoned_search_slots(self):
         ready,release=threading.Event(),threading.Event()

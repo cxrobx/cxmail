@@ -363,11 +363,19 @@ def hybrid_search(conn, query, account=None, cursor=None, keyword=False, client=
             continue
         if hit.get("account_id") not in allowed:
             continue
-        row = conn.execute("SELECT {} FROM messages m WHERE m.account_id=? AND m.folder_name=? AND m.uid=?".format(SUMMARY_COLS),
+        row = conn.execute(
+            "SELECT {}, substr(b.plain_text,1,1000) AS preview_body FROM messages m "
+            "LEFT JOIN message_bodies b ON b.account_id=m.account_id AND b.folder_name=m.folder_name AND b.uid=m.uid "
+            "WHERE m.account_id=? AND m.folder_name=? AND m.uid=?".format(SUMMARY_COLS),
             (hit["account_id"], hit["folder_name"], hit["uid"])).fetchone()
         if row:
             summary = row_summary(row)
-            summary["snippet"] = hit.get("snippet", summary["snippet"]).replace("\ue000", "").replace("\ue001", "")
+            # Match excerpts may be recipient JSON, sender addresses, subjects,
+            # or attachment names. They are retrieval evidence, not the mail's
+            # human preview. Use the same saved preview as Inbox; if absent,
+            # use only already-cached body text. Never fetch bodies for a list.
+            if not summary["snippet"].strip():
+                summary["snippet"] = " ".join((row["preview_body"] or "").split())[:240]
             summary["semantic_match"] = bool(hit.get("semantic_match"))
             rows.append(summary)
     return {"results": PENDING.apply(rows), "semantic_status": status,
