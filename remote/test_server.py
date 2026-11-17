@@ -327,6 +327,41 @@ class Api(unittest.TestCase):
             with sqlite3.connect(FIXTURE) as c:
                 c.execute("UPDATE messages SET snippet='snip' WHERE id=2")
 
+    def test_search_orders_recent_days_before_relevance(self):
+        # Input is already relevance-ranked: the strongest old match must not
+        # outrank newer accepted mail. Relevance still wins within the same day.
+        hits=[
+            {"uid":1,"date":"2026-06-24T12:00:00Z"},
+            {"uid":2,"date":"2026-11-16T09:00:00Z"},
+            {"uid":3,"date":"2026-11-16T20:00:00Z"},
+            {"uid":4,"date":"invalid"},
+        ]
+        self.assertEqual([h['uid'] for h in server.recent_search_results(hits)],[2,3,1,4])
+        # Equivalent offset representations must not create different days.
+        equal=[{'uid':1,'date':'2026-11-15T23:00:00-02:00'},{'uid':2,'date':'2026-11-16T01:00:00Z'}]
+        self.assertEqual([h['uid'] for h in server.recent_search_results(equal)],[1,2])
+
+    def test_recency_order_is_applied_before_cursor_pagination(self):
+        ids=[]
+        hits=[]
+        for i in range(54):
+            uid=900+i;ids.append(uid)
+            date=(dt.datetime(2026,9,1,tzinfo=dt.timezone.utc)+dt.timedelta(days=i)).isoformat()
+            hits.append({'account_id':'a1','folder_name':'INBOX','uid':uid,'date':date,'snippet':'match','semantic_match':False})
+        with sqlite3.connect(FIXTURE) as c:
+            c.executemany("INSERT INTO messages(account_id,folder_name,uid,subject,date,snippet) VALUES('a1','INBOX',?,'Fictional date fixture',?,'Body preview')",[(h['uid'],h['date']) for h in hits])
+        result=subprocess.CompletedProcess([],0,json.dumps({'results':hits,'semantic_status':'ready'}),'')
+        try:
+            with patch.object(server.subprocess,'run',return_value=result) as run:
+                first=self.j('/api/search?q=fictional')
+                second=self.j('/api/search?q=fictional&cursor='+urllib.parse.quote(first['next_cursor']))
+                self.assertEqual([r['uid'] for r in first['results']+second['results']],list(reversed(ids)))
+                self.assertIsNone(second['next_cursor'])
+                run.assert_called_once()
+        finally:
+            with sqlite3.connect(FIXTURE) as c:
+                c.executemany("DELETE FROM messages WHERE account_id='a1' AND folder_name='INBOX' AND uid=?",[(uid,) for uid in ids])
+
     def test_current_query_waits_for_abandoned_search_slots(self):
         ready,release=threading.Event(),threading.Event()
         lock=threading.Lock()

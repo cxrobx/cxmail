@@ -7,6 +7,18 @@ WIDE=${2:?Pass an iPad simulator for the exact open-Duo viewport}
 OUT=${CXMAIL_BUILD_DIR:-/private/tmp/cxmail-ios-dd}
 RUN=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
+# iPad search can retain hardware-keyboard focus with no software keyboard.
+# Exercise the actual on-screen keyboard, then restore the user's preference.
+CXMAIL_PREVIOUS_HARDWARE_KEYBOARD=$(defaults read com.apple.iphonesimulator ConnectHardwareKeyboard 2>/dev/null || true)
+restore_keyboard_preference() {
+  if [ -n "$CXMAIL_PREVIOUS_HARDWARE_KEYBOARD" ]; then
+    defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool "$CXMAIL_PREVIOUS_HARDWARE_KEYBOARD"
+  else
+    defaults delete com.apple.iphonesimulator ConnectHardwareKeyboard >/dev/null 2>&1 || true
+  fi
+}
+trap restore_keyboard_preference EXIT
+defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false
 xcodegen generate
 for PROFILE in compact wide; do
   SIM=$COMPACT; ONLY=(-skip-testing:CXMailUITests/CXMailUITests/testSearchKeyboardInActualWideWindow -skip-testing:CXMailUITests/CXMailUITests/testWideSearchKeepsKeyboardAndTypedQuery -skip-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -skip-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -skip-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut)

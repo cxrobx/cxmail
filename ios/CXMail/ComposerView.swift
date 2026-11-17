@@ -40,8 +40,13 @@ struct ComposerView: View {
                         if saving { ProgressView() } else { Text("Review").bold() }
                     }.disabled(!draft.valid || saving).accessibilityIdentifier("reviewCompose")
                 }
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer(); Button("Done") { focus = nil }
+                // A keyboard accessory toolbar can drop this sheet's navigation
+                // actions on Duo. Keep dismissal with Review and Cancel instead.
+                ToolbarItem(placement: .topBarTrailing) {
+                    if focus != nil {
+                        Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { focus = nil }
+                            .accessibilityIdentifier("hideComposeKeyboard")
+                    }
                 }
             }
             .interactiveDismissDisabled(draft.hasContent || saving)

@@ -181,7 +181,20 @@ final class CXMailUITests: XCTestCase {
         let to = app.textFields["composeTo"]; XCTAssertTrue(to.waitForExistence(timeout: 5)); to.tap(); to.typeText("jordan@example.org")
         app.textFields["composeSubject"].tap(); app.textFields["composeSubject"].typeText("Tuesday")
         app.textFields["composeBody"].tap(); app.textFields["composeBody"].typeText("Tuesday works well.")
-        app.buttons["reviewCompose"].tap()
+        let review = app.buttons["reviewCompose"]
+        XCTAssertTrue(review.isHittable, "Review must stay available while typing")
+        let hide = app.buttons["hideComposeKeyboard"]
+        XCTAssertTrue(hide.isHittable)
+        XCTAssertLessThanOrEqual(hide.frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+        capture("Composer with keyboard before review")
+        hide.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
+        waitForExpectations(timeout: 5)
+        XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well.")
+        app.textFields["composeBody"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(review.isHittable)
+        review.tap()
         let send = app.buttons["sendReviewedDraft"]
         XCTAssertTrue(send.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["copy@example.org"].exists)
@@ -348,6 +361,7 @@ final class CXMailUITests: XCTestCase {
         XCTAssertGreaterThan(app.webViews.firstMatch.frame.width, before + 30)
         capture("Resized chat split")
         input.tap(); input.typeText(" Still docked.")
+        capture("Docked chat with keyboard")
         XCTAssertTrue(divider.exists, "Showing the keyboard must keep split chat docked")
         XCTAssertTrue(input.isHittable,"Docked input must remain reachable with the keyboard open")
         XCTAssertLessThanOrEqual(input.frame.maxY,app.keyboards.firstMatch.frame.minY,"Docked composer must sit above the software keyboard")
@@ -383,12 +397,32 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.otherElements["detailPane"].exists)
         search.tap(); search.typeText("project")
         XCTAssertEqual(search.value as? String,"project")
-        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        capture("Real wide window after typing")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.otherElements["detailPane"].exists,"The keyboard must not replace the split navigator")
         XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout:10))
         search.typeText(" notes")
         XCTAssertEqual(search.value as? String,"project notes")
         capture("Real wide window with focused search")
+        assertSearchKeyboardCanCollapse()
+    }
+    func assertSearchKeyboardCanCollapse() {
+        let search=app.searchFields.firstMatch
+        let hide=app.buttons["hideSearchKeyboard"]
+        XCTAssertTrue(hide.waitForExistence(timeout:5))
+        XCTAssertTrue(hide.isHittable)
+        XCTAssertLessThanOrEqual(hide.frame.maxY,app.keyboards.firstMatch.frame.minY+1)
+        let query=search.value as? String
+        hide.tap()
+        let gone=NSPredicate(format:"exists == false")
+        expectation(for:gone,evaluatedWith:app.keyboards.firstMatch)
+        waitForExpectations(timeout:5)
+        XCTAssertEqual(search.value as? String,query,"Hiding keyboard must retain the search query")
+        XCTAssertTrue(app.buttons["message-10"].exists,"Hiding keyboard must retain the results")
+        capture("Search results with keyboard collapsed")
+        search.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout:5))
+        XCTAssertEqual(search.value as? String,query)
     }
     func testSearchAndAccountSelection() {
         launch()
@@ -397,6 +431,7 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("project")
         XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10))
         capture("Search")
+        assertSearchKeyboardCanCollapse()
     }
     func testWideSearchKeepsKeyboardAndTypedQuery() {
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -412,7 +447,7 @@ final class CXMailUITests: XCTestCase {
         search.tap()
         search.typeText("pro")
         XCTAssertEqual(search.value as? String, "pro")
-        XCTAssertTrue(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(pane.exists, "Keyboard must not replace the split navigator")
         search.typeText("ject")
         XCTAssertEqual(search.value as? String, "project")
@@ -422,6 +457,7 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["searchStatus"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["message-10"].exists)
         capture("Wide search with keyboard and continuous typing")
+        assertSearchKeyboardCanCollapse()
     }
     func testOfflineAndEmptyStates() {
         launch(["--offline"])

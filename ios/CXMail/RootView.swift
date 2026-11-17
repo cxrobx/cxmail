@@ -157,6 +157,7 @@ struct MailboxView: View {
     @Binding var settings: Bool
     var largeTitle = false
     @State private var scheduled = false
+    @FocusState private var searchFocused: Bool
     let categories = ["all", "primary", "starred", "updates", "promotions", "social"]
     var body: some View {
         List {
@@ -271,7 +272,7 @@ struct MailboxView: View {
                 }.mailGlass(capsule: true).accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
             }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 8)
         }
-        .modifier(MailSearch(enabled: tab == .search, query: $store.query))
+        .modifier(MailSearch(enabled: tab == .search, query: $store.query, focused: $searchFocused))
         .sensoryFeedback(.selection, trigger: store.category)
         .sensoryFeedback(.selection, trigger: store.selected)
     }
@@ -291,6 +292,13 @@ struct MailboxView: View {
                     }.font(.subheadline.weight(.medium)).frame(minHeight: 44)
                 }.accessibilityLabel("Choose account").accessibilityIdentifier("accountMenu")
                 Spacer(minLength: 0)
+                if tab == .search && searchFocused {
+                    Button { searchFocused = false } label: {
+                        Image(systemName: "keyboard.chevron.compact.down").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Hide keyboard")
+                    .accessibilityIdentifier("hideSearchKeyboard")
+                }
                 Button { settings = true } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Settings")
             }.padding(.leading, 16).padding(.trailing, 4)
             if tab == .inbox {
@@ -321,9 +329,14 @@ struct MailboxView: View {
 struct MailSearch: ViewModifier {
     var enabled: Bool
     @Binding var query: String
+    var focused: FocusState<Bool>.Binding
     func body(content: Content) -> some View {
-        if enabled { content.searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search all mail").autocorrectionDisabled() }
-        else { content }
+        if enabled {
+            content
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search all mail")
+                .searchFocused(focused)
+                .autocorrectionDisabled()
+        } else { content }
     }
 }
 

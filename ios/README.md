@@ -309,6 +309,34 @@ against seven fictional positive cases and 36 unrelated pairs, including long
 mail and similar-topic distractors. The approved desktop update was rebuilt and
 reinstalled with that correction. Physical Duo typing remains the manual check.
 
+Build 13 adds a keyboard-collapse icon beside Settings in the Search account bar.
+It is visible while the search field has focus and resigns that focus without
+cancelling search, clearing the query or discarding results. Tapping the field
+resumes typing. Native search does not surface SwiftUI's keyboard accessory
+items reliably, so the control lives in the safe, persistent account bar instead.
+The keyboard-collapse UI check proves visibility/hit testing, keyboard dismissal,
+query/result retention and refocusing on both compact and wide profiles.
+Native results default to newest days first, with relevance retained within a day;
+the service applies the order before cursor pagination.
+
+The broad checks also reproduced a pre-existing Duo composer issue against the
+previous RootView: focusing its fields could remove Review and Cancel from the
+sheet. Moving its keyboard-dismiss action from the
+keyboard accessory to the navigation toolbar restores those actions. The compose
+regression retains its complete recipient review and explicit fictional send,
+and now checks dismissal, body retention, refocusing and Review hit testing too.
+
+Build 13 validation passed: 30 unit/WebKit checks, the compact profile's 20 UI
+checks (one orientation-only skip), all 11 wide-profile cases across the initial
+run and focused reruns, and all 68 API checks. The shared iPad's keyboard failures
+also reproduced with the previous RootView. An isolated iPad passed docked chat;
+after a build-guard load interruption, both wide-search checks passed with the
+software keyboard explicitly enabled, including XXXL text and keyboard collapse
+in both the real wide window and the fixed Duo viewport. `verify.sh` now disables
+the simulator hardware-keyboard connection temporarily and restores its previous
+preference on exit; its shell syntax and the same setup/restore sequence were
+checked. The design preflight passed and the signed build was installed on Duo.
+
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still

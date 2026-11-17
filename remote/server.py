@@ -12,6 +12,7 @@ break. See remote/README.md for the LaunchAgent and Tailscale Serve setup.
 """
 
 import json
+import datetime as dt
 import hashlib
 import os
 import re
@@ -326,6 +327,25 @@ def search_helper(query, account, keyword=False, client=None, generation=0):
         SEARCH_SLOTS.release()
 
 
+def recent_search_results(hits):
+    """Recent days first; stable sorting retains fused relevance within a day.
+    Unknown dates trail dated mail. Do this before snapshot pagination so every
+    page shares one order; BM25/cosine scores are never compared directly.
+    """
+    def day(hit):
+        value = hit.get("date")
+        if not isinstance(value,str):
+            return 0
+        try:
+            date = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=dt.timezone.utc)
+            return date.astimezone(dt.timezone.utc).date().toordinal()
+        except (ValueError, OverflowError):
+            return 0
+    return sorted(hits,key=day,reverse=True)
+
+
 def hybrid_search(conn, query, account=None, cursor=None, keyword=False, client=None, generation=0):
     if not query.strip() or len(query) > 2000:
         raise ValueError("Enter a query of 1–2,000 characters")
@@ -342,7 +362,7 @@ def hybrid_search(conn, query, account=None, cursor=None, keyword=False, client=
         hits, status = cached[3:]
     else:
         data = search_helper(query, account, keyword, client, generation)
-        hits = data["results"][:1500]
+        hits = recent_search_results(data["results"][:1500])
         status = data.get("semantic_status", "unavailable")
         token = secrets.token_urlsafe(18)
         offset = 0

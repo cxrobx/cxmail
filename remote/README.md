@@ -185,3 +185,17 @@ cached-body and missing-body cases. The deployed keyword and hybrid paths were
 checked against canonical message text for 50 live results each, without opening
 or changing mail. This service-side fix requires refreshing Search, not a new iOS
 build.
+
+## Recency-first native results
+
+The phone service orders accepted keyword/hybrid candidates by newest UTC calendar
+day before creating the ranked snapshot. The stable sort retains retrieval
+relevance within a day; missing/invalid dates trail dated mail. Every cursor page
+uses that same immutable order. Matching, semantic thresholds, account boundaries
+and body-preview handling are unchanged. The date-order and cross-page regressions
+in `remote/test_server.py` cover this policy. Legacy web `/api/messages` behavior
+is unchanged.
+
+Deployed on the mini and verified over the authenticated endpoint for both
+keyword and hybrid search with a live query, without opening or changing mail.
+All 68 API regressions pass.

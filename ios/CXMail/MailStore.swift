@@ -16,7 +16,7 @@ final class MailStore {
     private var searchAccount: String?
     var searchStatusText: String? {
         switch searchStatus {
-        case "ready": "Keyword + meaning matches"
+        case "ready": "Keyword + meaning matches · newest days first"
         case "partial": "Keyword + meaning matches · older mail is still indexing"
         case "indexing": "Keyword results · meaning search is still indexing"
         case "disabled": "Keyword results · enable meaning search in desktop Settings"
