@@ -20,12 +20,14 @@ STATE = os.path.expanduser('~/Library/Application Support/com.cxmail.remote')
 
 def important(row, trusted):
     # Trust is an explicit exact-address preference, never a display-name match.
-    if (row['is_read'] or row['withheld_reason'] or row['category'] == 'junk'
+    if (row['is_read'] or row['category'] == 'junk'
             or '$junk' in (row['flags'] or '').lower()
             or (row['p_phishing'] or 0) >= .5 or (row['p_impersonation'] or 0) >= .5):
         return False
     if (row['from_email'] or '').strip().lower() in trusted:
         return True
+    if row['withheld_reason']:
+        return False
     if row['model'] != 'decisions:gpt-6-luna' or row['prompt_version'] != 'v2':
         return False
     values = [row['needs_response'], row['needs_action'], row['urgency']]
@@ -160,8 +162,10 @@ class Notifications:
                         continue
                     r['category'] = r['triage_category']
                     # Known hard exclusions precede inference as well as delivery.
-                    if (r['withheld_reason'] or r['category'] == 'junk' or '$junk' in (r['flags'] or '').lower()
+                    if (r['category'] == 'junk' or '$junk' in (r['flags'] or '').lower()
                             or (r['p_phishing'] or 0) >= .5 or (r['p_impersonation'] or 0) >= .5):
+                        continue
+                    if r['withheld_reason'] and (r['from_email'] or '').strip().lower() not in trusted:
                         continue
                     # Message-ID dedupes copies and moves; mailbox generation guards UID reuse.
                     mid = (r['message_id'] or '').strip().strip('<>').lower()

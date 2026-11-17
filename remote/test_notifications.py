@@ -72,6 +72,7 @@ class NotificationTests(unittest.TestCase):
         self.worker.register(self.device)
         for i in range(1,8): self.mail(i)
         self.verdict(1,category='junk'); self.verdict(2,withheld='privacy')
+        with self.mailbox() as c: c.execute("UPDATE messages SET from_email='other@example.org' WHERE uid=2")
         with self.mailbox() as c:
             c.execute('UPDATE messages SET is_read=1 WHERE uid=3')
             c.execute("UPDATE messages SET date='2000-01-01' WHERE uid=4")
@@ -168,6 +169,13 @@ class NotificationTests(unittest.TestCase):
             return dict(needs_response=.5,needs_action=0,category='primary',urgency=3,model='decisions:gpt-6-luna')
         self.worker.classifier=classify; self.worker.register(self.device)
         self.mail(sender='other@example.org'); self.worker.tick(); self.assertEqual(self.calls,[])
+
+    def test_explicit_trust_not_blocked_by_inference_privacy_withholding(self):
+        calls=[]
+        self.worker.classifier=lambda r:calls.append(r)
+        self.worker.register(self.device); self.mail(); self.verdict(withheld='financial sender')
+        self.worker.tick()
+        self.assertEqual(calls,[]); self.assertEqual(len(self.calls),1)
 
     def test_invalid_registration_and_trust(self):
         for field,value in [('device','oops'),('token','bad'),('environment','evil.example'),('enabled',1)]:
