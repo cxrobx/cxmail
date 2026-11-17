@@ -98,6 +98,16 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Readiness only: never reads mail, calls a provider, or prints credentials.
+    if args.len() == 3 && args[1] == "remote" && args[2] == "notification-status" {
+        use cxmail_lib::email::inference::{InferenceClient, ProviderKind};
+        let ready = InferenceClient::load()
+            .map(|client| client.provider_kind() == ProviderKind::Openai)
+            .unwrap_or(false);
+        println!("{}", serde_json::json!({"model_ready": ready}));
+        return Ok(());
+    }
+
     // Notification inference is read-only, before migrations, and never an MCP tool.
     if args.get(1).map(String::as_str) == Some("remote") && args.get(2).map(String::as_str) == Some("notification-verdict") {
         let result = if args.len() == 6 {
