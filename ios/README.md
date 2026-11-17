@@ -352,6 +352,24 @@ verified again on the mini, and installed/launched on Duo. The laptop checkout
 and installed Xcode were unchanged; the temporary job and build tools were
 removed afterward. The design preflight passed.
 
+Build 15 moves Search's keyboard-dismiss action from the account strip into a
+native trailing toolbar item, allowing the Duo to place it in the right rail.
+Search keeps toolbar content visible while focused. Other devices use their
+native navigation-bar placement. The Duo search regression checks the action is
+right of the account controls, above the keyboard and hittable; all search
+touch checks also prove dismissal preserves the query/results without opening a
+message underneath the rail. The actual wide window repeats those checks with
+XXXL text. The fixed Duo viewport retains continuous-typing/navigation coverage;
+its top toolbar can be panned offscreen by iPad's keyboard, so toolbar hit testing
+belongs in the actual resizable window.
+The dedicated Duo rail test and full compact profile passed (30 unit/WebKit
+checks, 20 UI checks and one orientation-only skip). Ten of 11 wide cases passed
+across the initial run and focused reruns, including native-wide XXXL dismissal
+and the appearance case after a SpringBoard launch crash. The pre-existing
+docked-chat fixture position assertion remains failing. All 68 API checks and
+the design preflight passed; captures were inspected in both appearances. Signed
+build 15 was installed and launched on Duo without interrupting other test runs.
+
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still

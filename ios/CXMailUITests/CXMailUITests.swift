@@ -387,7 +387,7 @@ final class CXMailUITests: XCTestCase {
         else { XCTAssertEqual(tabs.count,1); tabs.element.tap() }
     }
     func testSearchKeyboardInActualWideWindow() {
-        launch()
+        launch(["-fixtureAppearance", "light", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"])
         XCUIDevice.shared.orientation = .portrait
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertGreaterThan(app.frame.width,867,"Use the iPad's real landscape window for keyboard avoidance")
@@ -406,12 +406,17 @@ final class CXMailUITests: XCTestCase {
         capture("Real wide window with focused search")
         assertSearchKeyboardCanCollapse()
     }
-    func assertSearchKeyboardCanCollapse() {
+    func assertSearchKeyboardCanCollapse(expectSideRail: Bool = false) {
         let search=app.searchFields.firstMatch
         let hide=app.buttons["hideSearchKeyboard"]
         XCTAssertTrue(hide.waitForExistence(timeout:5))
         XCTAssertTrue(hide.isHittable)
         XCTAssertLessThanOrEqual(hide.frame.maxY,app.keyboards.firstMatch.frame.minY+1)
+        if expectSideRail {
+            XCTAssertGreaterThan(hide.frame.midX, app.buttons["Settings"].frame.maxX,
+                                 "The Duo must place keyboard dismissal in its right rail, outside the account bar")
+        }
+        capture("Search keyboard collapse in native toolbar")
         let query=search.value as? String
         hide.tap()
         let gone=NSPredicate(format:"exists == false")
@@ -419,6 +424,7 @@ final class CXMailUITests: XCTestCase {
         waitForExpectations(timeout:5)
         XCTAssertEqual(search.value as? String,query,"Hiding keyboard must retain the search query")
         XCTAssertTrue(app.buttons["message-10"].exists,"Hiding keyboard must retain the results")
+        XCTAssertFalse(app.staticTexts["readerSubject"].exists,"Keyboard dismissal must not open a message underneath the rail")
         capture("Search results with keyboard collapsed")
         search.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout:5))
@@ -431,7 +437,7 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("project")
         XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10))
         capture("Search")
-        assertSearchKeyboardCanCollapse()
+        assertSearchKeyboardCanCollapse(expectSideRail: true)
     }
     func testWideSearchKeepsKeyboardAndTypedQuery() {
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -457,7 +463,9 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["searchStatus"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["message-10"].exists)
         capture("Wide search with keyboard and continuous typing")
-        assertSearchKeyboardCanCollapse()
+        // The iPad can pan this fixed-size viewport's native toolbar offscreen.
+        // Its touch/keyboard checks run in the actual wide window at XXXL too.
+        XCTAssertTrue(app.buttons["hideSearchKeyboard"].exists)
     }
     func testOfflineAndEmptyStates() {
         launch(["--offline"])

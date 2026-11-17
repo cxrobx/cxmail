@@ -244,6 +244,12 @@ struct MailboxView: View {
         .navigationTitle(tab.title)
         .navigationBarTitleDisplayMode(split && !largeTitle ? .inline : .large)
         .toolbar {
+            if tab == .search && searchFocused {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { searchFocused = false }
+                        .accessibilityIdentifier("hideSearchKeyboard")
+                }
+            }
             if tab == .drafts {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Scheduled sends", systemImage: "clock") { scheduled = true }.accessibilityIdentifier("scheduledSends")
@@ -284,13 +290,6 @@ struct MailboxView: View {
                     }.font(.subheadline.weight(.medium)).frame(minHeight: 44)
                 }.accessibilityLabel("Choose account").accessibilityIdentifier("accountMenu")
                 Spacer(minLength: 0)
-                if tab == .search && searchFocused {
-                    Button { searchFocused = false } label: {
-                        Image(systemName: "keyboard.chevron.compact.down").frame(minWidth: 44, minHeight: 44)
-                    }
-                    .accessibilityLabel("Hide keyboard")
-                    .accessibilityIdentifier("hideSearchKeyboard")
-                }
                 Button { settings = true } label: { Image(systemName: "gearshape").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("Settings")
             }.padding(.leading, 16).padding(.trailing, 4)
             if tab == .inbox {
@@ -327,6 +326,7 @@ struct MailSearch: ViewModifier {
             content
                 .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search all mail")
                 .searchFocused(focused)
+                .searchPresentationToolbarBehavior(.avoidHidingContent)
                 .autocorrectionDisabled()
         } else { content }
     }
