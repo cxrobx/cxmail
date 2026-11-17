@@ -173,7 +173,7 @@ struct ReaderView: View {
                 Button("Reply all", systemImage: "arrowshape.turn.up.left.2") { store.newDraft(reply: message, all: true) }
                 Button(message.read ? "Mark unread" : "Mark read", systemImage: "envelope.badge") { Task { if await store.action(message.read ? "unread" : "read", message) { self.message?.read.toggle() } } }
                 Button("Move to…", systemImage: "folder") { move = true }
-                Button("Open in Claude", systemImage: "arrow.up.forward.app") { Task { await openThread() } }
+                Button("Open in Claude", systemImage: "arrow.up.forward.app") { Task { await store.openSession(for: ref) } }
                 Button("Move to Trash", systemImage: "trash", role: .destructive) { trash = true }
             } label: { Image(systemName: "ellipsis").frame(maxWidth: .infinity, minHeight: 44) }.accessibilityLabel("Message actions")
         }.buttonStyle(.plain).labelStyle(.iconOnly).font(.title3).foregroundStyle(Color.accentColor).padding(.horizontal, 8).padding(.vertical, 4)
@@ -225,12 +225,6 @@ struct ReaderView: View {
             guard ref == requestRef, generation == imageGeneration, !Task.isCancelled else { return }
             html = body.html; images = body.imagesAllowed
         } catch { if ref == requestRef, generation == imageGeneration { self.error = store.friendly(error) } }
-    }
-    private func openThread() async {
-        do {
-            _ = try await store.api.data("/api/claude-thread", body: ref.payload)
-            store.notice = "Opened a Claude thread in T3 on the mini."
-        } catch { store.error = store.friendly(error) }
     }
 }
 

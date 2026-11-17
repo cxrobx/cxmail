@@ -1,4 +1,5 @@
 import XCTest
+import UserNotifications
 @testable import CXMail
 
 final class FailingProtocol: URLProtocol {
@@ -94,6 +95,22 @@ final class CXMailTests: XCTestCase {
                                        ["account":"","folder":"INBOX","uid":1], ["account":"work","folder":"INBOX","uid":"12"]] {
             XCTAssertNil(PushNotifications.messageReference(info))
         }
+    }
+
+    func testSessionNotificationActionRequiresMatchingCategoryAndOptIn() {
+        let ref = MessageRef(account: "work", folder: "INBOX", uid: 12)
+        let category = PushNotifications.mailCategory
+        let custom = PushNotifications.openSessionIdentifier
+        XCTAssertEqual(PushNotifications.action(identifier: custom, category: category, ref: ref,
+                                                sessionActionEnabled: true), .openSession(ref))
+        XCTAssertNil(PushNotifications.action(identifier: custom, category: category, ref: ref,
+                                              sessionActionEnabled: false))
+        XCTAssertNil(PushNotifications.action(identifier: custom, category: "", ref: ref,
+                                              sessionActionEnabled: true))
+        XCTAssertNil(PushNotifications.action(identifier: UNNotificationDismissActionIdentifier, category: category,
+                                              ref: ref, sessionActionEnabled: true))
+        XCTAssertEqual(PushNotifications.action(identifier: UNNotificationDefaultActionIdentifier, category: category,
+                                                ref: ref, sessionActionEnabled: true), .read(ref))
     }
 
     func testDraftLinksAcceptOnlyExactTrustedNavigation() {

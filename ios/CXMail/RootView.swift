@@ -40,12 +40,14 @@ struct RootView: View {
             }
             #endif
         }
-        .task {
-            await PushNotifications.shared.connect(store.api)
-            if let ref = PushNotifications.shared.selection { store.selected = ref; PushNotifications.shared.selection = nil }
-        }
-        .onChange(of: PushNotifications.shared.selection) { _, ref in
-            if let ref { store.selected = ref; PushNotifications.shared.selection = nil }
+        .task { await PushNotifications.shared.connect(store.api) }
+        .onChange(of: PushNotifications.shared.pendingAction, initial: true) { _, action in
+            guard let action else { return }
+            PushNotifications.shared.pendingAction = nil
+            switch action {
+            case .read(let ref): store.selected = ref
+            case .openSession(let ref): Task { await store.openSession(for: ref) }
+            }
         }
         .task(id: store.listKey) {
             if store.tab == .search { try? await Task.sleep(for: .milliseconds(300)); if Task.isCancelled { return } }

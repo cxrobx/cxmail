@@ -9,6 +9,7 @@ All notable changes to CXMail are documented here.
 - **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
 
 ### Added
+- **Open in Session from a smart notification.** Turn on the action in CXMail Settings, then press and hold a new mail alert to start a T3 session for that message.
 - **Native smart notifications.** Opt in on iPhone for new mail from exact trusted addresses and Luna Decisions classifications of important mail. Privacy-gated inference, persistent duplicate protection, bounded retries and a daily classification cap run on the mini; generic Apple Push alerts open the exact message. Notification trust is separate from image loading.
 - **iOS appearance setting.** Choose System, Light or Dark in Settings; the app remembers the choice on this device.
 - **Shared sender image trust and authentication.** Desktop and iOS use the same trusted-sender list. Images load automatically only when the current message passes Google From-domain authentication and has no Medium/High risk or Junk flag. A discreet domain-authentication indicator explains the result; Show once remains separate from trust. CSS images, stale decisions and offline caches cannot bypass the gate.

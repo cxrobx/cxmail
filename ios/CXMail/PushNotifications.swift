@@ -6,19 +6,28 @@ struct NotificationSettings: Decodable {
     let trustedSenders: [String]
 }
 
+enum MailNotificationAction: Equatable {
+    case read(MessageRef)
+    case openSession(MessageRef)
+}
+
 @MainActor @Observable
 final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = PushNotifications()
+    nonisolated static let mailCategory = "CXMAIL_SMART_MAIL"
+    nonisolated static let openSessionIdentifier = "CXMAIL_OPEN_SESSION"
     var status = "Notifications are off"
     var settings: NotificationSettings?
     var error: String?
-    var selection: MessageRef?
+    var pendingAction: MailNotificationAction?
+    private(set) var offersSessionAction: Bool
     private var api: APIClient?
     private var token: String?
     private let defaults: UserDefaults
     private var syncTask: Task<Void, Never>?
     init(api: APIClient? = nil, defaults: UserDefaults = .standard) {
         self.api = api; self.defaults = defaults
+        offersSessionAction = defaults.bool(forKey: "pushOffersSessionAction")
         super.init()
     }
     private var device: String {
@@ -26,6 +35,25 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
         let id = UUID().uuidString; defaults.set(id, forKey: "pushDevice"); return id
     }
     var enabled: Bool { defaults.bool(forKey: "pushEnabled") }
+
+    func setSessionAction(_ enabled: Bool) {
+        offersSessionAction = enabled
+        defaults.set(enabled, forKey: "pushOffersSessionAction")
+        registerCategories()
+    }
+
+    func registerCategories() {
+        let center = UNUserNotificationCenter.current()
+        guard offersSessionAction else {
+            center.setNotificationCategories([])
+            return
+        }
+        let action = UNNotificationAction(identifier: Self.openSessionIdentifier,
+            title: "Open in Session", options: [.foreground, .authenticationRequired])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: Self.mailCategory, actions: [action], intentIdentifiers: [], options: [])
+        ])
+    }
 
     func connect(_ api: APIClient) async {
         guard !api.fixture else { return }
@@ -125,23 +153,47 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
               let uid = info["uid"] as? Int, uid > 0, uid <= Int(UInt32.max) else { return nil }
         return MessageRef(account: account, folder: folder, uid: uid)
     }
+    nonisolated static func action(identifier: String, category: String, ref: MessageRef,
+                                   sessionActionEnabled: Bool) -> MailNotificationAction? {
+        switch identifier {
+        case UNNotificationDefaultActionIdentifier:
+            return .read(ref)
+        case openSessionIdentifier where category == mailCategory && sessionActionEnabled:
+            return .openSession(ref)
+        default:
+            return nil
+        }
+    }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
         willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound, .list])
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        let info = response.notification.request.content.userInfo
-        if let ref = Self.messageReference(info) {
-            Task { @MainActor in self.selection = ref }
+        let content = response.notification.request.content
+        if let ref = Self.messageReference(content.userInfo) {
+            let identifier = response.actionIdentifier
+            let category = content.categoryIdentifier
+            Task { @MainActor in
+                if let action = Self.action(identifier: identifier, category: category, ref: ref,
+                                            sessionActionEnabled: self.enabled && self.offersSessionAction) {
+                    self.pendingAction = action
+                }
+                completionHandler()
+            }
+        } else {
+            completionHandler()
         }
-        completionHandler()
     }
 }
 
 final class PushAppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return true }
+        #endif
         UNUserNotificationCenter.current().delegate = PushNotifications.shared
+        PushNotifications.shared.registerCategories()
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -153,13 +205,21 @@ final class PushAppDelegate: NSObject, UIApplicationDelegate {
 }
 
 struct NotificationSettingsSection: View {
+    let fixture: Bool
     @State private var push = PushNotifications.shared
     @State private var sender = ""
+    @State private var fixtureSessionAction = false
     var body: some View {
         Section {
             Text(push.status)
             Button("Enable smart notifications") { Task { await push.enable() } }
             Button("Turn off notifications") { Task { await push.disable() } }
+            Toggle("Open in Session action", isOn: fixture ? $fixtureSessionAction : Binding(
+                get: { push.offersSessionAction }, set: { push.setSessionAction($0) }))
+            if fixture ? fixtureSessionAction : push.offersSessionAction {
+                Text("Press and hold a new alert to start a T3 session for that email.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             ForEach(push.settings?.trustedSenders ?? [], id: \.self) { email in
                 HStack {
                     Text(email)

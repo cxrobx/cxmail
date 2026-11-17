@@ -8,9 +8,17 @@ struct Payload: Codable {
     struct APS: Codable {
         struct Alert: Codable { let title: String; let body: String }
         let alert: Alert; let sound: String; let threadID: String
-        enum CodingKeys: String, CodingKey { case alert, sound; case threadID = "thread-id" }
+        var category: String?
+        enum CodingKeys: String, CodingKey { case alert, sound, category; case threadID = "thread-id" }
     }
-    let aps: APS; let account: String; let folder: String; let uid: Int
+    var aps: APS; let account: String; let folder: String; let uid: Int
+
+    func forDelivery() -> Payload {
+        var payload = self
+        let refersToMail = !account.isEmpty && !folder.isEmpty && uid > 0 && uid <= Int(UInt32.max)
+        payload.aps.category = refersToMail ? "CXMAIL_SMART_MAIL" : nil
+        return payload
+    }
 }
 func b64(_ data: Data) -> String {
     data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
@@ -37,7 +45,7 @@ Task {
         request.setValue("10", forHTTPHeaderField: "apns-priority")
         request.setValue(String(Int(Date().timeIntervalSince1970) + 3600), forHTTPHeaderField: "apns-expiration")
         request.setValue(input.collapse, forHTTPHeaderField: "apns-collapse-id")
-        request.httpBody = try JSONEncoder().encode(input.payload)
+        request.httpBody = try JSONEncoder().encode(input.payload.forDelivery())
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { exit(1) }
         let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]

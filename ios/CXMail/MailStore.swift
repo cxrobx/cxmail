@@ -35,6 +35,7 @@ final class MailStore {
     var online = false
     var error: String?
     var notice: String?
+    private var openingSessions = Set<MessageRef>()
     var pending = Set<String>()
     var composer: LocalDraft?
     var recoveredDraft: LocalDraft?
@@ -72,6 +73,17 @@ final class MailStore {
         recoveredDraft = cache.load("draft.json")
         rows = snapshot.lists[listKey] ?? []
     }
+    func openSession(for ref: MessageRef) async {
+        guard openingSessions.insert(ref).inserted else { return }
+        defer { openingSessions.remove(ref) }
+        do {
+            _ = try await api.data("/api/claude-thread", body: ref.payload)
+            notice = "Opened a Claude thread in T3 on the mini."
+        } catch {
+            notice = "Couldn’t confirm that the session opened. \(friendly(error))"
+        }
+    }
+
     func receiveDraftLink(_ url: URL) {
         guard let id = DraftLink.parse(url) else { return }
         draftLinkGeneration += 1

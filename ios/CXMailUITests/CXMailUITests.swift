@@ -117,8 +117,18 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(enable.waitForExistence(timeout: 5))
         enable.tap()
         XCTAssertEqual(app.alerts.count,0,"Fixture must never request real push authorization")
+        let sessionAction = app.switches["Open in Session action"]
+        XCTAssertTrue(sessionAction.exists)
+        for _ in 0..<2 { if sessionAction.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(sessionAction.isHittable)
+        XCTAssertEqual(sessionAction.value as? String, "0")
+        // SwiftUI exposes the entire labeled row as a switch. Tap its trailing control.
+        sessionAction.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        capture("Session action enabled")
+        XCTAssertEqual(sessionAction.value as? String, "1")
         let sender=app.textFields["Trusted sender email"]
         XCTAssertTrue(sender.exists)
+        for _ in 0..<2 { if sender.isHittable { break }; app.swipeUp() }
         sender.tap(); sender.typeText("trusted@example.org")
         XCTAssertFalse(app.buttons["openChat"].exists, "Mailbox actions must not leak through the Settings sheet")
         XCTAssertFalse(app.buttons["compose"].exists)
