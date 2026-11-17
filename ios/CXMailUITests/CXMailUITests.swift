@@ -9,7 +9,7 @@ final class CXMailUITests: XCTestCase {
         app.launch()
     }
     func capture(_ name: String) {
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); shot.name = name; shot.lifetime = .keepAlways; add(shot)
     }
     func openMessage() {
         let message = app.buttons["message-10"]
@@ -185,6 +185,8 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(review.isHittable, "Review must stay available while typing")
         let hide = app.buttons["hideComposeKeyboard"]
         XCTAssertTrue(hide.isHittable)
+        XCTAssertFalse(app.buttons["openChat"].exists, "Chat must hide while the keyboard is exposed")
+        XCTAssertFalse(app.buttons["compose"].exists, "New message must hide while the keyboard is exposed")
         XCTAssertLessThanOrEqual(hide.frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
         capture("Composer with keyboard before review")
         hide.tap()
@@ -404,15 +406,18 @@ final class CXMailUITests: XCTestCase {
         search.typeText(" notes")
         XCTAssertEqual(search.value as? String,"project notes")
         capture("Real wide window with focused search")
-        assertSearchKeyboardCanCollapse()
+        assertSearchKeyboardCanCollapse(expectSideRail: true)
     }
     func assertSearchKeyboardCanCollapse(expectSideRail: Bool = false) {
         let search=app.searchFields.firstMatch
         let hide=app.buttons["hideSearchKeyboard"]
         XCTAssertTrue(hide.waitForExistence(timeout:5))
         XCTAssertTrue(hide.isHittable)
+        XCTAssertFalse(app.buttons["openChat"].exists, "Chat must hide while the keyboard is exposed")
+        XCTAssertFalse(app.buttons["compose"].exists, "New message must hide while the keyboard is exposed")
         XCTAssertLessThanOrEqual(hide.frame.maxY,app.keyboards.firstMatch.frame.minY+1)
         if expectSideRail {
+            XCTAssertGreaterThan(hide.frame.midX, app.frame.midX, "Keyboard dismissal belongs on the trailing side of the whole window")
             XCTAssertGreaterThan(hide.frame.midX, app.buttons["Settings"].frame.maxX,
                                  "The Duo must place keyboard dismissal in its right rail, outside the account bar")
         }
@@ -422,6 +427,8 @@ final class CXMailUITests: XCTestCase {
         let gone=NSPredicate(format:"exists == false")
         expectation(for:gone,evaluatedWith:app.keyboards.firstMatch)
         waitForExpectations(timeout:5)
+        XCTAssertTrue(app.buttons["openChat"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["compose"].exists)
         XCTAssertEqual(search.value as? String,query,"Hiding keyboard must retain the search query")
         XCTAssertTrue(app.buttons["message-10"].exists,"Hiding keyboard must retain the results")
         XCTAssertFalse(app.staticTexts["readerSubject"].exists,"Keyboard dismissal must not open a message underneath the rail")

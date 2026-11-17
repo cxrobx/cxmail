@@ -370,6 +370,21 @@ docked-chat fixture position assertion remains failing. All 68 API checks and
 the design preflight passed; captures were inspected in both appearances. Signed
 build 15 was installed and launched on Duo without interrupting other test runs.
 
+Build 16 gives the open split window’s detail navigator ownership of Search’s
+keyboard-dismiss action, so it appears on the trailing side of the whole window
+instead of the left mailbox header. Search focus and keyboard visibility live
+above the adaptive branches. Floating Chat and Compose actions hide while the
+software keyboard is exposed and return after dismissal. Compact and native-wide
+search regressions check the trailing position, hidden/restored actions and
+retained query/results. Full-screen captures avoid Xcode’s rotated app-window
+crop and were inspected alongside the wide flow recording. The compact search,
+native-wide XXXL search and fixed Duo typing checks passed, as did the compact
+send/schedule regression and design preflight. Full verify runs were interrupted
+by simulator startup/host load failures; they are not a clean full-matrix pass.
+The 68 API checks had one timing-sensitive chat failure that passed in isolation.
+The signed build was created from an isolated snapshot excluding the concurrent
+draft-link work, verified, then installed and launched on Duo.
+
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still

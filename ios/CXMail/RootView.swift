@@ -80,6 +80,8 @@ struct MailWorkspace: View {
     let tab: MailTab
     @Binding var settings: Bool
     @State private var columns: NavigationSplitViewVisibility = .detailOnly
+    @FocusState private var searchFocused: Bool
+    @State private var keyboardVisible = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -93,11 +95,11 @@ struct MailWorkspace: View {
                                 .toolbar { ToolbarItem(placement: .topBarLeading) {
                                     Button("Inbox", systemImage: "tray") { store.selected = nil }.accessibilityIdentifier("dockInbox")
                                 } }
-                        } else { MailboxView(store: store, tab: tab, split: true, settings: $settings) }
+                        } else { MailboxView(store: store, tab: tab, split: true, settings: $settings, searchFocused: $searchFocused, keyboardVisible: keyboardVisible) }
                     }
                 } else if layout.split || layout.overlay {
                     NavigationSplitView(columnVisibility: $columns) {
-                        MailboxView(store: store, tab: tab, split: true, settings: $settings, largeTitle: layout.overlay)
+                        MailboxView(store: store, tab: tab, split: true, settings: $settings, searchFocused: $searchFocused, keyboardVisible: keyboardVisible, largeTitle: layout.overlay)
                             .padding(.trailing, max(0, layout.gap - 1))
                             .toolbar(removing: .sidebarToggle)
                             .toolbar {
@@ -117,6 +119,7 @@ struct MailWorkspace: View {
                                 else { ContentUnavailableView("Choose a message", systemImage: "envelope.open", description: Text(layout.overlay ? "Open Inbox to choose a message." : "Your conversation will open here.")) }
                             }
                             .toolbar {
+                                SearchKeyboardToolbar(enabled: tab == .search, focused: $searchFocused)
                                 if layout.overlay || columns == .detailOnly {
                                     ToolbarItem(placement: .topBarLeading) {
                                         Button("Show inbox", systemImage: "sidebar.left") { setColumns(.all) }
@@ -134,7 +137,8 @@ struct MailWorkspace: View {
                     .environment(\.horizontalSizeClass, .regular)
                 } else {
                     NavigationStack {
-                        MailboxView(store: store, tab: tab, split: false, settings: $settings)
+                        MailboxView(store: store, tab: tab, split: false, settings: $settings, searchFocused: $searchFocused, keyboardVisible: keyboardVisible)
+                            .toolbar { SearchKeyboardToolbar(enabled: tab == .search, focused: $searchFocused) }
                             .navigationDestination(isPresented: Binding(get: { store.tab == tab && store.selected != nil }, set: { if !$0 { store.selected = nil } })) {
                                 if let ref = store.selected { destination(ref) }
                             }
@@ -154,6 +158,8 @@ struct MailWorkspace: View {
         // Otherwise a wide Duo drops below 500pt, destroys the focused search
         // navigator, dismisses its keyboard and immediately becomes wide again.
         .ignoresSafeArea(.keyboard, edges: tab == .search && !store.chatDocked ? .bottom : [])
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
     }
     private func setColumns(_ value: NavigationSplitViewVisibility) {
         withAnimation(reduceMotion ? nil : .default) { columns = value }
@@ -182,9 +188,10 @@ struct MailboxView: View {
     let tab: MailTab
     let split: Bool
     @Binding var settings: Bool
+    var searchFocused: FocusState<Bool>.Binding
+    var keyboardVisible: Bool
     var largeTitle = false
     @State private var scheduled = false
-    @FocusState private var searchFocused: Bool
     let categories = ["all", "primary", "starred", "updates", "promotions", "social"]
     var body: some View {
         List {
@@ -271,12 +278,6 @@ struct MailboxView: View {
         .navigationTitle(tab.title)
         .navigationBarTitleDisplayMode(split && !largeTitle ? .inline : .large)
         .toolbar {
-            if tab == .search && searchFocused {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { searchFocused = false }
-                        .accessibilityIdentifier("hideSearchKeyboard")
-                }
-            }
             if tab == .drafts {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Scheduled sends", systemImage: "clock") { scheduled = true }.accessibilityIdentifier("scheduledSends")
@@ -287,17 +288,19 @@ struct MailboxView: View {
         .refreshable { await store.load() }
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 12) {
-                Button { store.chatPresented = true } label: {
-                    Image(systemName: "bubble.left.and.bubble.right").font(.title3).frame(width: 48, height: 48)
-                }.mailGlass(capsule: true).accessibilityLabel("Chat").accessibilityIdentifier("openChat")
-                Spacer(minLength: 0)
-                Button { store.newDraft() } label: {
-                    Image(systemName: "square.and.pencil").font(.title3).frame(width: 48, height: 48)
-                }.mailGlass(capsule: true).accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
-            }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 8)
+            if !keyboardVisible {
+                HStack(spacing: 12) {
+                    Button { store.chatPresented = true } label: {
+                        Image(systemName: "bubble.left.and.bubble.right").font(.title3).frame(width: 48, height: 48)
+                    }.mailGlass(capsule: true).accessibilityLabel("Chat").accessibilityIdentifier("openChat")
+                    Spacer(minLength: 0)
+                    Button { store.newDraft() } label: {
+                        Image(systemName: "square.and.pencil").font(.title3).frame(width: 48, height: 48)
+                    }.mailGlass(capsule: true).accessibilityLabel("Compose").accessibilityIdentifier("compose").keyboardShortcut("n", modifiers: .command)
+                }.buttonStyle(.plain).foregroundStyle(Color.accentColor).padding(.horizontal, 16).padding(.vertical, 8)
+            }
         }
-        .modifier(MailSearch(enabled: tab == .search, query: $store.query, focused: $searchFocused))
+        .modifier(MailSearch(enabled: tab == .search, query: $store.query, focused: searchFocused))
         .sensoryFeedback(.selection, trigger: store.category)
         .sensoryFeedback(.selection, trigger: store.selected)
     }
@@ -342,6 +345,19 @@ struct MailboxView: View {
         .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
     }
     static let placeholder = MailMessage(account: "", folder: "", uid: 0, subject: "A note about next week", fromName: "Your correspondent", date: "", snippet: "A preview of your message will appear here.", read: false, starred: false, attachments: false)
+}
+
+struct SearchKeyboardToolbar: ToolbarContent {
+    var enabled: Bool
+    var focused: FocusState<Bool>.Binding
+    var body: some ToolbarContent {
+        if enabled && focused.wrappedValue {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { focused.wrappedValue = false }
+                    .accessibilityIdentifier("hideSearchKeyboard")
+            }
+        }
+    }
 }
 
 struct MailSearch: ViewModifier {
