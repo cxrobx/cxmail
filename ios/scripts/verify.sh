@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 COMPACT=${1:?Usage: bash scripts/verify.sh compact-simulator-udid wide-ipad-simulator-udid}
 WIDE=${2:?Pass an iPad simulator for the exact open-Duo viewport}
+/usr/bin/python3 scripts/simulator_policy.py simulator-policy.json "compact=$COMPACT" "wide=$WIDE"
 OUT=${CXMAIL_BUILD_DIR:-/private/tmp/cxmail-ios-dd}
 RUN=$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
@@ -24,7 +25,7 @@ for PROFILE in compact wide; do
   SIM=$COMPACT; ONLY=(-skip-testing:CXMailUITests/CXMailUITests/testSearchKeyboardInActualWideWindow -skip-testing:CXMailUITests/CXMailUITests/testWideSearchKeepsKeyboardAndTypedQuery -skip-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -skip-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -skip-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut)
   if [ "$PROFILE" = wide ]; then SIM=$WIDE; ONLY=(-only-testing:CXMailUITests/DraftLinkUITests -only-testing:CXMailUITests/CXMailUITests/testSearchKeyboardInActualWideWindow -only-testing:CXMailUITests/CXMailUITests/testWideSearchKeepsKeyboardAndTypedQuery -only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport -only-testing:CXMailUITests/CXMailUITests/testPortraitInboxDrawer -only-testing:CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut -only-testing:CXMailUITests/CXMailUITests/testCompactSendToolbarScheduleAndCancel -only-testing:CXMailUITests/CXMailUITests/testMissingDraftRefreshesListAndOpensCurrentDraft -only-testing:CXMailUITests/CXMailUITests/testTrustedSenderImagesAndAuthenticationDetails -only-testing:CXMailUITests/CXMailUITests/testFailedAuthenticationCannotTrustSenderAutomatically -only-testing:CXMailUITests/CXMailUITests/testFixedWidthEmailFitsClosedReaderAndRotation -only-testing:CXMailUITests/CXMailUITests/testAppearanceSelectionPersistsAcrossRelaunch); fi
   LOG="$OUT/$PROFILE-$RUN.log"
-  xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Debug \
+  CX_IOS_SIMULATOR_PROFILE="$PROFILE" xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Debug \
     -destination "platform=iOS Simulator,id=$SIM" -derivedDataPath "$OUT" \
     -resultBundlePath "$OUT/$PROFILE-$RUN.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- "${ONLY[@]}" test > "$LOG" 2>&1 || {
       tail -80 "$LOG"; exit 1;

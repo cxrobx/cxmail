@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "project": "CXMail",
+  "default_profile": "compact",
+  "profiles": {
+    "compact": {"device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "description": "iPhone Duo, closed/compact"},
+    "wide": {"device_type_prefix": "com.apple.CoreSimulator.SimDeviceType.iPad-", "description": "iPad hosting the exact open-Duo geometry fixture"}
+  },
+  "context": [
+    "Run ios/scripts/verify.sh with a compact Duo UUID and a wide iPad UUID before installing on the phone.",
+    "List ALL available simulators, not only booted devices. Verify deviceTypeIdentifier and iOS runtime; a device name is not proof.",
+    "Direct xcodebuild simulator tests default to compact. Set CX_IOS_SIMULATOR_PROFILE=wide only for the wide fixture tests.",
+    "Keep fiction-only fixtures and the exact-width open-Duo harness. A test runner that fails at setup verified nothing."
+  ],
+  "references": ["ios/AGENTS.md", "ios/README.md"]
+}
