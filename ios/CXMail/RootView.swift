@@ -235,14 +235,6 @@ struct MailboxView: View {
                             .disabled(store.loadingMore)
                     }
                 }
-            } footer: {
-                if let date = store.snapshot.savedAt {
-                    HStack(spacing: 4) {
-                        Image(systemName: store.online ? "checkmark.icloud" : "icloud.slash")
-                        Text(store.online ? "Updated" : "Saved")
-                        Text(date, style: .relative).monospacedDigit()
-                    }.frame(maxWidth: .infinity).padding(.top, 8)
-                }
             }
         }
         .listStyle(.plain)

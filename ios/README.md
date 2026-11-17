@@ -337,6 +337,21 @@ the simulator hardware-keyboard connection temporarily and restores its previous
 preference on exit; its shell syntax and the same setup/restore sequence were
 checked. The design preflight passed and the signed build was installed on Duo.
 
+Build 14 removes the always-visible cache-age footer ("Updated …" / "Saved …")
+from mailboxes and Search. Cache timestamps remain internal; connection errors
+and their retry action still appear when needed.
+Validation passed for all 30 unit/WebKit checks, 20 compact UI checks (one
+orientation-only skip), 10 of the 11 wide UI checks including both search and
+keyboard-collapse flows, and all 68 API checks. The existing docked-chat fixture
+keyboard-position assertion failed again, as it did against the previous
+RootView; this patch leaves that test and chat layout unchanged. The Search
+captures were inspected to confirm the footer is gone and results are retained.
+The signed build was produced in the laptop's Aqua session using a temporary
+copy of the mini's Xcode 27.2 (the laptop's default 27.0 lacks `reservedRegions`),
+verified again on the mini, and installed/launched on Duo. The laptop checkout
+and installed Xcode were unchanged; the temporary job and build tools were
+removed afterward. The design preflight passed.
+
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still
