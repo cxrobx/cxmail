@@ -72,6 +72,7 @@ final class APIClient {
     private func transfer(_ path: String, query: [URLQueryItem], body: [String: Any]?) async throws -> (Data, HTTPURLResponse) {
         #if DEBUG
         if fixture {
+            if path == "/api/draft-link" { try await Task.sleep(for: Fixtures.draftLinkDelay) }
             if path == "/api/search" { try await Task.sleep(for: Fixtures.searchDelay) }
             if path == "/api/action", body?["action"] as? String == "read",
                ProcessInfo.processInfo.arguments.contains("--slow-read") {

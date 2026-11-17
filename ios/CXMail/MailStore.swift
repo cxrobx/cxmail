@@ -38,6 +38,11 @@ final class MailStore {
     var pending = Set<String>()
     var composer: LocalDraft?
     var recoveredDraft: LocalDraft?
+    var draftLinkRequest = 0
+    var pendingDraftLink: String?
+    var draftLinkError: String?
+    var resolvingDraftLink = false
+    private var draftLinkGeneration = 0
     var review: MessageRef?
     var unavailableDraft: MessageRef?
     var chatPresented = false
@@ -66,6 +71,40 @@ final class MailStore {
         cache.remove("mail.json")
         recoveredDraft = cache.load("draft.json")
         rows = snapshot.lists[listKey] ?? []
+    }
+    func receiveDraftLink(_ url: URL) {
+        guard let id = DraftLink.parse(url) else { return }
+        draftLinkGeneration += 1
+        pendingDraftLink = id; draftLinkError = nil; draftLinkRequest += 1
+    }
+    func dismissDraftLink() {
+        draftLinkGeneration += 1
+        pendingDraftLink = nil; draftLinkError = nil; resolvingDraftLink = false
+    }
+    func resolvePendingDraftLink() async {
+        guard let id = pendingDraftLink else { return }
+        draftLinkGeneration += 1; let token = draftLinkGeneration
+        let selection = selected; let currentTab = tab; let currentAccount = account; let currentReview = review
+        resolvingDraftLink = true; draftLinkError = nil
+        defer { if token == draftLinkGeneration { resolvingDraftLink = false } }
+        guard composer == nil, review == nil, !chatPresented else {
+            draftLinkError = "Close the current compose, review or chat window, then try this draft link again."
+            return
+        }
+        do {
+            let ref: MessageRef = try await api.get("/api/draft-link", query: [.init(name: "id", value: id)])
+            guard token == draftLinkGeneration, pendingDraftLink == id, !Task.isCancelled else { return }
+            guard selected == selection, tab == currentTab, account == currentAccount, review == currentReview, composer == nil, !chatPresented else {
+                draftLinkError = "Your selection changed. Try again when you’re ready to open the linked draft."
+                return
+            }
+            pendingDraftLink = nil
+            // Use the root-owned review sheet; list refreshes cannot replace this reference.
+            review = ref
+        } catch {
+            guard token == draftLinkGeneration, !Task.isCancelled else { return }
+            draftLinkError = friendly(error)
+        }
     }
     func load(more: Bool = false) async {
         if more && (loading || loadingMore || !hasMore) { return }

@@ -270,3 +270,11 @@ Register it one of two ways:
   ```
 - **Global / manual** — `claude mcp add cxmail /abs/path/to/src-tauri/target/release/cxmail-mcp`
   (no args).
+
+### Phone handoffs
+
+With local `draft-links.json` configured, compose/edit results include an HTTPS
+**Open in CXMail** link. Include that exact link in agent replies. It resolves the
+stable draft UUID on the paired mini and opens iOS review; it grants no send
+permission. Desktop links and `open_draft` keep their existing behavior. See
+[`docs/draft-links.md`](../docs/draft-links.md) for configuration and validation.

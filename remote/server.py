@@ -472,6 +472,31 @@ def get_message(conn, account, folder, uid):
     return msg
 
 
+DRAFT_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+
+
+def resolve_draft_link(conn, draft_id):
+    """Stable logical identity, never a guessed subject or stale IMAP revision.
+
+    The drafts table is maintained by all writers and sync (db/drafts.rs).
+    No messages join: a newly saved draft can precede its cached message body.
+    The signed preview helper remains authoritative about existence and content.
+    """
+    if not DRAFT_ID.fullmatch(draft_id):
+        raise ValueError("invalid draft link")
+    row = conn.execute(
+        "SELECT d.account_id,d.folder_name,d.current_uid,d.uidvalidity,s.uidvalidity AS synced_epoch "
+        "FROM drafts d JOIN accounts a ON a.id=d.account_id AND a.is_active=1 "
+        "JOIN folders f ON f.account_id=d.account_id AND f.name=d.folder_name AND f.folder_type='drafts' "
+        "LEFT JOIN sync_state s ON s.account_id=d.account_id AND s.folder_name=d.folder_name "
+        "WHERE d.draft_id=?", (draft_id,)).fetchone()
+    if not row:
+        return None
+    if row["synced_epoch"] != row["uidvalidity"] or not 0 < row["current_uid"] <= 4294967295:
+        raise ValueError("Draft index is updating. Try this link again after CXMail syncs.")
+    return {"account": row["account_id"], "folder": row["folder_name"], "uid": row["current_uid"]}
+
+
 def draft_cache_token(conn, ref):
     """A missing UID applies only to this cached revision/UIDVALIDITY epoch."""
     row = conn.execute(
@@ -1290,6 +1315,13 @@ class Handler(BaseHTTPRequestHandler):
                     "text/html",
                     {"Content-Security-Policy": body_csp(images), "X-CXMail-Images-Allowed": "1" if images else "0"},
                 )
+            if url.path == "/api/draft-link":
+                with db() as c:
+                    location = resolve_draft_link(c, q.get("id", ""))
+                if location is None:
+                    # This is NOT a typed draft_gone: local indexing can lag.
+                    return self._err(404, "Draft is not available here yet. Try again after CXMail syncs, or check Drafts.")
+                return self._send(200, location)
             if url.path == "/api/drafts":
                 with db() as c:
                     return self._send(200, PENDING.apply(list_drafts(c, q.get("account"))))

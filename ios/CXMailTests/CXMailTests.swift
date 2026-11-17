@@ -35,6 +35,74 @@ final class ImageDocumentProtocol: URLProtocol {
 final class CXMailTests: XCTestCase {
     func api() -> APIClient { APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), fixture: true) }
     func cache() -> MailCache { MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
+    let linkID = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
+    func testDraftLinksAcceptOnlyExactTrustedNavigation() {
+        XCTAssertEqual(DraftLink.parse(URL(string: "cxmail://draft/\(linkID)")!), linkID)
+        XCTAssertEqual(DraftLink.parse(URL(string: "https://links.example.com/draft/\(linkID)")!, host: "links.example.com"), linkID)
+        for url in ["https://evil.example/draft/\(linkID)", "http://links.example.com/draft/\(linkID)",
+                    "https://links.example.com:443/draft/\(linkID)", "https://user@links.example.com/draft/\(linkID)",
+                    "cxmail://draft/\(linkID)?server=https://evil.example", "cxmail://draft/\(linkID)#send",
+                    "cxmail://draft/\(linkID)/", "cxmail://draft/abc", "cxmail://draft/\(linkID.uppercased())",
+                    "cxmail://draft/\(linkID)/1", "cxmail://draft/%30\(linkID.dropFirst())"] {
+            XCTAssertNil(DraftLink.parse(URL(string: url)!, host: "links.example.com"), url)
+        }
+    }
+    func testDraftLinkResolvesCurrentRevisionAndOnlyOpensReview() async {
+        Fixtures.draftLinkUID = 21
+        defer { Fixtures.draftLinkUID = 20 }
+        let store = MailStore(api: api(), cache: cache())
+        let beforeSent = Fixtures.sent
+        store.receiveDraftLink(URL(string: "cxmail://draft/\(linkID)")!)
+        await store.resolvePendingDraftLink()
+        XCTAssertEqual(store.review, MessageRef(account: "work", folder: "Drafts", uid: 21))
+        XCTAssertNil(store.pendingDraftLink)
+        XCTAssertEqual(Fixtures.sent, beforeSent)
+    }
+    func testReceivingTheSameLinkStartsAFreshResolutionRequest() {
+        let store = MailStore(api: api(), cache: cache())
+        let url = URL(string: "cxmail://draft/\(linkID)")!
+        store.receiveDraftLink(url)
+        let request = store.draftLinkRequest
+        store.receiveDraftLink(url)
+        XCTAssertEqual(store.draftLinkRequest, request + 1)
+        XCTAssertEqual(store.pendingDraftLink, linkID)
+    }
+    func testDraftLinkOfflineRetainsLinkAndRecoveryForRetry() async {
+        let store = MailStore(api: api(), cache: cache())
+        Fixtures.draftLinkUnavailable = true
+        defer { Fixtures.draftLinkUnavailable = false }
+        store.receiveDraftLink(URL(string: "cxmail://draft/\(linkID)")!)
+        await store.resolvePendingDraftLink()
+        XCTAssertEqual(store.pendingDraftLink, linkID); XCTAssertNotNil(store.draftLinkError)
+        XCTAssertNil(store.review)
+        Fixtures.draftLinkUnavailable = false
+        await store.resolvePendingDraftLink()
+        XCTAssertEqual(store.review?.uid, 20)
+    }
+    func testSlowDraftLinkCannotReplaceNewerSelectionOrDismissal() async throws {
+        Fixtures.draftLinkDelay = .milliseconds(100)
+        defer { Fixtures.draftLinkDelay = .zero }
+        let store = MailStore(api: api(), cache: cache())
+        store.receiveDraftLink(URL(string: "cxmail://draft/\(linkID)")!)
+        let work = Task { await store.resolvePendingDraftLink() }
+        try await Task.sleep(for: .milliseconds(20))
+        store.selected = .init(account: "work", folder: "INBOX", uid: 10)
+        await work.value
+        XCTAssertNil(store.review); XCTAssertEqual(store.selected?.uid, 10)
+        let retry = Task { await store.resolvePendingDraftLink() }
+        try await Task.sleep(for: .milliseconds(20)); store.dismissDraftLink()
+        await retry.value
+        XCTAssertNil(store.review); XCTAssertNil(store.pendingDraftLink)
+    }
+    func testDraftLinkNeverReplacesAnOpenComposer() async {
+        let store = MailStore(api: api(), cache: cache())
+        store.newDraft()
+        let original = store.composer
+        store.receiveDraftLink(URL(string: "cxmail://draft/\(linkID)")!)
+        await store.resolvePendingDraftLink()
+        XCTAssertEqual(store.composer?.id, original?.id)
+        XCTAssertNotNil(store.pendingDraftLink); XCTAssertNil(store.review)
+    }
     func testHybridSearchUsesRankedResultsAndStatus() async throws {
         let store=MailStore(api:api(),cache:cache())
         store.tab = .search; store.query = "project"

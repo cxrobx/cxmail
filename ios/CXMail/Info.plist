@@ -31,6 +31,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CXMailLinkHost</key>
+	<string>$(CXMAIL_LINK_HOST)</string>
 	<key>CXMailServerURL</key>
 	<string>$(CXMAIL_SERVER_URL)</string>
 	<key>UIApplicationSceneManifest</key>

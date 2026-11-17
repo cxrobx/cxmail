@@ -377,3 +377,10 @@ requires the Mac. No rich-text editor, push notifications, share extension or
 undo-send delay in this version. Draft creation matches the current API's To/Cc
 surface; review still shows Bcc on drafts created elsewhere. Drafts are never
 silently sent or discarded when connectivity changes.
+
+## Agent draft links
+
+Agent-created drafts can open directly in the native review screen through HTTPS
+universal links. Deploy/configure the metadata host and Associated Domains profile
+before installing: see [draft links](../docs/draft-links.md). The mini remains the
+only mail engine, and every send still requires recipient review and confirmation.

@@ -72,6 +72,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server  # noqa: E402
 
 SCHEMA = """
+CREATE TABLE drafts (draft_id TEXT PRIMARY KEY, account_id TEXT, folder_name TEXT, current_uid INTEGER, uidvalidity INTEGER);
 CREATE TABLE intelligence_accounts(account_id TEXT PRIMARY KEY,semantic_search INTEGER DEFAULT 0);
 INSERT INTO intelligence_accounts VALUES('a1',1),('a2',1);
 CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT, display_name TEXT, color TEXT,
@@ -238,6 +239,39 @@ class Api(unittest.TestCase):
         server.MISSING_DRAFTS._save()
         with server.schedules().db() as c:
             c.execute('DELETE FROM sends')
+
+    def test_draft_link_resolves_latest_revision_without_message_cache(self):
+        draft_id = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
+        with sqlite3.connect(FIXTURE) as c:
+            c.execute("INSERT OR REPLACE INTO drafts VALUES (?,?,?,?,?)", (draft_id, "a1", "[Gmail]/Drafts", 80, 100))
+        path = "/api/draft-link?id=" + draft_id
+        try:
+            status, _, body = self.req(path)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 80})
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE drafts SET current_uid=81 WHERE draft_id=?", (draft_id,))
+            self.assertEqual(json.loads(self.req(path)[2])["uid"], 81)
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE drafts SET uidvalidity=200 WHERE draft_id=?", (draft_id,))
+            self.assertEqual(self.req(path)[0], 400, "Never open a reused UID in another mailbox epoch")
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("UPDATE drafts SET uidvalidity=100,folder_name='INBOX' WHERE draft_id=?", (draft_id,))
+            self.assertEqual(self.req(path)[0], 404, "Only Drafts is navigable")
+        finally:
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
+
+    def test_draft_link_auth_validation_and_missing_index_do_not_send_or_evict(self):
+        calls = len(self.calls)
+        for login in [None, "stranger@example.com"]:
+            self.assertEqual(self.req("/api/draft-link?id=0278e6ec-4dd4-4661-bd7e-b1cf34edb637", login=login)[0], 403)
+        for value in ["", "abc", "../INBOX", "a'*100"]:
+            self.assertEqual(self.req("/api/draft-link?id=" + value)[0], 400)
+        status, _, body = self.req("/api/draft-link?id=00000000-0000-0000-0000-000000000000")
+        self.assertEqual(status, 404)
+        self.assertNotIn("draft_gone", body.decode())
+        self.assertEqual(calls, len(self.calls), "Opening a link cannot invoke a mutation")
 
     def req(self, path, body=None, login="owner@example.com", headers=None):
         h = dict(headers or {})
@@ -913,6 +947,7 @@ class RealSchema(unittest.TestCase):
         "attachments": {"account_id", "folder_name", "message_uid", "filename", "is_inline"},
         "trusted_image_senders": {"sender_email"},
         "sync_state": {"account_id", "folder_name", "uidvalidity"},
+        "drafts": {"draft_id", "account_id", "folder_name", "current_uid", "uidvalidity"},
     }
 
     def test_columns_exist(self):

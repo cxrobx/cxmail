@@ -3,3 +3,5 @@ CXMail.xcodeproj/
 .DS_Store
 build/
 *.xcuserstate
+
+Config/Links.xcconfig

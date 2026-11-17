@@ -2095,13 +2095,30 @@ fn link_segment(s: &str) -> String {
         .collect()
 }
 
+/// Locally configured public metadata origin. No mailbox endpoint or credentials.
+fn phone_draft_link(base: &str, draft_id: &str) -> Option<String> {
+    let host = base.strip_prefix("https://")?.trim_end_matches('/');
+    if !regex::Regex::new(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$").ok()?.is_match(host)
+        || host.contains("..") || host.len() > 253 { return None; }
+    let id = uuid::Uuid::parse_str(draft_id).ok()?.to_string();
+    Some(format!("https://{host}/draft/{id}"))
+}
+
+fn configured_phone_draft_link(draft_id: &str) -> Option<String> {
+    let path = dirs::data_dir()?.join("com.cxmail.app/draft-links.json");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let config: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    phone_draft_link(config.get("base_url")?.as_str()?, draft_id)
+}
+
 /// The line compose_draft / edit_draft append so the agent can hand the draft
 /// straight on.
 fn open_draft_note(draft_id: &str) -> String {
-    format!(
-        "\n\nTo show it to the user: call open_draft with draft_id \"{draft_id}\" (opens it in compose with CXMail in front), or give them the link {}",
-        draft_link(Some(draft_id), "", 0)
-    )
+    let desktop = draft_link(Some(draft_id), "", 0);
+    match configured_phone_draft_link(draft_id) {
+        Some(phone) => format!("\n\nUser handoff: [Open in CXMail]({phone}) — opens this exact draft on iPhone for review. Include this HTTPS link in your reply. Desktop: {desktop}; open_draft with draft_id \"{draft_id}\" opens it on this Mac. Opening a link never sends."),
+        None => format!("\n\nTo show it on this Mac: call open_draft with draft_id \"{draft_id}\", or use {desktop}. Phone HTTPS link unavailable: draft-links.json is missing or invalid. Do not invent a phone URL."),
+    }
 }
 
 /// The CXMail bundle to activate: the `.app` this binary runs from (the
@@ -8119,6 +8136,18 @@ mod tests {
             )),
             None
         );
+    }
+
+    #[test]
+    fn phone_links_have_only_a_valid_public_origin_and_opaque_id() {
+        let id = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637";
+        assert_eq!(phone_draft_link("https://links.example.com", id).as_deref(),
+            Some("https://links.example.com/draft/0278e6ec-4dd4-4661-bd7e-b1cf34edb637"));
+        for origin in ["http://links.example.com", "https://user:secret@links.example.com", "https://links.example.com/path",
+            "https://links.example.com?token=secret", "https://links.example.com:443", "https://links.example.com#send"] {
+            assert!(phone_draft_link(origin, id).is_none(), "{origin}");
+        }
+        assert!(phone_draft_link("https://links.example.com", "subject/recipient").is_none());
     }
 
     #[test]

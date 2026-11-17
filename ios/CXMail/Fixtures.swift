@@ -3,6 +3,9 @@ import Foundation
 
 /// Fiction-only, in-process transport. UI tests can never touch a real mailbox.
 @MainActor enum Fixtures {
+    static var draftLinkDelay: Duration = .zero
+    static var draftLinkUnavailable = false
+    static var draftLinkUID = 20
     static var expireSearchCursor = false
     static var searchBusyCount = 0
     static var searchDelay: Duration = .zero
@@ -95,6 +98,9 @@ import Foundation
             result = imagePolicy()
         case "/api/body", "/api/draft-body": return Data((ProcessInfo.processInfo.arguments.contains("--fixed-width-email") ? fixedWidthHTML : html).utf8)
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
+        case "/api/draft-link":
+            if draftLinkUnavailable || ProcessInfo.processInfo.arguments.contains("--draft-link-unavailable") { throw URLError(.notConnectedToInternet) }
+            result = ["account": "work", "folder": "Drafts", "uid": draftLinkUID]
         case "/api/drafts":
             var draft = message(20); draft["draft"] = true; draft["folder"] = "Drafts"; draft["subject"] = "Re: A good place to pick this up"
             var drafts = [draft]

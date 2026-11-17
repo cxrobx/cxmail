@@ -12,8 +12,8 @@ settings:
     CURRENT_PROJECT_VERSION: "15"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 configFiles:
-  Debug: Config/Local.xcconfig
-  Release: Config/Local.xcconfig
+  Debug: Config/Build.xcconfig
+  Release: Config/Build.xcconfig
 targets:
   CXMail:
     type: application
@@ -22,6 +22,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.cxmail.remote
+        CODE_SIGN_ENTITLEMENTS: CXMail/CXMail.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
@@ -48,6 +49,7 @@ targets:
           - CFBundleURLName: app.cxmail.remote
             CFBundleURLSchemes: [cxmail]
         CXMailServerURL: $(CXMAIL_SERVER_URL)
+        CXMailLinkHost: $(CXMAIL_LINK_HOST)
   CXMailTests:
     type: bundle.unit-test
     platform: iOS
@@ -58,6 +60,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.cxmail.remote.tests
         GENERATE_INFOPLIST_FILE: YES
   CXMailUITests:
+    info:
+      path: CXMailUITests/Info.plist
+      properties:
+        CXMailLinkHost: $(CXMAIL_LINK_HOST)
     type: bundle.ui-testing
     platform: iOS
     sources: [CXMailUITests]

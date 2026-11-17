@@ -1,0 +1,3 @@
+#include "Local.xcconfig"
+CXMAIL_LINK_HOST = links.invalid
+#include? "Links.xcconfig"

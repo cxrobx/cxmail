@@ -18,6 +18,28 @@ struct RootView: View {
         }
         .tint(Color.accentColor)
         .preferredColorScheme(appearance.colorScheme)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.pendingDraftLink != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    if store.resolvingDraftLink { ProgressView("Opening linked draft…") }
+                    else {
+                        Text(store.draftLinkError ?? "A linked draft is ready to open.").font(.subheadline)
+                        HStack {
+                            Button("Try again") { Task { await store.resolvePendingDraftLink() } }.accessibilityIdentifier("retryDraftLink")
+                            Button("Dismiss") { store.dismissDraftLink() }.accessibilityIdentifier("dismissDraftLink")
+                        }.buttonStyle(.borderless)
+                    }
+                }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
+            }
+        }
+        .task {
+            #if DEBUG
+            let args = ProcessInfo.processInfo.arguments
+            if store.api.fixture, let index = args.firstIndex(of: "--draft-link"), args.indices.contains(index + 1), let url = URL(string: args[index + 1]) {
+                store.receiveDraftLink(url)
+            }
+            #endif
+        }
         .task(id: store.listKey) {
             if store.tab == .search { try? await Task.sleep(for: .milliseconds(300)); if Task.isCancelled { return } }
             await store.load()
@@ -36,7 +58,12 @@ struct RootView: View {
                 onPresentationChange: { store.chatDocked = true; store.chatPresented = false },
                 onClose: { store.chatPresented = false })
         }
+        .task(id: store.draftLinkRequest) { await store.resolvePendingDraftLink() }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            if let url = activity.webpageURL { settings = false; store.receiveDraftLink(url) }
+        }
         .onOpenURL { url in
+            if DraftLink.parse(url) != nil { settings = false; store.receiveDraftLink(url); return }
             guard url.scheme == "cxmail" else { return }
             if url.host == "compose" { store.newDraft() }
             if let tab = MailTab(rawValue: url.host ?? "") { store.tab = tab }

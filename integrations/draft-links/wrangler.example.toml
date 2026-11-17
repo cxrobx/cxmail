@@ -1,0 +1,8 @@
+name = "cxmail-links"
+main = "index.js"
+compatibility_date = "2026-11-01"
+workers_dev = false
+# Copy to ignored wrangler.toml; use your own host and signed app identifier.
+# routes = [{ pattern = "mail-links.example.com", custom_domain = true }]
+# [vars]
+# LINK_APP_ID = "ABCDEFGHIJ.app.cxmail.remote"
