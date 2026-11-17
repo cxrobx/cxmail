@@ -4,7 +4,9 @@
 require an actual iPhone Duo, and the wide fixture requires the 11-inch M4 iPad Pro used by the harness. The
 preflight checks `deviceTypeIdentifier` and the iOS runtime, not the name or
 whether the device happens to be booted. It enumerates all available simulators,
-including id-only xcodebuild destinations.
+including id-only xcodebuild destinations. A known simulator UUID is checked
+even when the platform label claims iOS/macOS or has a typo. Policy fields are
+type-checked; an empty only-testing list cannot disable the wide restriction.
 
 `verify.sh` validates BOTH UUIDs before changing preferences, generating the
 project, or starting a build. Bad/missing/ambiguous/unavailable devices or an

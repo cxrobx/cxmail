@@ -55,7 +55,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_mac_build_and_device_tests_unchanged(self):
         cwd=str(SOURCE.parents[1])
-        for args in [['-scheme','test','build'],['-destination','platform=iOS,id=physical','test'],['build-for-testing']]:
+        for args in [['-scheme','test','build'],['build-for-testing']]:
             with patch.object(p,'inventory',side_effect=AssertionError('must not query')):
                 self.assertEqual(p.check_xcodebuild(args,cwd),[])
 
@@ -98,6 +98,26 @@ class PolicyTests(unittest.TestCase):
             path=Path(directory)/'policy.json'
             path.write_text(json.dumps({'version':1,'project':'fiction','profiles':{'compact':{}}}))
             with self.assertRaisesRegex(p.PolicyError,'Invalid simulator profile'): p.load(path)
+
+    def test_simulator_identity_overrides_wrong_platform(self):
+        for platform in ['iOS','macOS','ios simulator','typo']:
+            with self.assertRaises(p.PolicyError):
+                p.check_xcodebuild(['test','-destination','platform='+platform+',id='+PRO],str(SOURCE.parents[1]),data())
+        self.assertEqual(p.check_xcodebuild(['test','-destination','platform=iOS,id=physical'],str(SOURCE.parents[1]),data()),[])
+
+    def test_invalid_configuration_shapes_are_rejected(self):
+        import copy
+        bad=[[],{'version':1,'project':'bad','profiles':{'compact':{}}}]
+        for field in ['only_testing']:
+            for value in [[], 'a-test', [12]]:
+                conf=copy.deepcopy(POLICY);conf['profiles']['wide'][field]=value;bad.append(conf)
+        for field in ['context','references']:
+            conf=copy.deepcopy(POLICY);conf[field]='not a list';bad.append(conf)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'policy.json'
+            for conf in bad:
+                path.write_text(json.dumps(conf))
+                with self.assertRaises(p.PolicyError,msg=repr(conf)):p.load(path)
 
 
 if __name__ == '__main__': unittest.main()

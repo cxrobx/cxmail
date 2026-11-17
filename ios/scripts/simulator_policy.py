@@ -19,6 +19,8 @@ class PolicyError(ValueError):
 def load(path):
     with open(path) as f:
         policy = json.load(f)
+    if not isinstance(policy, dict):
+        raise PolicyError('Simulator policy must be a JSON object: ' + str(path))
     if policy.get('version') != 1 or not isinstance(policy.get('profiles'), dict):
         raise PolicyError('Unsupported simulator policy: ' + str(path))
     if not isinstance(policy.get('project'), str) or not policy['profiles']:
@@ -27,6 +29,15 @@ def load(path):
         if not isinstance(rule, dict) or not isinstance(rule.get('description'), str) or not any(
                 isinstance(rule.get(k), str) and rule[k] for k in ('device_type', 'device_type_prefix')):
             raise PolicyError('Invalid simulator profile: ' + str(name))
+    for field in ('context','references'):
+        if field in policy and (not isinstance(policy[field],list) or any(not isinstance(x,str) for x in policy[field])):
+            raise PolicyError(field + ' must be a list of strings')
+    if policy.get('default_profile','compact') not in policy['profiles']:
+        raise PolicyError('default_profile is not a defined profile')
+    for name,rule in policy['profiles'].items():
+        if 'only_testing' in rule and (not isinstance(rule['only_testing'],list) or not rule['only_testing'] or
+                                      any(not isinstance(x,str) or not x for x in rule['only_testing'])):
+            raise PolicyError('only_testing must be a nonempty list of test identifiers: ' + name)
     return policy
 
 
@@ -104,19 +115,21 @@ def check_xcodebuild(args, cwd=None, data=None, environment=None):
             raise PolicyError('Wide profile requires the documented -only-testing fixture subset; full/unrelated suites require the compact Duo.')
     results = []
     for destination in destinations:
-        fields = dict(part.strip().split('=', 1) for part in destination.split(',') if '=' in part)
+        fields = {k.strip():v.strip() for k,v in (part.split('=',1) for part in destination.split(',') if '=' in part)}
         platform = fields.get('platform')
-        if platform in ('iOS', 'macOS', 'tvOS', 'watchOS', 'visionOS'):
-            continue
-        if platform and platform != 'iOS Simulator':
-            continue
-        if not fields.get('id'):
-            raise PolicyError('Simulator tests require an explicit simulator UUID, not a name or generic destination.')
+        udid = fields.get('id')
         data = inventory() if data is None else data
-        # An id-only destination may be a simulator. Never infer physical-device
-        # testing merely from an omitted platform. Unknown UUIDs fail closed;
-        # physical devices can use the unambiguous platform=iOS destination.
-        results.append(validate(policy, profile, fields['id'], data))
+        known = udid and any(d.get('udid','').lower() == udid.lower()
+                             for ds in data.get('devices',{}).values() for d in ds)
+        # Inventory identity wins over a contradictory/misspelled platform.
+        if known:
+            results.append(validate(policy,profile,udid,data))
+            continue
+        if platform in ('iOS','macOS','tvOS','watchOS','visionOS'):
+            continue
+        if not udid:
+            raise PolicyError('Simulator tests require an explicit simulator UUID, not a name or generic destination.')
+        raise PolicyError('Destination is not a known simulator; physical devices must explicitly specify platform=iOS.')
 
     return results
 
