@@ -240,6 +240,26 @@ class Api(unittest.TestCase):
         with server.schedules().db() as c:
             c.execute('DELETE FROM sends')
 
+    def test_notification_registration_trust_and_auth(self):
+        from notifications import Notifications
+        original=server.NOTIFICATIONS
+        server.NOTIFICATIONS=Notifications(server.db, os.path.join(TMP,'test-push.sqlite'), sender=lambda *a:(200,''))
+        try:
+            data={'device':'ad61f75f-8df4-4daf-b006-0c5e998108f4','token':'ab'*32,'environment':'development','enabled':True}
+            self.assertEqual(self.req('/api/notifications/device',data,login=None)[0],403)
+            self.assertEqual(self.req('/api/notifications',login=None)[0],403)
+            self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':True},login=None)[0],403)
+            self.assertEqual(self.req('/api/notifications/device',data,headers={'X-CXMail-Remote':'0'})[0],400)
+            self.assertEqual(self.req('/api/notifications/device',dict(data,token='bad'))[0],400)
+            self.assertEqual(self.req('/api/notifications/device',data)[0],200)
+            self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':True})[0],200)
+            self.assertIn('a@example.org',self.j('/api/notifications')['trusted_senders'])
+            self.assertEqual(self.req('/api/notifications/disable',{'device':data['device']})[0],200)
+            self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':False})[0],200)
+            self.assertNotIn('a@example.org',self.j('/api/notifications')['trusted_senders'])
+        finally:
+            server.NOTIFICATIONS=original
+
     def test_draft_link_resolves_latest_revision_without_message_cache(self):
         draft_id = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
         with sqlite3.connect(FIXTURE) as c:

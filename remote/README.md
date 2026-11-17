@@ -199,3 +199,59 @@ is unchanged.
 Deployed on the mini and verified over the authenticated endpoint for both
 keyword and hybrid search with a live query, without opening or changing mail.
 All 68 API regressions pass.
+
+## Native smart notifications
+
+The mini's 30-second notification worker sends native APNs alerts while the iOS
+app is closed. Opt in from iPhone Settings → Smart notifications. Add exact
+sender email addresses there; this separate list grants no image permission.
+Hidden accounts, read mail, non-inbox mail, known junk/phishing/impersonation,
+and messages older than a day are excluded. Enabling starts after the mailbox's
+current message ID, so an old inbox never floods the phone.
+
+Trusted addresses notify without inference. Other mail reuses current Luna
+Decisions `v2` verdicts or invokes `remote notification-verdict` on the signed
+helper for a cached plain-text body. It uses the existing Rust triage gate
+(financial/sensitive exclusions and redaction), provider credentials and prompt;
+it changes no desktop triage settings. No second provider or model key is added.
+The initial policy alerts for urgency ≥3, or Primary mail with reply probability
+≥0.1 / action probability ≥0.7. These are initial thresholds, not a newly
+measured notification classifier. Mail awaiting its cached body waits for normal
+sync; missing/withheld verdicts are never treated as important.
+
+State lives in the private `com.cxmail.remote/notifications.sqlite`, separate
+from the read-only mailbox. Verdicts and attempts are cached by account and
+Message-ID (UID/mailbox generation fallback). Inference is bounded to five
+attempts per pass and 400 candidate attempts per rolling day. An ambiguous model
+failure is recorded rather than repeatedly billed. Delivery is bounded to five
+per pass; APNs 429/5xx responses retry with backoff up to five attempts. Ambiguous
+push outcomes are terminal to prevent duplicate banners; dead tokens disable
+the registration. APNs delivery itself is best effort. State expires after seven
+days, beyond the one-day eligible-mail window.
+
+Alert text is generic; sender, subject and body never enter APNs. The payload
+contains only the exact message reference for navigation. Apple receives the
+app's device token and message reference. Tapping never sends or modifies mail.
+The mini must be awake with CXMail syncing; Tailscale is needed to register,
+configure, and open mail, while Apple delivers alerts over the phone's internet.
+
+Setup (existing team key; never place it in the repository):
+
+```sh
+remote/configure-push.sh /absolute/path/AuthKey_ID.p8 KEY_ID TEAM_ID
+# Build cxmail-mcp with the existing secret-run Google credentials per ship.md.
+remote/install-notification-helper.sh
+remote/install.sh
+/usr/bin/python3 -m unittest discover -s remote -p test_notifications.py
+```
+
+The transport is a small compiled Swift/CryptoKit HTTP/2 helper. `apns.json`
+(mode 0600) references the external key path, key ID and team ID. Notification
+inference uses the separately signed `cxmail-notifications` helper in the same
+private directory, falling back to the installed app helper; an explicit
+`CXMAIL_NOTIFICATION_BIN` can override it. Its designated requirement must match
+the existing app helper. This install leaves the running desktop app untouched.
+Enable Push Notifications for `app.cxmail.remote` and regenerate its iOS signing
+profile. The iOS `aps-environment` entitlement and embedded profile determine the
+correct sandbox/production APNs host; a development-signed Release install still
+uses sandbox. No public listener or inbound APNs callback endpoint is needed.

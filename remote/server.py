@@ -29,6 +29,7 @@ import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from scheduled import ScheduledQueue, ScheduleConflict
+from notifications import Notifications
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get(
@@ -61,6 +62,30 @@ SEND_BIN = os.environ.get("CXMAIL_SEND_BIN", "/Applications/CXMail.app/Contents/
 SEARCH_BIN = os.environ.get("CXMAIL_SEARCH_BIN", SEND_BIN)
 SCHEDULE_PATH = os.environ.get('CXMAIL_SCHEDULE_DB', os.path.expanduser(
     '~/Library/Application Support/com.cxmail.remote/scheduled.sqlite'))
+NOTIFICATIONS = None
+NOTIFICATION_INIT_LOCK = threading.Lock()
+
+def notifications():
+    global NOTIFICATIONS
+    with NOTIFICATION_INIT_LOCK:
+        if NOTIFICATIONS is None:
+            NOTIFICATIONS = Notifications(db, classifier=notification_verdict)
+    return NOTIFICATIONS
+
+def notification_verdict(row):
+    try:
+        local = os.path.expanduser("~/Library/Application Support/com.cxmail.remote/cxmail-notifications")
+        binary = os.environ.get("CXMAIL_NOTIFICATION_BIN") or (local if os.path.isfile(local) else SEND_BIN)
+        p = subprocess.run([binary, "remote", "notification-verdict", row["account_id"], row["folder_name"], str(row["uid"])],
+            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            env=dict(os.environ, CXMAIL_MCP_IDLE_GRACE_SECS="0"))
+        result = json.loads(p.stdout.strip().splitlines()[-1])
+        if p.returncode or not isinstance(result,dict) or 'error' in result:
+            raise ValueError("Notification inference unavailable")
+        return result
+    except (SendError, IndexError):
+        raise ValueError("Notification inference unavailable")
+
 SCHEDULES = None
 SCHEDULE_INIT_LOCK = threading.Lock()
 
@@ -1268,6 +1293,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(name, "image/png", {"Cache-Control": "max-age=86400"})
             if url.path == "/manifest.webmanifest":
                 return self._static("manifest.webmanifest", "application/manifest+json")
+            if url.path == "/api/notifications":
+                return self._send(200, notifications().settings())
             if url.path == "/api/accounts":
                 with db() as c:
                     return self._send(200, accounts(c))
@@ -1383,7 +1410,15 @@ class Handler(BaseHTTPRequestHandler):
             if n > 512 * 1024:
                 return self._err(413, "too large")
             data = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("JSON object required")
             url = urllib.parse.urlparse(self.path)
+            if url.path == "/api/notifications/disable":
+                return self._send(200, notifications().disable(data))
+            if url.path == "/api/notifications/device":
+                return self._send(200, notifications().register(data))
+            if url.path == "/api/notifications/trust":
+                return self._send(200, notifications().trust(data))
             if url.path == "/api/image-trust":
                 if type(data.get("uid")) is not int or not 1 <= data["uid"] <= 4294967295:
                     return self._err(400, "uid must be a positive integer")
@@ -1553,6 +1588,7 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     if not DEV:
         schedules().start()
+        notifications().start()
         threading.Thread(target=index_search_loop, daemon=True).start()
     sys.stderr.write("cxmail-remote on 127.0.0.1:{}{}\n".format(PORT, " (DEV: no login check)" if DEV else ""))
     srv.serve_forever()

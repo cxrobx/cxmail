@@ -98,6 +98,21 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Notification inference is read-only, before migrations, and never an MCP tool.
+    if args.get(1).map(String::as_str) == Some("remote") && args.get(2).map(String::as_str) == Some("notification-verdict") {
+        let result = if args.len() == 6 {
+            match args[5].parse::<u32>() {
+                Ok(uid) if uid > 0 => notification_verdict(&db_path, &args[3], &args[4], uid).await,
+                _ => Err(anyhow::anyhow!("Invalid UID")),
+            }
+        } else { Err(anyhow::anyhow!("Invalid notification arguments")) };
+        match result {
+            Ok(value) => println!("{value}"),
+            Err(_) => { println!("{}", serde_json::json!({"error":"Notification inference unavailable"})); std::process::exit(1); }
+        }
+        return Ok(());
+    }
+
     tracing::info!("CXMail MCP server starting, DB: {:?}", db_path);
 
     // Run schema migrations. The Tauri app also runs these on startup, but the
@@ -358,5 +373,86 @@ async fn run_remote(db_path: &str, args: &[String]) -> (i32, String) {
             None => err("uid must be a number".into()),
         },
         _ => err("usage: cxmail-mcp remote preview-draft <account> <folder> <uid> | send-draft <account> <folder> <uid> <digest>".into()),
+    }
+}
+
+/// The companion's explicit opt-in owns this separate path. Global desktop
+/// triage settings remain unchanged. The shared gate still owns every byte.
+async fn notification_verdict(path: &std::path::Path, account: &str, folder: &str, uid: u32) -> anyhow::Result<serde_json::Value> {
+    use cxmail_lib::email::{inference::InferenceClient, triage, triage_gate::{self, Gate, MessageForTriage, TriageMode}};
+    let (from, name, to, cc, date, subject, body) = {
+        let c = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        c.query_row("SELECT m.from_email,m.from_name,m.to_list,m.cc_list,m.date,m.subject,b.plain_text
+            FROM messages m JOIN accounts a ON a.id=m.account_id
+            JOIN folders f ON f.account_id=m.account_id AND f.name=m.folder_name
+            LEFT JOIN message_bodies b ON b.account_id=m.account_id AND b.folder_name=m.folder_name AND b.uid=m.uid
+            WHERE m.account_id=?1 AND m.folder_name=?2 AND m.uid=?3 AND m.is_read=0
+            AND a.is_active=1 AND a.hidden_from_aggregates=0 AND f.folder_type='inbox'
+            AND julianday(m.date)>julianday('now','-1 day')", rusqlite::params![account,folder,uid], |r| {
+                Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?,
+                    r.get::<_,Option<String>>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<String>>(6)?))
+            })?
+    };
+    if body.as_deref().is_none_or(|b| b.trim().is_empty()) {
+        return Ok(serde_json::json!({"pending":true}));
+    }
+    let addrs = |raw: Option<&str>| -> Vec<String> {
+        raw.and_then(|s|serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v|v.as_array().cloned()).unwrap_or_default().iter()
+            .filter_map(|v|v["email"].as_str().map(str::to_owned)).collect()
+    };
+    let to=addrs(to.as_deref()); let cc=addrs(cc.as_deref());
+    let safe = match triage_gate::gate(TriageMode::On, &MessageForTriage {
+        from_email:&from, from_name:name.as_deref(), to:&to, cc:&cc, date:&date,
+        subject:subject.as_deref(), body:body.as_deref(),
+    }) {
+        Gate::Send(safe) => safe,
+        Gate::Withheld(_) => return Ok(serde_json::json!({"withheld":true})),
+    };
+    let client=InferenceClient::load()?;
+    let result=triage::classify(&client,&safe,triage::DECISIONS_ENGINE,"none").await?;
+    Ok(serde_json::to_value(result.verdict)?)
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::notification_verdict;
+
+    struct FixtureDir(std::path::PathBuf);
+    impl Drop for FixtureDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    fn fixture() -> (FixtureDir, std::path::PathBuf) {
+        let dir = FixtureDir(std::env::temp_dir().join(format!("cxmail-notify-test-{}",uuid::Uuid::new_v4())));
+        std::fs::create_dir(&dir.0).unwrap();
+        let path = dir.0.join("mail.sqlite");
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE messages(account_id TEXT,folder_name TEXT,uid INTEGER,
+            from_email TEXT,from_name TEXT,to_list TEXT,cc_list TEXT,date TEXT,subject TEXT,is_read INTEGER);
+            CREATE TABLE accounts(id TEXT,is_active INTEGER,hidden_from_aggregates INTEGER);
+            CREATE TABLE folders(account_id TEXT,name TEXT,folder_type TEXT);
+            CREATE TABLE message_bodies(account_id TEXT,folder_name TEXT,uid INTEGER,plain_text TEXT);
+            INSERT INTO accounts VALUES ('fiction',1,0);
+            INSERT INTO folders VALUES ('fiction','INBOX','inbox');
+            INSERT INTO messages VALUES ('fiction','INBOX',1,'person@example.org',NULL,'[]','[]',datetime('now'),'Hello',0);")
+            .unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn missing_body_stays_pending_without_credentials_or_inference() {
+        let (_dir,path)=fixture();
+        let value=notification_verdict(&path,"fiction","INBOX",1).await.unwrap();
+        assert_eq!(value,serde_json::json!({"pending":true}));
+    }
+
+    #[tokio::test]
+    async fn hidden_read_and_non_inbox_never_reach_credentials() {
+        for sql in ["UPDATE accounts SET hidden_from_aggregates=1", "UPDATE messages SET is_read=1",
+                    "UPDATE folders SET folder_type='junk'", "UPDATE accounts SET is_active=0"] {
+            let (_dir,path)=fixture();
+            rusqlite::Connection::open(&path).unwrap().execute_batch(sql).unwrap();
+            assert!(notification_verdict(&path,"fiction","INBOX",1).await.is_err());
+        }
     }
 }
