@@ -21,6 +21,12 @@ def load(path):
         policy = json.load(f)
     if policy.get('version') != 1 or not isinstance(policy.get('profiles'), dict):
         raise PolicyError('Unsupported simulator policy: ' + str(path))
+    if not isinstance(policy.get('project'), str) or not policy['profiles']:
+        raise PolicyError('Simulator policy requires a project and profiles')
+    for name, rule in policy['profiles'].items():
+        if not isinstance(rule, dict) or not isinstance(rule.get('description'), str) or not any(
+                isinstance(rule.get(k), str) and rule[k] for k in ('device_type', 'device_type_prefix')):
+            raise PolicyError('Invalid simulator profile: ' + str(name))
     return policy
 
 
@@ -71,7 +77,7 @@ def values(args, flag):
         value.split('=', 1)[1] for value in args if value.startswith(flag + '=')]
 
 
-def check_xcodebuild(args, cwd=None, data=None):
+def check_xcodebuild(args, cwd=None, data=None, environment=None):
     # Only actions that actually run tests require simulator geometry. Build and
     # build-for-testing do not run the app. Option values may themselves be "test".
     actions = [value for i, value in enumerate(args) if value in ('test', 'test-without-building')
@@ -83,19 +89,35 @@ def check_xcodebuild(args, cwd=None, data=None):
     if path is None:
         return []
     destinations = values(args, '-destination')
-    simulator = [d for d in destinations if 'platform=iOS Simulator' in d]
-    if destinations and not simulator:
-        # Real device testing has its own documented install path.
-        return []
-    if not simulator:
-        raise PolicyError('Simulator tests require an explicit -destination platform=iOS Simulator,id=<UUID>.')
+    if not destinations:
+        raise PolicyError('Simulator tests require an explicit -destination with a UUID.')
     policy = load(path)
-    profile = os.environ.get('CX_IOS_SIMULATOR_PROFILE') or policy.get('default_profile', 'compact')
-    data = inventory() if data is None else data
+    environment = os.environ if environment is None else environment
+    profile = environment.get('CX_IOS_SIMULATOR_PROFILE') or policy.get('default_profile', 'compact')
+    rule = policy['profiles'].get(profile)
+    if rule is None:
+        raise PolicyError('Unknown simulator profile: ' + str(profile))
+    if rule.get('only_testing'):
+        selected = values(args, '-only-testing') + [a.split(':',1)[1] for a in args if a.startswith('-only-testing:')]
+        allowed = rule['only_testing']
+        if not selected or any(not any(item == a or item.startswith(a + '/') for a in allowed) for item in selected):
+            raise PolicyError('Wide profile requires the documented -only-testing fixture subset; full/unrelated suites require the compact Duo.')
     results = []
-    for destination in simulator:
+    for destination in destinations:
         fields = dict(part.strip().split('=', 1) for part in destination.split(',') if '=' in part)
-        results.append(validate(policy, profile, fields.get('id'), data))
+        platform = fields.get('platform')
+        if platform in ('iOS', 'macOS', 'tvOS', 'watchOS', 'visionOS'):
+            continue
+        if platform and platform != 'iOS Simulator':
+            continue
+        if not fields.get('id'):
+            raise PolicyError('Simulator tests require an explicit simulator UUID, not a name or generic destination.')
+        data = inventory() if data is None else data
+        # An id-only destination may be a simulator. Never infer physical-device
+        # testing merely from an omitted platform. Unknown UUIDs fail closed;
+        # physical devices can use the unambiguous platform=iOS destination.
+        results.append(validate(policy, profile, fields['id'], data))
+
     return results
 
 

@@ -72,7 +72,32 @@ class PolicyTests(unittest.TestCase):
 
     def test_wide_explicit_profile(self):
         with patch.dict(p.os.environ,{'CX_IOS_SIMULATOR_PROFILE':'wide'}):
-            self.assertEqual(len(p.check_xcodebuild(['test','-destination','platform=iOS Simulator,id='+PAD],str(SOURCE.parents[1]),data())),1)
+            self.assertEqual(len(p.check_xcodebuild(['test','-only-testing:CXMailUITests/CXMailUITests/testExactOpenDuoViewport','-destination','platform=iOS Simulator,id='+PAD],str(SOURCE.parents[1]),data())),1)
+
+    def test_id_only_pro_and_mixed_destinations_are_rejected(self):
+        cwd=str(SOURCE.parents[1])
+        for destinations in [['id='+PRO],['platform=iOS,id=physical','id='+PRO]]:
+            args=['test']
+            for d in destinations: args += ['-destination',d]
+            with self.assertRaises(p.PolicyError): p.check_xcodebuild(args,cwd,data())
+        self.assertEqual(len(p.check_xcodebuild(['test','-destination','id='+DUO],cwd,data())),1)
+
+    def test_unknown_id_only_must_not_be_assumed_physical(self):
+        with self.assertRaises(p.PolicyError):
+            p.check_xcodebuild(['test','-destination','id=unknown'],str(SOURCE.parents[1]),data())
+
+    def test_wide_cannot_run_full_or_unrelated_tests(self):
+        for filters in [[],['-only-testing:CXMailUITests/CXMailUITests/testInboxReaderReplyRecovery']]:
+            with self.assertRaises(p.PolicyError):
+                p.check_xcodebuild(['test','-destination','id='+PAD]+filters,str(SOURCE.parents[1]),data(),environment={'CX_IOS_SIMULATOR_PROFILE':'wide'})
+        d=data();d['devices'][next(iter(d['devices']))][2]['deviceTypeIdentifier']='com.apple.CoreSimulator.SimDeviceType.iPad-mini-A17-Pro'
+        with self.assertRaises(p.PolicyError): p.validate(POLICY,'wide',PAD,d)
+
+    def test_malformed_profile_returns_actionable_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'policy.json'
+            path.write_text(json.dumps({'version':1,'project':'fiction','profiles':{'compact':{}}}))
+            with self.assertRaisesRegex(p.PolicyError,'Invalid simulator profile'): p.load(path)
 
 
 if __name__ == '__main__': unittest.main()

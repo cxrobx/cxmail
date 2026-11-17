@@ -3,8 +3,28 @@
   "project": "CXMail",
   "default_profile": "compact",
   "profiles": {
-    "compact": {"device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo", "description": "iPhone Duo, closed/compact"},
-    "wide": {"device_type_prefix": "com.apple.CoreSimulator.SimDeviceType.iPad-", "description": "iPad hosting the exact open-Duo geometry fixture"}
+    "compact": {
+      "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+      "description": "iPhone Duo, closed/compact"
+    },
+    "wide": {
+      "description": "11-inch M4 iPad Pro hosting the exact open-Duo geometry fixture",
+      "device_type": "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M4-8GB",
+      "only_testing": [
+        "CXMailUITests/CXMailUITests/testAppearanceSelectionPersistsAcrossRelaunch",
+        "CXMailUITests/CXMailUITests/testCompactSendToolbarScheduleAndCancel",
+        "CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut",
+        "CXMailUITests/CXMailUITests/testExactOpenDuoViewport",
+        "CXMailUITests/CXMailUITests/testFailedAuthenticationCannotTrustSenderAutomatically",
+        "CXMailUITests/CXMailUITests/testFixedWidthEmailFitsClosedReaderAndRotation",
+        "CXMailUITests/CXMailUITests/testMissingDraftRefreshesListAndOpensCurrentDraft",
+        "CXMailUITests/CXMailUITests/testPortraitInboxDrawer",
+        "CXMailUITests/CXMailUITests/testSearchKeyboardInActualWideWindow",
+        "CXMailUITests/CXMailUITests/testTrustedSenderImagesAndAuthenticationDetails",
+        "CXMailUITests/CXMailUITests/testWideSearchKeepsKeyboardAndTypedQuery",
+        "CXMailUITests/DraftLinkUITests"
+      ]
+    }
   },
   "context": [
     "Run ios/scripts/verify.sh with a compact Duo UUID and a wide iPad UUID before installing on the phone.",
@@ -12,5 +32,8 @@
     "Direct xcodebuild simulator tests default to compact. Set CX_IOS_SIMULATOR_PROFILE=wide only for the wide fixture tests.",
     "Keep fiction-only fixtures and the exact-width open-Duo harness. A test runner that fails at setup verified nothing."
   ],
-  "references": ["ios/AGENTS.md", "ios/README.md"]
+  "references": [
+    "ios/AGENTS.md",
+    "ios/README.md"
+  ]
 }
