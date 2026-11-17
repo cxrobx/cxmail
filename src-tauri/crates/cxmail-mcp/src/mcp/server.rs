@@ -4458,7 +4458,7 @@ impl CxMailMcp {
 
         let attachment_paths = params.attachments.unwrap_or_default();
         let attachments_count = attachment_paths.len();
-        let attachments = read_attachment_paths(&attachment_paths)?;
+        let attachments = read_attachments_bounded(attachment_paths).await?;
 
         // Plain email strings → recipient list (no display name from MCP params).
         let to_recipients = |addrs: &[String]| -> Vec<smtp::EmailRecipient> {
@@ -4786,7 +4786,7 @@ impl CxMailMcp {
 
         let attachment_paths = params.attachments.unwrap_or_default();
         let attachments_count = attachment_paths.len();
-        let attachments = read_attachment_paths(&attachment_paths)?;
+        let attachments = read_attachments_bounded(attachment_paths).await?;
 
         // Synced folder list first (the only thing that knows a generic
         // server's layout), historical hardcoded name as the fallback for the
@@ -7807,6 +7807,62 @@ fn sanitize_filename_component(name: &str) -> String {
         "attachment.bin".to_string()
     } else {
         last.to_string()
+    }
+}
+
+// A protected Documents folder (or an unavailable file provider) can block
+// open(2) indefinitely. A host tools/call timeout does not cancel that syscall.
+// Keep ONLY the read on a detached worker: a late read must never resume APPEND.
+// Two permits bound stuck OS threads across concurrent requests; each worker
+// keeps its permit until it actually exits, including after a caller times out.
+type AttachmentFiles = Vec<(String, String, Vec<u8>)>;
+static ATTACHMENT_READ_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)));
+
+async fn read_attachments_bounded(paths: Vec<String>) -> Result<AttachmentFiles, McpError> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    bounded_attachment_read(std::time::Duration::from_secs(10), move || {
+        read_attachment_paths(&paths)
+    })
+    .await
+}
+
+async fn bounded_attachment_read(
+    budget: std::time::Duration,
+    read: impl FnOnce() -> Result<AttachmentFiles, McpError> + Send + 'static,
+) -> Result<AttachmentFiles, McpError> {
+    let permit = ATTACHMENT_READ_SLOTS.clone().try_acquire_owned().map_err(|_| {
+        McpError::internal_error(
+            "Attachment reads are still blocked by the operating system. Nothing was saved or sent. Resolve the file access problem before retrying.", None)
+    })?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    // Not spawn_blocking: an uninterruptible OS open would otherwise also
+    // prevent a stdio server's Tokio runtime from shutting down.
+    std::thread::Builder::new()
+        .name("draft-attachment-read".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _ = tx.send(read());
+        })
+        .map_err(|e| {
+            McpError::internal_error(
+                format!("Could not start attachment read: {e}. Nothing was saved or sent."),
+                None,
+            )
+        })?;
+    match tokio::time::timeout(budget, rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(McpError::internal_error(
+            "Attachment reader stopped. Nothing was saved or sent.",
+            None,
+        )),
+        Err(_) => {
+            log::warn!("MCP draft attachment read timed out before APPEND");
+            Err(McpError::internal_error(
+                "Attachment file access timed out before saving the draft. Nothing was saved or sent, and this call cannot save later. Check macOS Files and Folders access for CXMail, or use an accessible local copy outside the protected folder before retrying.", None))
+        }
     }
 }
 
@@ -11168,5 +11224,77 @@ mod tests {
             .is_err(), "deleting a gone rule must fail loudly");
 
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod attachment_read_regression {
+    use super::*;
+    #[tokio::test]
+    async fn blocked_open_times_out_without_resuming_save_after_late_read() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let saved = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let save = saved.clone();
+        let operation = async move {
+            bounded_attachment_read(std::time::Duration::from_millis(50), move || {
+                blocked.recv().unwrap(); // stand-in for the observed blocked open(2)
+                let _ = finished.send(());
+                Ok(vec![(
+                    "planner.docx".into(),
+                    "application/msword".into(),
+                    vec![1, 2],
+                )])
+            })
+            .await?;
+            save.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok::<(), McpError>(())
+        };
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), operation)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.message.contains("Nothing was saved or sent"));
+        assert!(error.message.contains("cannot save later"));
+        release.send(()).unwrap();
+        done.await.unwrap();
+        assert!(!saved.load(std::sync::atomic::Ordering::SeqCst));
+        let files = bounded_attachment_read(std::time::Duration::from_secs(1), || {
+            Ok(vec![(
+                "planner.docx".into(),
+                "application/msword".into(),
+                vec![3, 4],
+            )])
+        })
+        .await
+        .unwrap();
+        assert_eq!(files[0].2, vec![3, 4]);
+        assert!(read_attachments_bounded(vec![]).await.unwrap().is_empty());
+
+        // Exercise a real open(2) that cannot finish until a writer arrives,
+        // rather than only mocking an asynchronous timeout. This is the same
+        // synchronous syscall seen in both live process stacks for T676.
+        let fifo = std::env::temp_dir().join(format!("cxmail-{}.docx", uuid::Uuid::new_v4()));
+        let cpath = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+        let path = fifo.to_string_lossy().to_string();
+        let (finished, done) = tokio::sync::oneshot::channel();
+        let result = bounded_attachment_read(std::time::Duration::from_millis(50), move || {
+            let result = crate::email::attachment_file::read_attachment_from_path(&path)
+                .map(|file| vec![file])
+                .map_err(|e| McpError::internal_error(e.to_string(), None));
+            let _ = finished.send(());
+            result
+        })
+        .await;
+        assert!(result.unwrap_err().message.contains("cannot save later"));
+        // Release and reap our simulated OS stall without leaving a blocked
+        // worker behind in the test process.
+        std::fs::write(&fifo, b"fixture document").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), done)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(fifo).unwrap();
     }
 }

@@ -161,6 +161,19 @@ Deep link: `cxmail://draft/<draft_id>` or `cxmail://draft/<account_id>/<uid>`
 (`src/lib/draftLink.ts`, resolved by the `resolve_draft_link` command).
 ```
 
+#### Bounded draft attachment reads
+
+`compose_draft` and `edit_draft` read attachments before APPEND or claiming an
+existing draft. File opens can block in macOS or a file provider indefinitely;
+the MCP host's 300-second timeout does not stop a synchronous OS read. Reads
+therefore run on detached, read-only workers with a 10-second deadline. A late
+worker result is discarded and cannot resume a mailbox write. Two worker slots
+bound stuck reads across requests; a worker retains its slot until it exits.
+Timeouts explicitly report that nothing was saved or sent. Check Files and
+Folders access or use an accessible local copy before retrying. Do not restart
+a helper to clear a blocked read until its pending calls are known to be before
+APPEND; a generic timeout after APPEND still requires checking server drafts.
+
 #### Reply threading & quoted history
 
 `compose_draft` and `edit_draft` share one reply contract. Assembly order in the
