@@ -388,7 +388,7 @@ draft-link work, verified, then installed and launched on Duo.
 ## Current boundaries
 
 Attachments are listed; opening them or sending drafts containing them still
-requires the Mac. No rich-text editor, push notifications, share extension or
+requires the Mac. No rich-text editor, share extension or
 undo-send delay in this version. Draft creation matches the current API's To/Cc
 surface; review still shows Bcc on drafts created elsewhere. Drafts are never
 silently sent or discarded when connectivity changes.
@@ -399,3 +399,16 @@ Agent-created drafts can open directly in the native review screen through HTTPS
 universal links. Deploy/configure the metadata host and Associated Domains profile
 before installing: see [draft links](../docs/draft-links.md). The mini remains the
 only mail engine, and every send still requires recipient review and confirmation.
+
+## Smart notifications
+
+Settings → Smart notifications enables native Apple Push alerts and manages a
+separate exact-address trusted sender list. New mail from those addresses alerts
+without a model call; other mail uses the mini's privacy-gated Luna Decisions
+classification for reply/action need and urgency. Known junk and risk flags,
+hidden accounts and read mail are excluded. Existing mail is never backfilled.
+Generic alerts hide sender/subject; tapping opens the exact message. Turning off
+also disables delivery on the mini; offline changes show an error until synced.
+The mini must be awake and syncing. See `../remote/README.md` for setup, initial
+thresholds, caps, and best-effort delivery limits. The signing profile must include
+Push Notifications for this app ID. No phone-side provider key is added.

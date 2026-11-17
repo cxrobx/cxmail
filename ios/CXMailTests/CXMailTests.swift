@@ -31,11 +31,71 @@ final class ImageDocumentProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+final class PushUpdateProtocol: URLProtocol {
+    static let lock = NSLock()
+    static var registration: PushUpdateProtocol?
+    static var started: XCTestExpectation?
+    static var serverEnabled = false
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        if request.url?.path == "/api/notifications/device" {
+            Self.lock.lock(); Self.registration = self; let started = Self.started; Self.lock.unlock()
+            started?.fulfill()
+        } else {
+            Self.lock.lock(); Self.serverEnabled = false; Self.lock.unlock()
+            complete()
+        }
+    }
+    override func stopLoading() {}
+    func complete() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type":"application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"configured":true,"trusted_senders":[]}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    static func releaseRegistration() {
+        lock.lock(); let current = registration; registration = nil
+        if current != nil { serverEnabled = true }; lock.unlock()
+        current?.complete()
+    }
+}
+
 @MainActor
 final class CXMailTests: XCTestCase {
     func api() -> APIClient { APIClient(baseURL: URL(string: "https://mini.example.ts.net:18706"), fixture: true) }
     func cache() -> MailCache { MailCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)) }
     let linkID = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
+    func testNotificationOptOutWinsOverLateRegistration() async throws {
+        let name = "cxmail-push-test-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name); PushUpdateProtocol.releaseRegistration() }
+        defaults.set(true, forKey: "pushEnabled")
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [PushUpdateProtocol.self]
+        let api = APIClient(baseURL: URL(string: "https://fixture.example.ts.net"), session: URLSession(configuration: config))
+        let push = PushNotifications(api: api, defaults: defaults)
+        let started = expectation(description: "Registration waiting on mini")
+        PushUpdateProtocol.lock.lock(); PushUpdateProtocol.started = started; PushUpdateProtocol.serverEnabled = false; PushUpdateProtocol.lock.unlock()
+        let registering = Task { await push.registered(Data(repeating: 0xab, count: 32)) }
+        await fulfillment(of: [started], timeout: 5)
+        let disabling = Task { await push.disable() }
+        for _ in 0..<20 { if !push.enabled { break }; await Task.yield() }
+        XCTAssertFalse(push.enabled)
+        PushUpdateProtocol.releaseRegistration()
+        await registering.value; await disabling.value
+        XCTAssertFalse(PushUpdateProtocol.serverEnabled, "Late registration must not re-enable delivery after opt-out")
+        XCTAssertEqual(push.status, "Notifications are off")
+    }
+
+    func testNotificationTapIsNavigationOnlyAndRequiresExactReference() {
+        XCTAssertEqual(PushNotifications.messageReference(["account":"work", "folder":"INBOX", "uid":12]),
+                       MessageRef(account:"work", folder:"INBOX", uid:12))
+        for info: [AnyHashable: Any] in [["url":"https://evil.example"], ["account":"work","folder":"INBOX","uid":0],
+                                       ["account":"","folder":"INBOX","uid":1], ["account":"work","folder":"INBOX","uid":"12"]] {
+            XCTAssertNil(PushNotifications.messageReference(info))
+        }
+    }
+
     func testDraftLinksAcceptOnlyExactTrustedNavigation() {
         XCTAssertEqual(DraftLink.parse(URL(string: "cxmail://draft/\(linkID)")!), linkID)
         XCTAssertEqual(DraftLink.parse(URL(string: "https://links.example.com/draft/\(linkID)")!, host: "links.example.com"), linkID)

@@ -13,7 +13,10 @@ mkdir -p "$OUT"
 CXMAIL_PREVIOUS_HARDWARE_KEYBOARD=$(defaults read com.apple.iphonesimulator ConnectHardwareKeyboard 2>/dev/null || true)
 restore_keyboard_preference() {
   if [ -n "$CXMAIL_PREVIOUS_HARDWARE_KEYBOARD" ]; then
-    defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool "$CXMAIL_PREVIOUS_HARDWARE_KEYBOARD"
+    case "$CXMAIL_PREVIOUS_HARDWARE_KEYBOARD" in
+      1|true|YES) defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool true ;;
+      0|false|NO) defaults write com.apple.iphonesimulator ConnectHardwareKeyboard -bool false ;;
+    esac
   else
     defaults delete com.apple.iphonesimulator ConnectHardwareKeyboard >/dev/null 2>&1 || true
   fi

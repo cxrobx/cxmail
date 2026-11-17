@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct CXMailApp: App {
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushDelegate
     @State private var store: MailStore
     init() {
         var fixture = false

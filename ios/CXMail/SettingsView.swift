@@ -43,10 +43,11 @@ struct SettingsView: View {
                     Text("Recent mail and opened messages are cached for reading offline. Replies are saved locally as you write.")
                     Button("Clear saved mail", role: .destructive) { clear = true }
                 } header: { Text("On this iPhone") } footer: { Text("Clearing mail leaves your unfinished reply intact. Cached mail and replies are excluded from device backups.") }
+                NotificationSettingsSection()
                 Section("About") {
                     LabeledContent("App", value: "CXMail Remote 1.0")
                     Text("Native navigation, fold-aware reading, and the same mail engine as the Mac.")
-                    Text("Attachments open on the Mac. Push notifications are not enabled in this version.").font(.footnote).foregroundStyle(.secondary)
+                    Text("Attachments open on the Mac.").font(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)

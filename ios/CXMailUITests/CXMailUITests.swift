@@ -108,6 +108,22 @@ final class CXMailUITests: XCTestCase {
         XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well. See you then!")
         capture("Recovered reply")
     }
+    func testSmartNotificationSettingsStayInsideFixture() {
+        launch()
+        if !app.buttons["Settings"].exists { app.buttons["showInbox"].tap() }
+        app.buttons["Settings"].tap()
+        let enable = app.buttons["Enable smart notifications"]
+        for _ in 0..<3 { if enable.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        enable.tap()
+        XCTAssertEqual(app.alerts.count,0,"Fixture must never request real push authorization")
+        let sender=app.textFields["Trusted sender email"]
+        XCTAssertTrue(sender.exists)
+        sender.tap(); sender.typeText("trusted@example.org")
+        XCTAssertFalse(app.buttons["openChat"].exists, "Mailbox actions must not leak through the Settings sheet")
+        XCTAssertFalse(app.buttons["compose"].exists)
+        capture("Smart notification settings")
+    }
     func testAppearanceSelectionPersistsAcrossRelaunch() {
         launch()
         if !app.buttons["Settings"].exists { app.buttons["showInbox"].tap() }

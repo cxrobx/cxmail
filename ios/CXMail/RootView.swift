@@ -40,12 +40,19 @@ struct RootView: View {
             }
             #endif
         }
+        .task {
+            await PushNotifications.shared.connect(store.api)
+            if let ref = PushNotifications.shared.selection { store.selected = ref; PushNotifications.shared.selection = nil }
+        }
+        .onChange(of: PushNotifications.shared.selection) { _, ref in
+            if let ref { store.selected = ref; PushNotifications.shared.selection = nil }
+        }
         .task(id: store.listKey) {
             if store.tab == .search { try? await Task.sleep(for: .milliseconds(300)); if Task.isCancelled { return } }
             await store.load()
         }
         .onChange(of: phase) { _, value in
-            if value == .active { Task { await store.load() }; if store.chatPresented || store.chatDocked { chat.resume() } }
+            if value == .active { Task { await store.load(); await PushNotifications.shared.connect(store.api) }; if store.chatPresented || store.chatDocked { chat.resume() } }
             else { chat.pause(); if let draft = store.composer { store.remember(draft) } }
         }
         .onChange(of: store.tab) { _, _ in store.selected = nil }
@@ -288,7 +295,7 @@ struct MailboxView: View {
         .refreshable { await store.load() }
         .safeAreaInset(edge: .top, spacing: 0) { mailboxControls }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !keyboardVisible {
+            if !keyboardVisible && store.composer == nil && store.review == nil && !store.chatPresented && !settings {
                 HStack(spacing: 12) {
                     Button { store.chatPresented = true } label: {
                         Image(systemName: "bubble.left.and.bubble.right").font(.title3).frame(width: 48, height: 48)
