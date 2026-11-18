@@ -184,6 +184,63 @@ impl InferenceClient {
         })
     }
 
+    /// An Anthropic client from the stored Anthropic key, whichever provider is
+    /// active. For the risk check's fallback model, which must not depend on
+    /// the user's chosen provider for Reply with AI. Always the public API URL:
+    /// a custom base URL belongs to the active provider, not to this one.
+    pub fn anthropic_from_store(model: &str) -> Result<Self, AppError> {
+        let api_key = load_api_key(ProviderKind::Anthropic)?
+            .ok_or_else(|| AppError::AiService("Anthropic API key not configured".to_string()))?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|e| AppError::AiService(format!("HTTP client init failed: {e}")))?;
+        Ok(Self {
+            provider: ProviderKind::Anthropic,
+            model: model.to_string(),
+            base_url: DEFAULT_ANTHROPIC_URL.trim_end_matches('/').to_string(),
+            api_key: Some(api_key),
+            http,
+        })
+    }
+
+    /// One Anthropic Messages call with NO tools whose reply is constrained to
+    /// `schema` (structured outputs), returned as the parsed JSON object. A
+    /// refusal or anything that does not parse is an error, never a default.
+    pub async fn anthropic_json(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &serde_json::Value,
+        max_tokens: u32,
+    ) -> Result<serde_json::Value, AppError> {
+        if self.provider != ProviderKind::Anthropic {
+            return Err(AppError::AiService(format!(
+                "structured Messages call needs the Anthropic provider; {} is configured",
+                provider_label(self.provider)
+            )));
+        }
+        let body = anthropic_json_body(&self.model, system_prompt, user_prompt, schema, max_tokens);
+        let response = self
+            .http
+            .post(format!("{}/messages", self.base_url))
+            .header("x-api-key", self.api_key.as_deref().unwrap_or_default())
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::AiService(format!("Request failed: {e}")))?;
+        let status = response.status();
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::AiService(format!("Failed to parse response: {e}")))?;
+        if !status.is_success() {
+            return Err(provider_http_error(self.provider, status, &value));
+        }
+        anthropic_json_reply(&value)
+    }
+
     /// POST a request to OpenAI's Decisions API and return the JSON reply.
     ///
     /// OpenAI only: no other provider has the endpoint, so anything else is an
@@ -520,6 +577,48 @@ fn anthropic_body(
     body
 }
 
+/// Structured-output body. No `tools`, no `temperature` (current models reject
+/// non-default sampling), `thinking` omitted (adaptive), effort `low`: a
+/// three-number classification gains nothing from deeper thinking.
+fn anthropic_json_body(
+    model: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    schema: &serde_json::Value,
+    max_tokens: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "system": system_prompt,
+        "messages": [{ "role": "user", "content": user_prompt }],
+        "max_tokens": max_tokens,
+        "output_config": {
+            "effort": "low",
+            "format": { "type": "json_schema", "schema": schema }
+        }
+    })
+}
+
+fn anthropic_json_reply(value: &serde_json::Value) -> Result<serde_json::Value, AppError> {
+    match value["stop_reason"].as_str() {
+        Some("refusal") => return Err(AppError::AiService("the model refused".to_string())),
+        Some("max_tokens") => return Err(AppError::AiService("reply cut off at max_tokens".to_string())),
+        _ => {}
+    }
+    let text = value["content"]
+        .as_array()
+        .and_then(|blocks| {
+            blocks.iter().find_map(|block| {
+                (block["type"].as_str() == Some("text"))
+                    .then(|| block["text"].as_str())
+                    .flatten()
+            })
+        })
+        .ok_or_else(|| AppError::AiService("No text response from model".to_string()))?;
+    serde_json::from_str(text.trim())
+        .map_err(|e| AppError::AiService(format!("reply is not the requested JSON: {e}")))
+}
+
 fn anthropic_uses_fixed_sampling(model: &str) -> bool {
     model == "claude-sonnet-5"
         || model.starts_with("claude-sonnet-5-")
@@ -816,6 +915,30 @@ mod tests {
         // Thinking off for local models; never sent to OpenAI unasked.
         assert_eq!(compatible["reasoning_effort"], "none");
         assert!(openai.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn structured_body_has_no_tools_or_sampling_and_constrains_the_reply() {
+        let schema = serde_json::json!({"type": "object"});
+        let body = anthropic_json_body("claude-haiku-5-5", "sys", "msg", &schema, 256);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("thinking").is_none());
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(body["output_config"]["format"]["schema"], schema);
+    }
+
+    #[test]
+    fn structured_reply_parses_and_rejects_refusals_and_prose() {
+        let ok = serde_json::json!({"stop_reason": "end_turn", "content": [
+            {"type": "thinking", "thinking": ""},
+            {"type": "text", "text": "{\"a\": 0.2}"}
+        ]});
+        assert_eq!(anthropic_json_reply(&ok).unwrap()["a"], 0.2);
+        let refusal = serde_json::json!({"stop_reason": "refusal", "content": []});
+        assert!(anthropic_json_reply(&refusal).is_err());
+        let prose = serde_json::json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": "looks fine"}]});
+        assert!(anthropic_json_reply(&prose).is_err());
     }
 
     #[test]

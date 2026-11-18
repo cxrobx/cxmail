@@ -543,6 +543,12 @@ pub fn model_signals(p_phishing: f64, p_ai_instructions: f64, p_impersonation: f
     out
 }
 
+/// Every model in the chain failed for this read: fail closed. Never stored,
+/// so the next read tries the models again.
+pub fn unrated_signal(why: &str) -> Signal {
+    sig("model_unrated", Severity::High, format!("no model could rate this message ({why}), so it is treated as high risk"))
+}
+
 /// One server-authored note.
 pub fn render(level: Level, signals: &[Signal], first_time_sender: bool, model_line: Option<&str>) -> String {
     let mut lines = vec![format!(

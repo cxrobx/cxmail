@@ -87,7 +87,27 @@ and the client:
    (17 phishing): phishing ≥ 0.5 → MEDIUM (caught 12/17, flagged 4/648 others), ≥ 0.8 → HIGH
    (9/17, 0/648); AI-instructions ≥ 0.5 → HIGH (no real examples yet); impersonation is
    shown, never raised on (5% false positives). The rules alone caught 0/17. Off switch:
-   credential `ai:risk:model` = `off`. Needs the OpenAI provider configured in CXMail.
+   credential `ai:risk:model` = `off` (rules only, by choice).
+
+   **Fallback chain (`risk_model_step`).** Decisions (needs the OpenAI provider) → when it
+   is unavailable, errors or times out, the same three questions over the same gated payload
+   to a tool-less `risk_model::FALLBACK_MODEL` (Haiku 5.5, structured output, the stored
+   `ai:anthropic:key` whichever provider is active) → when that fails too, `Unrated`: a
+   `model_unrated` HIGH signal for that read, **never stored**, so the next read retries.
+   A stored verdict carries its model (`decisions:…` / `anthropic:…`) and the note names it.
+   The fallback's probabilities are self-reported and share Decisions' thresholds until a
+   `--risk-eval` run measures them. A gate-withheld message (no body, financial sender,
+   redaction refused) stays rules-only: no model may see it, so failing it closed would mark
+   every bank statement.
+
+5. **Session taint (client, Claude Code).** `~/.claude/hooks/cxmail-taint.py --mark`
+   (PostToolUse on `mcp__cxmail__.*`) marks the session when a server note rates any message
+   HIGH; `--check` (PreToolUse on Bash, WebFetch, WebSearch and every MCP tool) then asks
+   before anything that can carry data off the machine: network commands, `osascript`,
+   `open`, `git push`, browser navigation and input, Chat sends, Drive shares. Unmarked
+   sessions get no prompt. Email text can only add a mark, never clear one. This is the
+   cross-tool half the approval hook cannot cover, since `send_email` being disabled does
+   not stop a tricked agent from using `curl`. Tests: `~/.claude/hooks/tests/test-cxmail-taint.py`.
 
 **Codex** has no `ask` in its `PreToolUse` (only `deny`), so it gets the same policy split in
 two: per-tool `approval_mode = "prompt"` under `[mcp_servers.cxmail.tools.<tool>]` in

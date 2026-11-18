@@ -7450,18 +7450,20 @@ struct RiskOutcome {
 enum ModelState {
     /// Switched off (`ai:risk:model` = "off") or no usable provider. Not stored.
     Off(&'static str),
-    /// A verdict for the current `MODEL_VERSION` is already stored.
-    Stored(f64, f64, f64),
+    /// A verdict for the current `MODEL_VERSION` is already stored, and the
+    /// model that gave it.
+    Stored(f64, f64, f64, String),
     /// The gate refused this message for this version (stored).
     StoredWithheld(String),
     /// Needs a verdict; the gate's redacted payload is ready.
     Pending(Box<crate::email::triage_gate::SafeMessage>),
     /// The gate just refused it; store the reason.
     Withheld(String),
-    /// Fresh verdict from this call; store it.
-    Judged(f64, f64, f64),
-    /// The call failed; not stored, so the next contact retries.
-    Failed(String),
+    /// Fresh verdict from this call and the model that gave it; store it.
+    Judged(f64, f64, f64, String),
+    /// Every model in the chain failed; not stored, so the next contact
+    /// retries. Rated HIGH for this read (fail closed).
+    Unrated(String),
 }
 
 /// Everything decided from the database, owned, so the model call can be
@@ -7612,6 +7614,7 @@ fn risk_prepare(
             s.p_phishing.unwrap_or(0.0),
             s.p_ai_instructions.unwrap_or(0.0),
             s.p_impersonation.unwrap_or(0.0),
+            s.model.unwrap_or_default(),
         ),
         _ if !model_enabled() => ModelState::Off("switched off (ai:risk:model = off)"),
         _ => match triage_gate::gate(
@@ -7641,20 +7644,52 @@ fn risk_prepare(
     })
 }
 
-/// Step 2, async, no database: ask Decisions when a verdict is pending.
+/// Step 2, async, no database: when a verdict is pending, ask the chain —
+/// OpenAI Decisions, then a tool-less Claude (`risk_model::FALLBACK_MODEL`),
+/// then fail closed (`Unrated`, rated HIGH for this read). Each step runs
+/// only when the one before it could not answer.
 async fn risk_model_step(mut prep: RiskPrep) -> RiskPrep {
     use crate::email::inference::{InferenceClient, ProviderKind};
+    use crate::email::risk_model;
+    let short = |e: String| -> String { e.chars().take(100).collect() };
     if let ModelState::Pending(safe) = &prep.model {
-        prep.model = match InferenceClient::load() {
+        let decisions = match InferenceClient::load() {
             Ok(c) if c.provider_kind() == ProviderKind::Openai => {
-                match tokio::time::timeout(Duration::from_secs(20), crate::email::risk_model::judge(&c, safe)).await {
-                    Ok(Ok(v)) => ModelState::Judged(v.p_phishing, v.p_ai_instructions, v.p_impersonation),
-                    Ok(Err(e)) => ModelState::Failed(e.to_string().chars().take(100).collect()),
-                    Err(_) => ModelState::Failed("timed out".into()),
+                match tokio::time::timeout(Duration::from_secs(20), risk_model::judge(&c, safe)).await {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(short(e.to_string())),
+                    Err(_) => Err("timed out".to_string()),
                 }
             }
-            Ok(_) => ModelState::Off("needs the OpenAI provider (Decisions)"),
-            Err(_) => ModelState::Off("no AI provider key configured in CXMail"),
+            Ok(_) => Err("needs the OpenAI provider".to_string()),
+            Err(_) => Err("no OpenAI key configured in CXMail".to_string()),
+        };
+        prep.model = match decisions {
+            Ok(v) => ModelState::Judged(
+                v.p_phishing,
+                v.p_ai_instructions,
+                v.p_impersonation,
+                format!("decisions:{}", crate::email::triage::DECISIONS_MODEL),
+            ),
+            Err(d) => {
+                let fallback = match InferenceClient::anthropic_from_store(risk_model::FALLBACK_MODEL) {
+                    Ok(c) => match tokio::time::timeout(Duration::from_secs(20), risk_model::judge_fallback(&c, safe)).await {
+                        Ok(Ok(v)) => Ok(v),
+                        Ok(Err(e)) => Err(short(e.to_string())),
+                        Err(_) => Err("timed out".to_string()),
+                    },
+                    Err(e) => Err(short(e.to_string())),
+                };
+                match fallback {
+                    Ok(v) => ModelState::Judged(
+                        v.p_phishing,
+                        v.p_ai_instructions,
+                        v.p_impersonation,
+                        format!("anthropic:{}", risk_model::FALLBACK_MODEL),
+                    ),
+                    Err(h) => ModelState::Unrated(format!("Decisions: {d}; Haiku: {h}")),
+                }
+            }
         };
     }
     prep
@@ -7663,32 +7698,49 @@ async fn risk_model_step(mut prep: RiskPrep) -> RiskPrep {
 /// Step 3, sync: store a fresh model result, combine, render.
 fn risk_finish(conn: &rusqlite::Connection, prep: RiskPrep) -> RiskOutcome {
     use crate::email::{risk, risk_model};
-    let model_name = format!("decisions:{}", crate::email::triage::DECISIONS_MODEL);
-    let store = |p: Option<(f64, f64, f64)>, w: Option<&str>| {
-        if let Err(e) = db::message_risk::set_model(conn, &prep.account_id, &prep.key, &model_name, risk_model::MODEL_VERSION, p, w) {
+    let store = |model_name: &str, p: Option<(f64, f64, f64)>, w: Option<&str>| {
+        if let Err(e) = db::message_risk::set_model(conn, &prep.account_id, &prep.key, model_name, risk_model::MODEL_VERSION, p, w) {
             log::warn!("risk: storing model verdict failed for {}/{}/{}: {e}", prep.account_id, prep.folder, prep.uid);
         }
     };
+    let mut unrated: Option<String> = None;
+    // Which model's numbers these are, for the note: Decisions unless the
+    // stored name says the fallback answered.
+    let source = |model_name: &str| match model_name.strip_prefix("anthropic:") {
+        Some(m) => m.to_string(),
+        None => "Decisions".to_string(),
+    };
+    let mut source_label = "Decisions".to_string();
     let (probs, line) = match &prep.model {
-        ModelState::Stored(a, b, c) => (Some((*a, *b, *c)), None),
-        ModelState::Judged(a, b, c) => {
-            store(Some((*a, *b, *c)), None);
+        ModelState::Stored(a, b, c, model_name) => {
+            source_label = source(model_name);
             (Some((*a, *b, *c)), None)
         }
+        ModelState::Judged(a, b, c, model_name) => {
+            store(model_name, Some((*a, *b, *c)), None);
+            source_label = source(model_name);
+            (Some((*a, *b, *c)), None)
+        }
+        ModelState::Unrated(why) => {
+            unrated = Some(why.clone());
+            (None, Some(format!("Model check: every model failed ({why}); rated HIGH for this read")))
+        }
         ModelState::Withheld(w) => {
-            store(None, Some(w));
+            store(&format!("decisions:{}", crate::email::triage::DECISIONS_MODEL), None, Some(w));
             (None, Some(format!("Model check: not sent (the privacy gate withheld it: {w})")))
         }
         ModelState::StoredWithheld(w) => (None, Some(format!("Model check: not sent (the privacy gate withheld it: {w})"))),
         ModelState::Off(why) => (None, Some(format!("Model check: off, {why}"))),
-        ModelState::Failed(e) => (None, Some(format!("Model check: failed ({e}); rules only this time"))),
         ModelState::Pending(_) => (None, Some("Model check: not run".to_string())),
     };
     let mut signals = prep.signals.clone();
+    if let Some(why) = &unrated {
+        signals.push(risk::unrated_signal(why));
+    }
     let line = match probs {
         Some((a, b, c)) => {
             signals.extend(risk::model_signals(a, b, c));
-            Some(format!("Model check (Decisions, {}): phishing {a:.2}, AI-instructions {b:.2}, impersonation {c:.2}", risk_model::MODEL_VERSION))
+            Some(format!("Model check ({source_label}, {}): phishing {a:.2}, AI-instructions {b:.2}, impersonation {c:.2}", risk_model::MODEL_VERSION))
         }
         None => line,
     };
@@ -8095,6 +8147,42 @@ mod tests {
         )
         .unwrap();
         assert!(risk_note_for(&conn, "acct", "INBOX", 8, None).contains("not run"));
+    }
+
+    #[test]
+    fn every_model_failing_rates_high_unstored_and_the_fallback_is_named() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::initialize(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host) VALUES ('acct', 'me@own.example', 'gmail', 'i', 's');
+             INSERT INTO messages (account_id, folder_name, uid, subject, from_email, to_list, date, message_id)
+               VALUES ('acct', 'INBOX', 4, 'Hello', 'friend@plain.example', '[]', '2026-11-01', '<m4@plain.example>');
+             INSERT INTO message_bodies (account_id, folder_name, uid, plain_text) VALUES ('acct', 'INBOX', 4, 'Lunch on Friday?');",
+        )
+        .unwrap();
+        // Clean by the rules alone.
+        assert!(risk_note_for(&conn, "acct", "INBOX", 4, None).contains("): LOW"));
+
+        // Both models failed: HIGH for this read, and nothing stored, so the
+        // next read asks the models again.
+        let mut prep = risk_prepare(&conn, "acct", "INBOX", 4, None).unwrap();
+        prep.model = ModelState::Unrated("Decisions: timed out; Haiku: Anthropic API key not configured".into());
+        let out = risk_finish(&conn, prep);
+        assert_eq!(out.level, crate::email::risk::Level::High, "{}", out.note);
+        assert!(out.note.contains("no model could rate this message"), "{}", out.note);
+        let stored: Option<f64> = conn.query_row("SELECT p_phishing FROM message_risk", [], |r| r.get(0)).unwrap();
+        assert!(stored.is_none(), "an unrated read is never stored");
+
+        // The fallback answered: its numbers count, and the note names it.
+        let mut prep = risk_prepare(&conn, "acct", "INBOX", 4, None).unwrap();
+        prep.model = ModelState::Judged(0.1, 0.9, 0.0, "anthropic:claude-haiku-5-5".into());
+        let out = risk_finish(&conn, prep);
+        assert_eq!(out.level, crate::email::risk::Level::High, "{}", out.note);
+        assert!(out.note.contains("Model check (claude-haiku-5-5,"), "{}", out.note);
+        let model: String = conn.query_row("SELECT model FROM message_risk", [], |r| r.get(0)).unwrap();
+        assert_eq!(model, "anthropic:claude-haiku-5-5");
+        // And a later read reuses the stored fallback verdict under its own name.
+        assert!(risk_note_for(&conn, "acct", "INBOX", 4, None).contains("Model check (claude-haiku-5-5,"));
     }
 
     #[test]
