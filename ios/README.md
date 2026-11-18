@@ -407,7 +407,11 @@ separate exact-address trusted sender list. New mail from those addresses alerts
 without a model call; other mail uses the mini's privacy-gated Luna Decisions
 classification for reply/action need and urgency. Known junk and risk flags,
 hidden accounts and read mail are excluded. Existing mail is never backfilled.
-Generic alerts hide sender/subject; tapping opens the exact message. Turning off
+Alerts show the sender, subject, and a short message preview when available.
+Lock Screen visibility follows iOS Show Previews. Choose which mailboxes are
+eligible under Notification accounts. The account selection applies to all
+devices, and newly enabled accounts only alert for new mail. Tapping opens the
+exact message. Turning off
 also disables delivery on the mini; offline changes show an error until synced.
 The mini must be awake and syncing. See `../remote/README.md` for setup, initial
 thresholds, caps, and best-effort delivery limits. The signing profile must include

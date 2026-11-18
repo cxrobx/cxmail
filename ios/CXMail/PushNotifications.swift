@@ -4,6 +4,13 @@ import UserNotifications
 struct NotificationSettings: Decodable {
     let configured: Bool
     let trustedSenders: [String]
+    let accounts: [NotificationAccount]?
+}
+
+struct NotificationAccount: Decodable, Identifiable {
+    let id: String
+    let email: String
+    let enabled: Bool
 }
 
 enum MailNotificationAction: Equatable {
@@ -18,6 +25,8 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
     nonisolated static let openSessionIdentifier = "CXMAIL_OPEN_SESSION"
     var status = "Notifications are off"
     var settings: NotificationSettings?
+    private(set) var accounts: [NotificationAccount] = []
+    private(set) var updatingAccounts = false
     var error: String?
     var pendingAction: MailNotificationAction?
     private(set) var offersSessionAction: Bool
@@ -25,6 +34,7 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
     private var token: String?
     private let defaults: UserDefaults
     private var syncTask: Task<Void, Never>?
+    private var accountSettingsVersion = 0
     init(api: APIClient? = nil, defaults: UserDefaults = .standard) {
         self.api = api; self.defaults = defaults
         offersSessionAction = defaults.bool(forKey: "pushOffersSessionAction")
@@ -80,9 +90,33 @@ final class PushNotifications: NSObject, UNUserNotificationCenterDelegate {
         }
     }
     func refresh() async {
-        guard let api, !api.fixture else { return }
-        do { settings = try await api.get("/api/notifications"); error = nil }
-        catch { self.error = error.localizedDescription }
+        guard let api, !api.fixture, !updatingAccounts else { return }
+        let version = accountSettingsVersion
+        do {
+            let response: NotificationSettings = try await api.get("/api/notifications")
+            guard version == accountSettingsVersion, !updatingAccounts else { return }
+            settings = response
+            accounts = response.accounts ?? []
+            error = nil
+        } catch {
+            guard version == accountSettingsVersion else { return }
+            self.error = error.localizedDescription
+        }
+    }
+
+    func setAccount(_ account: NotificationAccount, enabled: Bool) async {
+        guard let api, !api.fixture, !updatingAccounts else { return }
+        updatingAccounts = true
+        accountSettingsVersion += 1
+        defer { updatingAccounts = false }
+        do {
+            let response: NotificationSettings = try await api.post("/api/notifications/account",
+                body: ["account": account.id, "enabled": enabled])
+            accounts = response.accounts ?? []
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
     func enable() async {
         guard let api, !api.fixture else { return }
@@ -234,7 +268,19 @@ struct NotificationSettingsSection: View {
             }.disabled(sender.isEmpty)
             if let error = push.error { Text(error).foregroundStyle(.red) }
         } header: { Text("Smart notifications") } footer: {
-            Text("New mail from trusted addresses, or mail Luna identifies as needing you or time sensitive. Known junk and read mail are skipped. Alerts hide sender and subject on the lock screen. The mini must be awake and syncing. Notification trust is separate from image loading.")
+            Text("Alerts show the sender, subject, and a short preview. Lock Screen previews follow your iOS notification settings. Alerts cover trusted senders and mail Luna identifies as important.")
+        }
+        if !push.accounts.isEmpty {
+            Section {
+                ForEach(push.accounts) { account in
+                    Toggle(account.email, isOn: Binding(
+                        get: { account.enabled },
+                        set: { enabled in Task { await push.setAccount(account, enabled: enabled) } }))
+                }
+                .disabled(push.updatingAccounts)
+            } header: { Text("Notification accounts") } footer: {
+                Text("Only selected accounts can send alerts, including alerts from trusted senders. This applies to all your CXMail devices.")
+            }
         }
     }
 }

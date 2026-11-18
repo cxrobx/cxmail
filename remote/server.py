@@ -1477,6 +1477,8 @@ class Handler(BaseHTTPRequestHandler):
                     msg = get_message(c, *ref)
                 if not msg:
                     return self._err(404, "message not found")
+            if url.path == "/api/notifications/account":
+                return self._send(200, notifications().set_account(data))
                 try:
                     return self._send(200, dict(start_t3_thread(msg), ok=True))
                 except SendError as e:

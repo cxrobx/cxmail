@@ -229,13 +229,18 @@ push outcomes are terminal to prevent duplicate banners; dead tokens disable
 the registration. APNs delivery itself is best effort. State expires after seven
 days, beyond the one-day eligible-mail window.
 
-Alert text is generic; sender, subject and body never enter APNs. The payload
-contains only the exact message reference for navigation. Apple receives the
-app's device token and message reference. Tapping never sends or modifies mail.
+Apple Push receives the sender, subject, and a bounded plain-text inbox
+snippet when available, along with the device token and exact message
+reference. iOS Show Previews controls Lock Screen visibility. Tapping opens
+the message and keeps the existing Open in Session action available.
 The mini must be awake with CXMail syncing; Tailscale is needed to register,
 configure, and open mail, while Apple delivers alerts over the phone's internet.
 
 Setup (existing team key; never place it in the repository):
+Choose mailboxes under Notification accounts. The allowlist applies to all
+devices, and accounts start off until selected. Trusted senders and model
+verdicts both respect the account list. Enabling an account starts at the
+current mailbox watermark.
 
 ```sh
 remote/configure-push.sh /absolute/path/AuthKey_ID.p8 KEY_ID TEAM_ID

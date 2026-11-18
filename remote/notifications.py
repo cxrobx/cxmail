@@ -18,6 +18,19 @@ from contextlib import contextmanager
 STATE = os.path.expanduser('~/Library/Application Support/com.cxmail.remote')
 
 
+def alert_text(row):
+    def preview(value, limit):
+        # Single-line plain text, with a byte budget for APNs and Unicode intact.
+        line = ' '.join((value or '').split())
+        return line.encode('utf-8')[:limit].decode('utf-8', errors='ignore')
+
+    return {
+        'title': preview(row['from_name'], 160) or preview(row['from_email'], 160) or 'CXMail',
+        'subtitle': preview(row['subject'], 320) or '(No subject)',
+        'body': preview(row['snippet'], 480),
+    }
+
+
 def important(row, trusted):
     # Trust is an explicit exact-address preference, never a display-name match.
     if (row['is_read'] or row['category'] == 'junk'
@@ -52,6 +65,8 @@ class Notifications:
                     id TEXT PRIMARY KEY, token TEXT NOT NULL, environment TEXT NOT NULL,
                     enabled INTEGER NOT NULL, start_id INTEGER NOT NULL, updated REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS trusted (email TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS notification_accounts (
+                    account_id TEXT PRIMARY KEY, start_id INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS verdicts (
                     message TEXT PRIMARY KEY, result TEXT, attempted REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS deliveries (
@@ -76,9 +91,33 @@ class Notifications:
             os.path.join(STATE, 'apns.json'), os.path.join(STATE, 'cxmail-apns')))
 
     def settings(self):
-        with self.connect() as c:
+        with self.connect() as c, self.mailbox() as m:
+            enabled = {r[0] for r in c.execute('SELECT account_id FROM notification_accounts')}
+            accounts = [{'id': r['id'], 'email': r['email'], 'enabled': r['id'] in enabled}
+                        for r in m.execute('SELECT id,email FROM accounts '
+                                           'WHERE is_active=1 AND hidden_from_aggregates=0 ORDER BY email')]
             return {'configured': self.configured(), 'trusted_senders': [r[0] for r in c.execute(
-                'SELECT email FROM trusted ORDER BY email')]}
+                'SELECT email FROM trusted ORDER BY email')], 'accounts': accounts}
+
+    def set_account(self, data):
+        account, enabled = data.get('account'), data.get('enabled')
+        if not isinstance(account, str) or not account or type(enabled) is not bool:
+            raise ValueError('An account ID and boolean enabled flag are required')
+        with self.lock, self.mailbox() as m, self.connect() as c:
+            if enabled:
+                if not m.execute('SELECT 1 FROM accounts WHERE id=? AND is_active=1 AND hidden_from_aggregates=0',
+                                 (account,)).fetchone():
+                    raise ValueError('Account is unavailable for notifications')
+                start = m.execute('SELECT coalesce(max(id),0) FROM messages').fetchone()[0]
+                c.execute('INSERT OR IGNORE INTO notification_accounts VALUES (?,?)', (account, start))
+            else:
+                c.execute('DELETE FROM notification_accounts WHERE account_id=?', (account,))
+        return self.settings()
+
+    def account_allows(self, conn, row):
+        account = conn.execute('SELECT start_id FROM notification_accounts WHERE account_id=?',
+                               (row['account_id'],)).fetchone()
+        return account is not None and row['id'] > account['start_id']
 
     def trust(self, data):
         email = data.get('email')
@@ -98,7 +137,7 @@ class Notifications:
             ident = str(uuid.UUID(data.get('device')))
         except (ValueError, TypeError, AttributeError):
             raise ValueError('Invalid device identity')
-        with self.connect() as c:
+        with self.lock, self.connect() as c:
             c.execute('UPDATE devices SET enabled=0 WHERE id=?', (ident,))
         return self.settings()
 
@@ -129,6 +168,8 @@ class Notifications:
             deliveries = 0
             trusted = {r[0] for r in c.execute('SELECT email FROM trusted')}
             devices = c.execute('SELECT * FROM devices WHERE enabled=1').fetchall()
+            account_ids = [r[0] for r in c.execute('SELECT account_id FROM notification_accounts')]
+            placeholders = ','.join('?' for _ in account_ids)
             for d in devices:
                 # Never backfill pre-registration mail, old sync imports, hidden accounts,
                 # read mail, or non-inbox folders. Pending triage is reconsidered next tick.
@@ -146,15 +187,16 @@ class Notifications:
                         AND risk.message_key=CASE WHEN trim(coalesce(m.message_id,'')) <> ''
                             THEN lower(trim(trim(m.message_id), '<>'))
                             ELSE 'uid:' || m.folder_name || ':' || m.uid END
-                    WHERE m.id>? AND a.is_active=1 AND a.hidden_from_aggregates=0
+                    WHERE m.id>? AND m.account_id IN (''' + placeholders + ''')
+                        AND a.is_active=1 AND a.hidden_from_aggregates=0
                         AND f.folder_type='inbox' AND m.is_read=0
                         AND julianday(m.date)>julianday('now','-1 day')
-                    ORDER BY m.id DESC LIMIT 2000''', (d['start_id'],)).fetchall()
+                    ORDER BY m.id DESC LIMIT 2000''', (d['start_id'], *account_ids)).fetchall()
                 for r in rows:
                     active = c.execute('SELECT enabled,start_id FROM devices WHERE id=?', (d['id'],)).fetchone()
                     if not active or not active['enabled']:
                         break
-                    if r['id'] <= active['start_id']:
+                    if r['id'] <= active['start_id'] or not self.account_allows(c, r):
                         continue
                     trusted = {t[0] for t in c.execute('SELECT email FROM trusted')}
                     r = dict(r)
@@ -210,45 +252,48 @@ class Notifications:
                     old = c.execute('SELECT * FROM deliveries WHERE device=? AND message=?', (d['id'], key)).fetchone()
                     if old and (old['state'] != 'retry' or old['retry_at'] > time.time() or old['attempts'] >= 5):
                         continue
-                    current = c.execute('SELECT * FROM devices WHERE id=?', (d['id'],)).fetchone()
-                    if not current or not current['enabled'] or r['id'] <= current['start_id']:
-                        continue
-                    d = current
-                    live = m.execute('''SELECT m.is_read,a.is_active,a.hidden_from_aggregates,f.folder_type
-                        FROM messages m JOIN accounts a ON a.id=m.account_id
-                        JOIN folders f ON f.account_id=m.account_id AND f.name=m.folder_name
-                        WHERE m.id=?''', (r['id'],)).fetchone()
-                    if not live or live['is_read'] or not live['is_active'] or live['hidden_from_aggregates'] or live['folder_type'] != 'inbox':
-                        continue
-                    # Recheck trust revocation after slow inference.
-                    fresh_trust = {t[0] for t in c.execute('SELECT email FROM trusted')}
-                    if not important(r, fresh_trust):
-                        continue
-                    if deliveries >= 5:
-                        break
-                    deliveries += 1
-                    attempts = old['attempts'] + 1 if old else 1
-                    # Persist before the network call: crash/ambiguous timeout cannot double-send.
-                    c.execute('INSERT OR REPLACE INTO deliveries VALUES (?,?,?,?,?,?)',
-                              (d['id'], key, 'uncertain', attempts, 0, time.time()))
-                    c.commit()
-                    payload = {'aps': {'alert': {'title': 'CXMail', 'body': 'New important email'},
-                                       'sound': 'default', 'thread-id': 'cxmail'},
-                               'account': r['account_id'], 'folder': r['folder_name'], 'uid': r['uid']}
-                    try:
-                        status, reason = self.sender(d, key, payload)
-                    except (OSError, ValueError, subprocess.TimeoutExpired):
-                        continue
-                    state = 'sent' if status == 200 else 'rejected'
-                    if status == 429 or status >= 500:
-                        state = 'retry'
-                    if status == 410 or reason in ('BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'):
-                        c.execute('UPDATE devices SET enabled=0 WHERE id=?', (d['id'],))
-                    c.execute('UPDATE deliveries SET state=?,retry_at=?,updated=? WHERE device=? AND message=?',
-                              (state, time.time() + min(3600, 30 * 2 ** attempts), time.time(), d['id'], key))
-                    c.commit()
-                    if state == 'rejected':
-                        break
+                    # Serialize final delivery with account changes and device opt-out.
+                    with self.lock:
+                        current = c.execute('SELECT * FROM devices WHERE id=?', (d['id'],)).fetchone()
+                        if (not current or not current['enabled'] or r['id'] <= current['start_id']
+                                or not self.account_allows(c, r)):
+                            continue
+                        d = current
+                        live = m.execute('''SELECT m.is_read,a.is_active,a.hidden_from_aggregates,f.folder_type
+                            FROM messages m JOIN accounts a ON a.id=m.account_id
+                            JOIN folders f ON f.account_id=m.account_id AND f.name=m.folder_name
+                            WHERE m.id=?''', (r['id'],)).fetchone()
+                        if not live or live['is_read'] or not live['is_active'] or live['hidden_from_aggregates'] or live['folder_type'] != 'inbox':
+                            continue
+                        # Recheck trust revocation after slow inference.
+                        fresh_trust = {t[0] for t in c.execute('SELECT email FROM trusted')}
+                        if not important(r, fresh_trust):
+                            continue
+                        if deliveries >= 5:
+                            break
+                        deliveries += 1
+                        attempts = old['attempts'] + 1 if old else 1
+                        # Persist before the network call: crash/ambiguous timeout cannot double-send.
+                        c.execute('INSERT OR REPLACE INTO deliveries VALUES (?,?,?,?,?,?)',
+                                  (d['id'], key, 'uncertain', attempts, 0, time.time()))
+                        c.commit()
+                        payload = {'aps': {'alert': alert_text(r),
+                                           'sound': 'default', 'thread-id': 'cxmail'},
+                                   'account': r['account_id'], 'folder': r['folder_name'], 'uid': r['uid']}
+                        try:
+                            status, reason = self.sender(d, key, payload)
+                        except (OSError, ValueError, subprocess.TimeoutExpired):
+                            continue
+                        state = 'sent' if status == 200 else 'rejected'
+                        if status == 429 or status >= 500:
+                            state = 'retry'
+                        if status == 410 or reason in ('BadDeviceToken', 'DeviceTokenNotForTopic', 'Unregistered'):
+                            c.execute('UPDATE devices SET enabled=0 WHERE id=?', (d['id'],))
+                        c.execute('UPDATE deliveries SET state=?,retry_at=?,updated=? WHERE device=? AND message=?',
+                                  (state, time.time() + min(3600, 30 * 2 ** attempts), time.time(), d['id'], key))
+                        c.commit()
+                        if state == 'rejected':
+                            break
             c.execute('DELETE FROM deliveries WHERE updated<?', (time.time() - 7 * 86400,))
             c.execute('DELETE FROM verdicts WHERE attempted<?', (time.time() - 7 * 86400,))
 

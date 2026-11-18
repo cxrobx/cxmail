@@ -6,7 +6,7 @@ struct Config: Decodable { let keyPath: String; let keyID: String; let teamID: S
 struct Input: Decodable { let token: String; let environment: String; let collapse: String; let payload: Payload }
 struct Payload: Codable {
     struct APS: Codable {
-        struct Alert: Codable { let title: String; let body: String }
+        struct Alert: Codable { let title: String; let subtitle: String?; let body: String }
         let alert: Alert; let sound: String; let threadID: String
         var category: String?
         enum CodingKeys: String, CodingKey { case alert, sound, category; case threadID = "thread-id" }

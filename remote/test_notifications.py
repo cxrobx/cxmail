@@ -12,12 +12,14 @@ class NotificationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.mailpath = os.path.join(self.tmp.name, 'mail.sqlite')
         c = sqlite3.connect(self.mailpath)
-        c.executescript('''CREATE TABLE accounts(id TEXT, is_active INTEGER, hidden_from_aggregates INTEGER);
-            INSERT INTO accounts VALUES ('a',1,0);
+        c.executescript('''CREATE TABLE accounts(id TEXT, email TEXT, is_active INTEGER, hidden_from_aggregates INTEGER);
+            INSERT INTO accounts VALUES ('a','work@example.org',1,0), ('b','personal@example.org',1,0);
             CREATE TABLE folders(account_id TEXT,name TEXT,folder_type TEXT,uidvalidity INTEGER);
             INSERT INTO folders VALUES ('a','INBOX','inbox',1);
+            INSERT INTO folders VALUES ('b','INBOX','inbox',1);
             CREATE TABLE messages(id INTEGER PRIMARY KEY,account_id TEXT,folder_name TEXT,uid INTEGER,
-                message_id TEXT,from_email TEXT,is_read INTEGER,date TEXT,flags TEXT,category TEXT DEFAULT 'updates');
+                message_id TEXT,from_email TEXT,is_read INTEGER,date TEXT,flags TEXT,category TEXT DEFAULT 'updates',
+                from_name TEXT DEFAULT 'Jordan', subject TEXT DEFAULT 'Tuesday plan', snippet TEXT DEFAULT 'Can we meet?');
             CREATE TABLE message_bodies(account_id TEXT,folder_name TEXT,uid INTEGER,plain_text TEXT);
             CREATE TABLE triage_verdicts(account_id TEXT,folder_name TEXT,uid INTEGER,needs_response REAL,
                 needs_action REAL,category TEXT,urgency INTEGER,model TEXT,prompt_version TEXT,withheld_reason TEXT);
@@ -31,6 +33,7 @@ class NotificationTests(unittest.TestCase):
             if isinstance(self.result, Exception): raise self.result
             return self.result
         self.worker = Notifications(self.mailbox, os.path.join(self.tmp.name, 'push.sqlite'), sender)
+        self.worker.set_account({'account':'a','enabled':True})
         self.device = {'device': str(uuid.uuid4()), 'token': 'ab' * 32, 'environment': 'development', 'enabled': True}
         self.worker.trust({'email':'trusted@example.org','trusted':True})
 
@@ -43,12 +46,12 @@ class NotificationTests(unittest.TestCase):
             with c: yield c
         finally: c.close()
 
-    def mail(self, uid=1, sender='trusted@example.org', date=None):
+    def mail(self, uid=1, sender='trusted@example.org', date=None, account='a'):
         date = date or datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self.mailbox() as c:
             c.execute('INSERT INTO messages(id,account_id,folder_name,uid,message_id,from_email,is_read,date,flags) VALUES (?,?,?,?,?,?,?,?,?)',
-                      (uid, 'a','INBOX',uid,'<m{}@example.org>'.format(uid),sender,0,date,''))
-            c.execute("INSERT INTO message_bodies VALUES ('a','INBOX',?,'fictional body')", (uid,))
+                      (uid, account,'INBOX',uid,'<m{}@example.org>'.format(uid),sender,0,date,''))
+            c.execute("INSERT INTO message_bodies VALUES (?,'INBOX',?,'fictional body')", (account, uid))
 
     def verdict(self, uid=1, category='primary', urgency=1, model='decisions:gpt-6-luna', withheld=None):
         with self.mailbox() as c:
@@ -62,6 +65,36 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
         self.assertEqual(self.calls[0][2]['uid'],2)
         self.assertNotIn('trusted@example.org', str(self.calls[0][2]))
+        self.assertEqual(self.calls[0][2]['aps']['alert'],
+                         {'title':'Jordan','subtitle':'Tuesday plan','body':'Can we meet?'})
+
+    def test_account_scope_precedes_trust_and_inference_and_never_backfills(self):
+        self.worker.register(self.device)
+        classified = []
+        self.worker.classifier = lambda row: classified.append(row['uid']) or {}
+        self.mail(1, account='b')
+        self.mail(2, account='b', sender='unknown@example.org')
+        self.worker.tick()
+        self.assertEqual((self.calls, classified), ([], []))
+        self.worker.set_account({'account':'b','enabled':True})
+        self.mail(3, account='b')
+        self.worker.tick()
+        self.assertEqual([call[2]['uid'] for call in self.calls], [3])
+        self.worker.set_account({'account':'b','enabled':False})
+        self.mail(4, account='b')
+        self.worker.tick()
+        self.assertEqual([call[2]['uid'] for call in self.calls], [3])
+
+    def test_account_disabled_during_inference_prevents_delivery(self):
+        self.worker.register(self.device)
+        self.mail(sender='unknown@example.org')
+        def classify(_):
+            self.worker.set_account({'account':'a','enabled':False})
+            return {'model':'decisions:gpt-6-luna','category':'primary',
+                    'needs_response':1,'needs_action':0,'urgency':3}
+        self.worker.classifier = classify
+        self.worker.tick()
+        self.assertEqual(self.calls, [])
 
     def test_smart_waits_for_verdict(self):
         self.worker.register(self.device); self.mail(sender='other@example.org')
