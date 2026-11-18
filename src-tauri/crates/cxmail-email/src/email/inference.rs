@@ -188,9 +188,18 @@ impl InferenceClient {
     /// active. For the risk check's fallback model, which must not depend on
     /// the user's chosen provider for Reply with AI. Always the public API URL:
     /// a custom base URL belongs to the active provider, not to this one.
+    ///
+    /// When CXMail's own store has no Anthropic key, the environment variable
+    /// `CXMAIL_ANTHROPIC_API_KEY` is used instead: the owner's MCP LaunchAgent
+    /// starts the server under `secret run -k CXMAIL_ANTHROPIC_API_KEY`, the
+    /// same way every other key on that machine is supplied.
     pub fn anthropic_from_store(model: &str) -> Result<Self, AppError> {
-        let api_key = load_api_key(ProviderKind::Anthropic)?
-            .ok_or_else(|| AppError::AiService("Anthropic API key not configured".to_string()))?;
+        let api_key = anthropic_key_from(load_api_key(ProviderKind::Anthropic)?, std::env::var(ANTHROPIC_KEY_ENV).ok())
+            .ok_or_else(|| {
+                AppError::AiService(format!(
+                    "Anthropic API key not configured (CXMail settings or {ANTHROPIC_KEY_ENV})"
+                ))
+            })?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -594,6 +603,16 @@ fn anthropic_body(
     body
 }
 
+/// Environment fallback for the risk check's Anthropic key.
+pub const ANTHROPIC_KEY_ENV: &str = "CXMAIL_ANTHROPIC_API_KEY";
+
+/// The stored key wins; the environment is only a fallback. Blank is absent.
+fn anthropic_key_from(stored: Option<String>, env: Option<String>) -> Option<String> {
+    stored
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| env.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()))
+}
+
 /// Structured-output body. No `tools`, no `temperature` (current models reject
 /// non-default sampling), `thinking` omitted (adaptive), effort `low`: a
 /// three-number classification gains nothing from deeper thinking.
@@ -943,6 +962,16 @@ mod tests {
         assert!(body.get("thinking").is_none());
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["output_config"]["format"]["schema"], schema);
+    }
+
+    #[test]
+    fn the_stored_anthropic_key_wins_and_the_environment_is_a_fallback() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(anthropic_key_from(s("stored"), s("env")), s("stored"));
+        assert_eq!(anthropic_key_from(None, s(" env ")), s("env"));
+        assert_eq!(anthropic_key_from(s("  "), s("env")), s("env"));
+        assert_eq!(anthropic_key_from(None, s("  ")), None);
+        assert_eq!(anthropic_key_from(None, None), None);
     }
 
     #[test]

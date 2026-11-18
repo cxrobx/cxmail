@@ -92,7 +92,9 @@ and the client:
    **Fallback chain (`risk_model_step`).** Decisions (needs the OpenAI provider) → when it
    is unavailable, errors or times out, the same three questions over the same gated payload
    to a tool-less `risk_model::FALLBACK_MODEL` (Haiku 5.5, structured output, the stored
-   `ai:anthropic:key` whichever provider is active) → when that fails too, `Unrated`: a
+   `ai:anthropic:key` whichever provider is active, else the `CXMAIL_ANTHROPIC_API_KEY`
+   environment variable, which the mini's `com.cx.mcp.cxmail` LaunchAgent supplies through
+   `secret run --no-redact`) → when that fails too, `Unrated`: a
    `model_unrated` HIGH signal for that read, **never stored**, so the next read retries.
    A stored verdict carries its model (`decisions:…` / `anthropic:…`) and the note names it.
    Both models see a long body as its head plus its tail (`risk_model::head_and_tail`, same
