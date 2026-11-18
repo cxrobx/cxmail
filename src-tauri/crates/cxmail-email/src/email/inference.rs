@@ -204,6 +204,23 @@ impl InferenceClient {
         })
     }
 
+    /// An Anthropic client from an explicit key, bypassing the credential
+    /// store. For probes run outside the app bundle; the app uses
+    /// `anthropic_from_store`.
+    pub fn anthropic_with_key(api_key: String, model: &str) -> Result<Self, AppError> {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| AppError::AiService(format!("HTTP client init failed: {e}")))?;
+        Ok(Self {
+            provider: ProviderKind::Anthropic,
+            model: model.to_string(),
+            base_url: DEFAULT_ANTHROPIC_URL.trim_end_matches('/').to_string(),
+            api_key: Some(api_key),
+            http,
+        })
+    }
+
     /// One Anthropic Messages call with NO tools whose reply is constrained to
     /// `schema` (structured outputs), returned as the parsed JSON object. A
     /// refusal or anything that does not parse is an error, never a default.

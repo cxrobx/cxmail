@@ -95,17 +95,28 @@ and the client:
    `ai:anthropic:key` whichever provider is active) → when that fails too, `Unrated`: a
    `model_unrated` HIGH signal for that read, **never stored**, so the next read retries.
    A stored verdict carries its model (`decisions:…` / `anthropic:…`) and the note names it.
-   The fallback's probabilities are self-reported and share Decisions' thresholds until a
-   `--risk-eval` run measures them. A gate-withheld message (no body, financial sender,
+   Both models see a long body as its head plus its tail (`risk_model::head_and_tail`, same
+   size as before), so an instruction after a long preamble is seen; the middle of a very
+   long email still is not.
+
+   **Measured with `examples/injection_probe`** (fictional fixtures, 12 attacks and 10
+   look-alike safe emails, 2026-11-18): rules alone 1/12 at HIGH; rules + Decisions 12/12;
+   rules + Haiku 12/12; safe mail at HIGH 0/10 for every column. The two misses before the
+   head-and-tail body and the hidden-text widening (`risk::addresses_ai`, hidden text only)
+   were an instruction past 2,000 characters and hidden white text the model never saw.
+   The widened rule fired on 0 of 3,000 real inbox messages (`risk_probe`). A gate-withheld message (no body, financial sender,
    redaction refused) stays rules-only: no model may see it, so failing it closed would mark
    every bank statement.
 
 5. **Session taint (client, Claude Code).** `~/.claude/hooks/cxmail-taint.py --mark`
    (PostToolUse on `mcp__cxmail__.*`) marks the session when a server note rates any message
-   HIGH; `--check` (PreToolUse on Bash, WebFetch, WebSearch and every MCP tool) then asks
-   before anything that can carry data off the machine: network commands, `osascript`,
-   `open`, `git push`, browser navigation and input, Chat sends, Drive shares. Unmarked
-   sessions get no prompt. Email text can only add a mark, never clear one. This is the
+   HIGH. In a marked session the check (PreToolUse on Bash, WebFetch, WebSearch, Agent and
+   every MCP tool) is an **allowlist**: read-only shell commands (`ls`, `grep`, `git
+   status`/`diff`/`log`, `cargo test`…), local MCP servers and read-only tool names run;
+   everything else asks, including scripts, `npx`, DNS lookups, subagents and delegation.
+   A denylist leaks (write a script, run it); marked sessions are rare, so asking broadly
+   there is cheap. Unmarked sessions get no prompt and no Python: `cxmail-taint-check.sh`
+   exits in a few milliseconds. Email text can only add a mark, never clear one. This is the
    cross-tool half the approval hook cannot cover, since `send_email` being disabled does
    not stop a tricked agent from using `curl`. Tests: `~/.claude/hooks/tests/test-cxmail-taint.py`.
 

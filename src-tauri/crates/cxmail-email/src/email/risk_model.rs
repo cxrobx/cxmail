@@ -84,6 +84,23 @@ pub async fn judge(client: &InferenceClient, m: &SafeMessage) -> Result<ModelVer
     parse(&client.decide(&request(m)).await?)
 }
 
+/// The body the risk models see: the gate cuts at `MAX_BODY_CHARS` from the
+/// top, which let an instruction placed after a long preamble go unseen
+/// (injection probe a10). A long body becomes its head plus its tail, the two
+/// places an injection is likeliest, at the same size, so safe mail costs
+/// nothing extra. The middle of a very long email is still unseen.
+pub fn head_and_tail(body: &str) -> std::borrow::Cow<'_, str> {
+    const HEAD: usize = 1_200;
+    const TAIL: usize = 700;
+    let n = body.chars().count();
+    if n <= crate::email::triage_gate::MAX_BODY_CHARS {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    let head: String = body.chars().take(HEAD).collect();
+    let tail: String = body.chars().skip(n - TAIL).collect();
+    std::borrow::Cow::Owned(format!("{head}\n[…]\n{tail}"))
+}
+
 /// The fallback model when Decisions cannot answer: the same three questions
 /// over the same gated payload, asked of a tool-less Claude with the reply
 /// constrained to three numbers. Its probabilities are self-reported, not
@@ -155,6 +172,17 @@ mod tests {
         assert_eq!((v.p_phishing, v.p_ai_instructions, v.p_impersonation, v.input_tokens), (0.91, 0.02, 1.0, 812));
         let missing = serde_json::json!({"answers": [{"name": "phishing", "probability": 0.1}]});
         assert!(parse(&missing).is_err());
+    }
+
+    #[test]
+    fn a_long_body_keeps_its_ending_within_the_gate_limit() {
+        let short = "Lunch on Friday?";
+        assert_eq!(head_and_tail(short), short);
+        let long = format!("{}TAIL INSTRUCTION", "filler ".repeat(600));
+        let cut = head_and_tail(&long);
+        assert!(cut.ends_with("TAIL INSTRUCTION"));
+        assert!(cut.starts_with("filler"));
+        assert!(cut.chars().count() <= crate::email::triage_gate::MAX_BODY_CHARS);
     }
 
     #[test]

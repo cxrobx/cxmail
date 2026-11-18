@@ -7608,6 +7608,8 @@ fn risk_prepare(
         }
     };
     let model_current = stored.filter(|s| s.model_version.as_deref() == Some(risk_model::MODEL_VERSION));
+    // Head plus tail for long mail, so an instruction at the end is seen.
+    let model_body = src.plain_text.as_deref().map(risk_model::head_and_tail);
     let model = match model_current {
         Some(s) if s.model_withheld.is_some() => ModelState::StoredWithheld(s.model_withheld.unwrap()),
         Some(s) if s.p_phishing.is_some() => ModelState::Stored(
@@ -7626,7 +7628,7 @@ fn risk_prepare(
                 cc: &src.cc,
                 date: &src.date,
                 subject: src.subject.as_deref(),
-                body: src.plain_text.as_deref(),
+                body: model_body.as_deref(),
             },
         ) {
             triage_gate::Gate::Send(safe) => ModelState::Pending(safe),
