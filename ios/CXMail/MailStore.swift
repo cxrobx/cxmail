@@ -35,6 +35,8 @@ final class MailStore {
     var online = false
     var error: String?
     var notice: String?
+    var sessionPromptRef: MessageRef?
+    var sessionPrompt = ""
     private var openingSessions = Set<MessageRef>()
     var pending = Set<String>()
     var composer: LocalDraft?
@@ -73,11 +75,19 @@ final class MailStore {
         recoveredDraft = cache.load("draft.json")
         rows = snapshot.lists[listKey] ?? []
     }
-    func openSession(for ref: MessageRef) async {
+    func requestSession(for ref: MessageRef) {
+        sessionPrompt = ""
+        sessionPromptRef = ref
+    }
+
+    func openSession(for ref: MessageRef, prompt: String = "") async {
         guard openingSessions.insert(ref).inserted else { return }
         defer { openingSessions.remove(ref) }
         do {
-            _ = try await api.data("/api/claude-thread", body: ref.payload)
+            var body = ref.payload
+            let message = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !message.isEmpty { body["prompt"] = message }
+            _ = try await api.data("/api/claude-thread", body: body)
             notice = "Opened a Claude thread in T3 on the mini."
         } catch {
             notice = "Couldn’t confirm that the session opened. \(friendly(error))"

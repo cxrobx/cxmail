@@ -162,7 +162,14 @@ import Foundation
             } else { result = ["chat": 1, "seq": revision >= 4 ? 4 : revision == 2 ? 3 : 1, "alive": true, "events": []] }
         case "/api/chat/send": lastChatText = body?["text"] as? String ?? ""; revision = 1
         case "/api/chat/interrupt": revision = 3
-        case "/api/claude-thread": result = ["ok": true, "threadId": "fixture-thread"]
+        case "/api/claude-thread":
+            if ProcessInfo.processInfo.arguments.contains("--session-fixture") {
+                guard body?["account"] as? String == "work", body?["folder"] as? String == "INBOX",
+                      body?["uid"] as? Int == 10, body?["prompt"] as? String == "Summarize next steps" else {
+                    throw MailError.server("The session request did not match the selected email and message.")
+                }
+            }
+            result = ["ok": true, "threadId": "fixture-thread"]
         default: break
         }
         return try JSONSerialization.data(withJSONObject: result)

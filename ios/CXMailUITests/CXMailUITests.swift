@@ -17,6 +17,24 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15), "Sanitized HTML must actually render")
     }
+    func testInboxContextMenuOpensT3WithOptionalMessage() {
+        XCUIDevice.shared.orientation = .portrait
+        launch(["--session-fixture"])
+        let row = app.buttons["message-10"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.65)).press(forDuration: 1)
+        let action = app.buttons["Open in Session"].firstMatch
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        action.tap()
+        let dialog = app.alerts["Open in Session"]
+        let field = dialog.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Summarize next steps")
+        dialog.buttons["Open Session"].tap()
+        XCTAssertTrue(app.alerts.staticTexts["Opened a Claude thread in T3 on the mini."].waitForExistence(timeout: 8))
+    }
+
     func testFixedWidthEmailFitsClosedReaderAndRotation() {
         XCUIDevice.shared.orientation = .portrait
         launch(["--show-reader", "--fixed-width-email"])

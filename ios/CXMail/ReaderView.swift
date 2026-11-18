@@ -173,7 +173,7 @@ struct ReaderView: View {
                 Button("Reply all", systemImage: "arrowshape.turn.up.left.2") { store.newDraft(reply: message, all: true) }
                 Button(message.read ? "Mark unread" : "Mark read", systemImage: "envelope.badge") { Task { if await store.action(message.read ? "unread" : "read", message) { self.message?.read.toggle() } } }
                 Button("Move to…", systemImage: "folder") { move = true }
-                Button("Open in Claude", systemImage: "arrow.up.forward.app") { Task { await store.openSession(for: ref) } }
+                Button("Open in Session", systemImage: "arrow.up.forward.app") { store.requestSession(for: ref) }
                 Button("Move to Trash", systemImage: "trash", role: .destructive) { trash = true }
             } label: { Image(systemName: "ellipsis").frame(maxWidth: .infinity, minHeight: 44) }.accessibilityLabel("Message actions")
         }.buttonStyle(.plain).labelStyle(.iconOnly).font(.title3).foregroundStyle(Color.accentColor).padding(.horizontal, 8).padding(.vertical, 4)
@@ -252,6 +252,9 @@ struct MailActions: View {
             Button("Reply", systemImage: "arrowshape.turn.up.left") { Task { await reply(false) } }
             Button("Reply all", systemImage: "arrowshape.turn.up.left.2") { Task { await reply(true) } }
             Button("Ask Claude", systemImage: "bubble.left.and.bubble.right") { store.chatSeed = message.ref; store.chatPresented = true }
+            Button("Open in Session", systemImage: "arrow.up.forward.app") {
+                store.requestSession(for: message.ref)
+            }
             Button("Archive", systemImage: "archivebox") { Task { await store.action("archive", message) } }
             Button(message.starred ? "Unstar" : "Star", systemImage: "star") { Task { await store.action(message.starred ? "unstar" : "star", message) } }
             Button(message.read ? "Mark unread" : "Mark read", systemImage: "envelope.badge") { Task { await store.action(message.read ? "unread" : "read", message) } }

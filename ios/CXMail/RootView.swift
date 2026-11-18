@@ -46,7 +46,7 @@ struct RootView: View {
             PushNotifications.shared.pendingAction = nil
             switch action {
             case .read(let ref): store.selected = ref
-            case .openSession(let ref): Task { await store.openSession(for: ref) }
+            case .openSession(let ref): store.requestSession(for: ref)
             }
         }
         .task(id: store.listKey) {
@@ -80,6 +80,19 @@ struct RootView: View {
         .alert("CXMail", isPresented: Binding(get: { store.notice != nil }, set: { if !$0 { store.notice = nil } })) {
             Button("OK", role: .cancel) { store.notice = nil }
         } message: { Text(store.notice ?? "") }
+        .alert("Open in Session", isPresented: Binding(
+            get: { store.sessionPromptRef != nil }, set: { if !$0 { store.sessionPromptRef = nil } }),
+            presenting: store.sessionPromptRef) { ref in
+            TextField("Message to T3 (optional)", text: $store.sessionPrompt)
+            Button("Cancel", role: .cancel) {}
+            Button("Open Session") {
+                let prompt = store.sessionPrompt
+                Task { await store.openSession(for: ref, prompt: prompt) }
+            }
+            .disabled(store.sessionPrompt.unicodeScalars.count > 4_000)
+        } message: { _ in
+            Text("Start a T3 session for this email.")
+        }
     }
 }
 

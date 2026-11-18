@@ -935,7 +935,7 @@ def schedules():
     return SCHEDULES
 
 
-def claude_prompt(msg, repo):
+def claude_prompt(msg, repo, prompt=""):
     """The desktop's Open in Claude prompt (claude_handoff.rs::build_prompt),
     minus the scratch folder and pre-fetched attachments a T3 thread has no
     use for."""
@@ -967,6 +967,8 @@ def claude_prompt(msg, repo):
                   "list_attachments / download_attachment."]
     lines += ["", "Please do NOT take write actions (send_email, delete, move, flag, archive, "
               "compose_draft) unless I explicitly ask for them."]
+    if prompt:
+        lines += ["", "My request for this session:", prompt]
     return "\n".join(lines)
 
 
@@ -983,7 +985,7 @@ def resolve_repo(account, folder, uid):
     return {}
 
 
-def start_t3_thread(msg):
+def start_t3_thread(msg, prompt=""):
     repo = resolve_repo(msg["account"], msg["folder"], msg["uid"])
     title = "Mail: {}".format(msg["subject"])[:80]
     attempts = [repo["path"]] if repo.get("path") else []
@@ -993,7 +995,7 @@ def start_t3_thread(msg):
         try:
             p = subprocess.run(
                 [T3_BIN, "thread", "start", "--json", "--title", title, project, "-"],
-                input=claude_prompt(msg, repo if project == repo.get("path") else {}),
+                input=claude_prompt(msg, repo if project == repo.get("path") else {}, prompt),
                 capture_output=True, text=True, timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -1474,13 +1476,16 @@ class Handler(BaseHTTPRequestHandler):
                     if saved else None,
                 })
             if url.path == "/api/claude-thread":
+                prompt = data.get("prompt", "")
+                if not isinstance(prompt, str) or len(prompt) > 4000:
+                    return self._err(400, "The session message must be text up to 4,000 characters.")
                 ref = (str(data.get("account", "")), str(data.get("folder", "")), int(data.get("uid")))
                 with db() as c:
                     msg = get_message(c, *ref)
                 if not msg:
                     return self._err(404, "message not found")
                 try:
-                    return self._send(200, dict(start_t3_thread(msg), ok=True))
+                    return self._send(200, dict(start_t3_thread(msg, prompt.strip()), ok=True))
                 except SendError as e:
                     return self._err(502, str(e))
             if url.path == "/api/chat/start":

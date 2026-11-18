@@ -9,6 +9,7 @@ All notable changes to CXMail are documented here.
 - **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
 
 ### Added
+- **Optional message when opening a T3 session.** Use Open in Session from an inbox row, the reader, or a notification. CXMail asks for an optional message before starting the session for that email.
 - **Mail previews and account switches for smart notifications.** Alerts show sender, subject, and an available snippet. Choose which inboxes can notify across your CXMail devices.
 - **Open in Session from a smart notification.** Turn on the action in CXMail Settings, then press and hold a new mail alert to start a T3 session for that message.
 - **Native smart notifications.** Opt in on iPhone for new mail from exact trusted addresses and Luna Decisions classifications of important mail. Privacy-gated inference, persistent duplicate protection, bounded retries and a daily classification cap run on the mini. Tapping an alert opens the exact message. Notification trust is separate from image loading.

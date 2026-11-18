@@ -930,6 +930,17 @@ class Api(unittest.TestCase):
         self.assertIn("uid:        10", prompt)
         self.assertIn("do NOT take write actions", prompt)
         self.assertIn("no repo mapped", prompt)
+        self.assertNotIn("My request for this session:", prompt)
+
+    def test_session_message_is_passed_with_exact_email_reference(self):
+        ref = {"account": "a1", "folder": "INBOX", "uid": 10}
+        self.assertEqual(self.req("/api/claude-thread", dict(ref, prompt=123))[0], 400)
+        self.assertEqual(self.req("/api/claude-thread", dict(ref, prompt="a" * 4001))[0], 400)
+        self.j("/api/claude-thread", body=dict(ref, prompt="  Summarize next steps.  "))
+        with open(os.path.join(TMP, "t3-prompt.txt")) as f:
+            handoff = f.read()
+        self.assertIn("uid:        10", handoff)
+        self.assertTrue(handoff.endswith("My request for this session:\nSummarize next steps."))
 
     def test_trash_moves_not_deletes(self):
         self.calls.clear()
