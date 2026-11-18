@@ -205,6 +205,10 @@ All 68 API regressions pass.
 The mini's 30-second notification worker sends native APNs alerts while the iOS
 app is closed. Opt in from iPhone Settings → Smart notifications. Add exact
 sender email addresses there; this separate list grants no image permission.
+Choose mailboxes under Notification accounts. The allowlist applies to all
+devices, and accounts start off until selected. Trusted senders and model
+verdicts both respect the account list. Enabling an account starts at the
+current mailbox watermark.
 Hidden accounts, read mail, non-inbox mail, known junk/phishing/impersonation,
 and messages older than a day are excluded. Enabling starts after the mailbox's
 current message ID, so an old inbox never floods the phone.
@@ -237,10 +241,6 @@ The mini must be awake with CXMail syncing; Tailscale is needed to register,
 configure, and open mail, while Apple delivers alerts over the phone's internet.
 
 Setup (existing team key; never place it in the repository):
-Choose mailboxes under Notification accounts. The allowlist applies to all
-devices, and accounts start off until selected. Trusted senders and model
-verdicts both respect the account list. Enabling an account starts at the
-current mailbox watermark.
 
 ```sh
 remote/configure-push.sh /absolute/path/AuthKey_ID.p8 KEY_ID TEAM_ID

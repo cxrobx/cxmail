@@ -1419,6 +1419,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, notifications().register(data))
             if url.path == "/api/notifications/trust":
                 return self._send(200, notifications().trust(data))
+            if url.path == "/api/notifications/account":
+                return self._send(200, notifications().set_account(data))
             if url.path == "/api/image-trust":
                 if type(data.get("uid")) is not int or not 1 <= data["uid"] <= 4294967295:
                     return self._err(400, "uid must be a positive integer")
@@ -1477,8 +1479,6 @@ class Handler(BaseHTTPRequestHandler):
                     msg = get_message(c, *ref)
                 if not msg:
                     return self._err(404, "message not found")
-            if url.path == "/api/notifications/account":
-                return self._send(200, notifications().set_account(data))
                 try:
                     return self._send(200, dict(start_t3_thread(msg), ok=True))
                 except SendError as e:

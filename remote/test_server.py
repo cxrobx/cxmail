@@ -252,7 +252,6 @@ class Api(unittest.TestCase):
             self.assertEqual(self.req('/api/notifications/device',data,headers={'X-CXMail-Remote':'0'})[0],400)
             self.assertEqual(self.req('/api/notifications/device',dict(data,token='bad'))[0],400)
             self.assertEqual(self.req('/api/notifications/device',data)[0],200)
-            self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':True})[0],200)
             account = {'account':'a1','enabled':True}
             self.assertEqual(self.req('/api/notifications/account',account,login=None)[0],403)
             self.assertEqual(self.req('/api/notifications/account',account,headers={'X-CXMail-Remote':'0'})[0],400)
@@ -261,6 +260,7 @@ class Api(unittest.TestCase):
             self.assertEqual([a['id'] for a in self.j('/api/notifications')['accounts'] if a['enabled']], ['a1'])
             self.assertEqual(self.req('/api/notifications/account',dict(account,enabled=False))[0],200)
             self.assertFalse(any(a['enabled'] for a in self.j('/api/notifications')['accounts']))
+            self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':True})[0],200)
             self.assertIn('a@example.org',self.j('/api/notifications')['trusted_senders'])
             self.assertEqual(self.req('/api/notifications/disable',{'device':data['device']})[0],200)
             self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':False})[0],200)
