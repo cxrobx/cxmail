@@ -32,7 +32,10 @@ struct EmailHTMLView: UIViewRepresentable {
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.accessibilityLabel = "Email body"
         view.onWidthChange = { [weak coordinator] view in coordinator?.fit(view) }
-        coordinator.observation = view.scrollView.observe(\.contentSize, options: [.new]) { [weak coordinator, weak view] _, _ in
+        // WebKit re-posts contentSize after every fitting pass even when it is
+        // unchanged; refitting on those would loop forever (~60 fits a second).
+        coordinator.observation = view.scrollView.observe(\.contentSize, options: [.old, .new]) { [weak coordinator, weak view] _, change in
+            guard change.oldValue != change.newValue else { return }
             Task { @MainActor in
                 guard let view else { return }
                 coordinator?.fit(view)
@@ -73,6 +76,7 @@ struct EmailHTMLView: UIViewRepresentable {
         <meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">
         <style>
         :root{color-scheme:light}
+        html{-webkit-text-size-adjust:100%!important;text-size-adjust:100%!important}
         html,body{margin:0!important;min-width:0!important;width:100%!important;max-width:100%!important;box-sizing:border-box!important;overflow-wrap:anywhere}
         body{padding:12px!important}
         img,table{max-width:100%!important}pre{white-space:pre-wrap}

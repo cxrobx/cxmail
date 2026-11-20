@@ -41,6 +41,10 @@ fitting uses constant app-authored code in `.defaultClient` with
 `allowsContentJavaScript = false`; never interpolate mail into executable code
 or enable page scripts to measure it. Preserve the fixed-table right-edge/footer
 UI regression and native WebKit geometry/security tests.
+Keep `text-size-adjust:100%` on the reader document: iOS text autosizing reflows
+wide mail differently on each fitting pass, and the reader then jitters between
+two layouts forever. Refit only on a real contentSize change, never on WebKit's
+repeated same-size notifications (`testRepeatedFittingOfWideQuotedMailIsStable`).
 
 MCP text output is not a message-body API: `read_email` includes diagnostic
 headers, and its plain-text branch can be empty for HTML-only mail. The remote

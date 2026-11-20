@@ -84,3 +84,4 @@ entry there, then add its one line here.
 - **Your own `mcp__cxmail__*` tools run the binary from session start** (#47) — test a rebuilt MCP over stdio.
 
 - **Native fixed-width mail crops on closed Duo:** `max-width:100%` alone cannot contain a table’s minimum content width. Keep the WKWebView constrained to the proposed native width, fit overflowing HTML with constant isolated-world host code, and measure the scaled height including padding. Refit on width/content-size changes without enabling email JavaScript or relaxing CSP.
+- **Native reader jitter on wide mail:** iOS text autosizing inflates text in content wider than the viewport, and recomputes it on every fitting pass, so heights flip and each refit triggers the next. Keep `text-size-adjust:100%` in `EmailHTMLView.document` and the old≠new guard on the contentSize observer.
