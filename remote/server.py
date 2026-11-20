@@ -11,6 +11,8 @@ Standard library only (macOS /usr/bin/python3 is 3.9), so there is no venv to
 break. See remote/README.md for the LaunchAgent and Tailscale Serve setup.
 """
 
+import base64
+import binascii
 import json
 import datetime as dt
 import hashlib
@@ -30,6 +32,8 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from scheduled import ScheduledQueue, ScheduleConflict
 from notifications import Notifications
+
+from word_preview import FORMATS, render_office, render_word
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get(
@@ -893,12 +897,13 @@ def draft_is_gone(error):
     return str(error).startswith('Not found: That draft is gone:')
 
 
-def run_send_bin(*args):
+def run_send_bin(*args, payload=None):
     """Run `cxmail-mcp remote ...`; returns its JSON or raises SendError."""
     try:
         p = subprocess.run(
             [SEND_BIN, "remote"] + [str(a) for a in args],
-            capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=120,
+            **({"input": json.dumps(payload)} if payload is not None else {"stdin": subprocess.DEVNULL}),
             env=dict(os.environ, CXMAIL_MCP_IDLE_GRACE_SECS="0"),
         )
     except FileNotFoundError:
@@ -1152,9 +1157,12 @@ class PreviewCache:
             hit = self.items.get((account, folder, uid, digest))
             return hit[1] if hit and hit[0] > time.time() else None
 
-    def discard(self, ref):
+    def discard(self, ref, digest=None):
         with self.lock:
-            self.items = {k: v for k, v in self.items.items() if k[:3] != tuple(ref)}
+            if digest is None:
+                self.items = {k: v for k, v in self.items.items() if k[:3] != tuple(ref)}
+            else:
+                self.items.pop((*ref, digest), None)
 
 
 PREVIEWS = PreviewCache()
@@ -1308,6 +1316,22 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/api/accounts":
                 with db() as c:
                     return self._send(200, accounts(c))
+            if url.path == "/api/compose-context":
+                account = q.get("account", "")
+                folder = q.get("folder", "")
+                uid = q.get("uid", "")
+                if not account or bool(folder) != bool(uid) or uid and not 1 <= int(uid) <= 4294967295:
+                    return self._err(400, "Invalid compose account or message reference.")
+                if digest := q.get("digest"):
+                    preview = PREVIEWS.get(account, folder, int(uid), digest) if uid else None
+                    if preview is None:
+                        return self._send(409, {"error": "Review expired. Refresh the draft.", "code": "review_expired"})
+                    return self._send(200, {"from": preview["from"]["email"], "html": preview.get("edit_tail_html")})
+                try:
+                    identity = run_send_bin("compose-identity", account, *((folder, uid) if uid else ()))
+                except SendError:
+                    return self._err(502, "Could not load the account signature.")
+                return self._send(200, identity)
             if url.path == "/api/search":
                 with db() as c:
                     try:
@@ -1376,7 +1400,41 @@ class Handler(BaseHTTPRequestHandler):
                 PREVIEWS.put(p)
                 p = dict(p)
                 p.pop("sanitized_html", None)
+                p.pop("edit_tail_html", None)
                 return self._send(200, p)
+            if url.path == "/api/draft-attachment":
+                ref = self._ref(q)
+                digest = q.get("digest", "")
+                index = int(q.get("index", "-1"))
+                preview = PREVIEWS.get(*ref, digest)
+                if preview is None:
+                    return self._send(409, {"error": "Review expired. Refresh the draft.", "code": "review_expired"})
+                if not 0 <= index < len(preview["attachments"]):
+                    return self._err(404, "That attachment is unavailable.")
+                with db() as c:
+                    token = draft_cache_token(c, ref)
+                try:
+                    payload = run_send_bin("draft-attachment", *ref, digest, index)
+                except SendError as e:
+                    if "The draft changed after you reviewed it." in str(e):
+                        PREVIEWS.discard(ref, digest)
+                        return self._send(409, {"error": str(e), "code": "review_expired"})
+                    return self._draft_error(ref, token, e)
+                try:
+                    contents = base64.b64decode(payload["data"], validate=True)
+                except (KeyError, TypeError, binascii.Error):
+                    return self._err(502, "The mini could not decode the attachment.")
+                if kind := q.get("render"):
+                    if kind not in FORMATS or not preview["attachments"][index].lower().endswith(FORMATS[kind][0]):
+                        return self._err(415, "The attachment does not match the preview format.")
+                    pdf = render_word(contents) if kind == "word" else render_office(contents, kind)
+                    if pdf is None:
+                        return self._err(422, "Paginated preview is unavailable for this file.")
+                    return self._send(200, pdf, "application/pdf", {"Content-Disposition": "attachment"})
+                return self._send(200, contents, "application/octet-stream", {
+                    "Content-Disposition": "attachment",
+                    "Content-Security-Policy": "default-src 'none'; sandbox",
+                })
             if url.path == "/api/draft-body":
                 ref = self._ref(q)
                 p = PREVIEWS.get(ref[0], ref[1], ref[2], q.get("digest", ""))
@@ -1458,6 +1516,35 @@ class Handler(BaseHTTPRequestHandler):
                 result = MCP.call(tool, args)
                 PENDING.note((m["account"], m["folder"], m["uid"]), **EFFECT[data["action"]])
                 return self._send(200, {"ok": True, "result": result})
+            if url.path == "/api/draft-edit":
+                if type(data.get("uid")) is not int or not 1 <= data["uid"] <= 4294967295:
+                    return self._err(400, "uid must be a positive integer")
+                ref = self._ref(data)
+                digest = data.get("digest", "")
+                if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                    return self._send(409, {"error": "Review expired. Refresh the draft.", "code": "review_expired"})
+                with db() as c:
+                    token = draft_cache_token(c, ref)
+                queue = schedules()
+                with queue.operation_lock:
+                    if queue.active(ref):
+                        raise ScheduleConflict("Cancel the scheduled send before editing this draft.")
+                    try:
+                        saved = run_send_bin("edit-draft", *ref, digest, payload={
+                            key: data.get(key) for key in ("to", "cc", "bcc", "subject", "body")
+                        })
+                    except SendError as e:
+                        if "The draft changed after you reviewed it." in str(e):
+                            PREVIEWS.discard(ref, digest)
+                            return self._send(409, {"error": str(e), "code": "review_expired"})
+                        return self._draft_error(ref, token, e)
+                    PREVIEWS.discard(ref)
+                    if saved["old_removed"]:
+                        PENDING.note(ref, gone=True)
+                    note = None if saved["old_removed"] else "Saved. Drafts still contains the previous version."
+                    return self._send(200, {"ok": True, "result": note, "draft": {
+                        "account": ref[0], "folder": ref[1], "uid": saved["uid"],
+                    }})
             if url.path == "/api/draft":
                 to = _emails(data.get("to"))
                 if not data.get("account") or not to:
@@ -1472,6 +1559,9 @@ class Handler(BaseHTTPRequestHandler):
                 cc = _emails(data.get("cc"))
                 if cc:
                     args["cc"] = cc
+                bcc = _emails(data.get("bcc"))
+                if bcc:
+                    args["bcc"] = bcc
                 if data.get("reply_folder") and data.get("reply_uid") is not None:
                     args["reply_to_folder"] = str(data["reply_folder"])
                     args["reply_to_uid"] = int(data["reply_uid"])

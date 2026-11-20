@@ -110,6 +110,30 @@ export function claimExistingSignature(
     return { present: true, html: doc.body.innerHTML };
   }
 
+  // Gmail can keep the logo cell in a table and move the unchanged contact
+  // details into the following blocks. Only repair an exact, contiguous copy.
+  for (const start of Array.from(doc.body.querySelectorAll("div.cx-html-block")).filter(outsideQuote)) {
+    if (!start.querySelector("table")) continue;
+    let text = normalizedText(start);
+    if (!text || !sigText.startsWith(text)) continue;
+    const fragments: Element[] = [start];
+    for (let next = start.nextElementSibling; next && !next.matches("blockquote"); next = next.nextElementSibling) {
+      if (next.matches(PROTECTED)) break;
+      text += normalizedText(next);
+      if (!sigText.startsWith(text)) break;
+      fragments.push(next);
+      if (text === sigText) {
+        const sig = doc.createElement("div");
+        sig.setAttribute("data-cx-signature", "1");
+        sig.className = "email-signature";
+        sig.innerHTML = signatureHtml;
+        start.replaceWith(sig);
+        fragments.slice(1).forEach((fragment) => fragment.remove());
+        return { present: true, html: doc.body.innerHTML };
+      }
+    }
+  }
+
   // Text check against the body only: a quoted older message signed by the
   // same person carries the same signature and must not count.
   const bodyOnly = doc.body.cloneNode(true) as HTMLElement;

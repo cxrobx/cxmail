@@ -13,7 +13,10 @@
       "only_testing": [
         "CXMailUITests/CXMailUITests/testAppearanceSelectionPersistsAcrossRelaunch",
         "CXMailUITests/CXMailUITests/testCompactSendToolbarScheduleAndCancel",
+        "CXMailUITests/CXMailUITests/testComposerShowsSignatureBelowWritingArea",
         "CXMailUITests/CXMailUITests/testDockChatResizeAndPopOut",
+        "CXMailUITests/CXMailUITests/testDraftAttachmentPreviewAndExpiredReview",
+        "CXMailUITests/CXMailUITests/testEditSavedDraftFromReview",
         "CXMailUITests/CXMailUITests/testExactOpenDuoViewport",
         "CXMailUITests/CXMailUITests/testFailedAuthenticationCannotTrustSenderAutomatically",
         "CXMailUITests/CXMailUITests/testFixedWidthEmailFitsClosedReaderAndRotation",

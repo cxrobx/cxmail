@@ -14,7 +14,7 @@ API, authentication and exact-draft send review. The web client remains supporte
 | Read a message and its thread | stored ammonia-sanitised HTML, or the signed helper's sanitized preview when the body is not cached; fetched HTML stays in a bounded 15-minute memory cache, never written to SQLite by this service. No-script CSP and blocked remote images apply to both paths. The human-reader adapter verifies and removes the MCP's matching-nonce envelope and excludes server-note blocks before parsing the preview/header format. MCP diagnostic headers and agent safety markers are never displayed as body text; AI consumers keep the original fenced output. |
 | Archive, star, read/unread, move | calls the shared `cxmail-mcp` HTTP server (`127.0.0.1:18704`), which does the IMAP work and tells the app over the bridge socket |
 | Reply, reply all, new message | `compose_draft`, then optionally **Review & send** |
-| Drafts tab, **send** | `cxmail-mcp remote preview-draft` shows every From/To/Cc/Bcc and a SHA-256 of the stored draft; `cxmail-mcp remote send-draft` refetches it, refuses if the bytes changed, sends through the compose window's `smtp::send_email`, then expunges that one draft UID. Send needs two taps |
+| Drafts tab, **send** | `cxmail-mcp remote preview-draft` shows every From/To/Cc/Bcc and attachment name and records a SHA-256 of the stored draft. `cxmail-mcp remote send-draft` refetches the draft and checks the digest before sending the original MIME body with its attachments and inline images. It then expunges that one draft UID. Send needs two taps. |
 | Native **Schedule send** | the same reviewed draft reference + digest, queued durably by this LaunchAgent; an atomic claim invokes the signed `send-draft` once when due. The phone can be closed. View outcomes or cancel pending sends from the clock in Drafts. |
 | Home Screen app | `apple-touch-icon` PNG, `viewport-fit=cover`, locked zoom, a floating glass tab bar (Inbox · Unread · Drafts · Sent · Search; New is the pencil top right) like Telly's, a pushed reader with a bottom action toolbar, edge-swipe back and pull to refresh (Safari's own gestures are gone in a standalone app) |
 | Long-press a message (right-click on a Mac) | Open in Claude (T3), Ask Claude in Chat, Reply, Reply all, Archive, Star, Mark read/unread, Move to…, Move to Trash (`delete_email` without `permanent`, so recoverable) |
@@ -51,6 +51,37 @@ that body response, so a stale metadata decision cannot override a revocation. H
 placeholders are restored only after loading is allowed. Email scripts remain
 blocked. Authentication is domain identity evidence, not a content-safety verdict
 or Gmail's BIMI blue check. See `../specs/security.md` for the trust boundary.
+
+## Draft attachment preview
+
+The native draft review uses an authenticated download for the selected attachment.
+The signed helper refetches the draft and verifies the reviewed digest before returning
+the file. Quick Look opens supported formats and Share handles other files. The phone
+can preview files up to 25 MiB. Refresh the review if it expires or the draft changes.
+If Remote uses a separately signed send helper, `remote/install.sh` carries
+its existing `CXMAIL_SEND_BIN` override through a reinstall.
+
+Word, Excel and PowerPoint page previews use the corresponding workers from T3
+Code 0.1.7 on the mini.
+Install the preview driver with `npm ci --ignore-scripts --prefix remote/word-preview`.
+Run `python3 remote/word-preview/stage-assets.py` once to retain the pinned assets
+when T3 updates. The renderer runs in sandboxed headless Chrome with network requests intercepted
+locally. It takes only the exact reviewed attachment and returns a read-only PDF.
+Office preview is bounded to 5 MiB of input and 24 pages, visible sheets or slides.
+A workbook must fit within the renderer's bounded sheet area. Quick Look opens the
+original file when the renderer is unavailable or the document exceeds a limit.
+The share action always uses the original attachment.
+
+T3 Code is MIT and its BetterOffice engine is Apache-2.0. The worker and fonts
+come from the locally installed runtime, including its third-party notices.
+
+## Editing a saved draft
+
+The phone sends the exact revision and digest to the signed helper. The helper
+verifies the revision, appends the edited draft and then retires the previous
+UID. The edit path preserves file parts and any recognized signature, table and
+quoted history. The editor supports plain-text changes to the message body.
+A new review is required before sending. Cancel an active schedule before editing.
 
 ## Draft freshness
 
@@ -101,7 +132,7 @@ also require the JSON/header guard. No scheduling or send tool is added to MCP.
 
 ## Not here, on purpose
 
-- **Sending drafts with attachments** (refused with "send it from the Mac"), opening attachments (names only), **delete**, **compose formatting**.
+- Opening received attachments, **delete**, **compose formatting**.
 - **Undo send.** Two taps is the guard; there is no delay window.
 
 ## Native hybrid search

@@ -20,17 +20,19 @@ struct EmailHTMLView: UIViewRepresentable {
     var images = false
     @Binding var height: CGFloat
     var onLoaded: (() -> Void)? = nil
-    func makeCoordinator() -> Coordinator { Coordinator(height: $height, onLoaded: onLoaded) }
+    var inComposer = false
+    func makeCoordinator() -> Coordinator { Coordinator(height: $height, onLoaded: onLoaded, minimumHeight: inComposer ? 1 : 100) }
     func makeUIView(context: Context) -> WKWebView {
         let coordinator = context.coordinator
         let config = Self.webConfiguration()
         let view = EmailDocumentWebView(frame: .zero, configuration: config)
         view.navigationDelegate = coordinator
         view.isOpaque = false
-        view.backgroundColor = .white
+        view.backgroundColor = inComposer ? .clear : .white
+        view.underPageBackgroundColor = inComposer ? .clear : .white
         view.scrollView.isScrollEnabled = false
         view.scrollView.contentInsetAdjustmentBehavior = .never
-        view.accessibilityLabel = "Email body"
+        view.accessibilityLabel = inComposer ? "Signature and original message" : "Email body"
         view.onWidthChange = { [weak coordinator] view in coordinator?.fit(view) }
         // WebKit re-posts contentSize after every fitting pass even when it is
         // unchanged; refitting on those would loop forever (~60 fits a second).
@@ -65,11 +67,22 @@ struct EmailHTMLView: UIViewRepresentable {
         coordinator.loaded = input
         coordinator.revision += 1
         coordinator.ready = false; coordinator.fitting = false; coordinator.fitAgain = false
-        view.loadHTMLString(Self.document(html, images: images), baseURL: URL(string: "about:blank"))
+        view.loadHTMLString(Self.document(html, images: images, inComposer: inComposer), baseURL: URL(string: "about:blank"))
     }
-    static func document(_ html: String, images: Bool) -> String {
+    static func document(_ html: String, images: Bool, inComposer: Bool = false) -> String {
         let img = images ? "data: cid: https:" : "data: cid:"
         let policy = "default-src 'none'; img-src \(img); style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'"
+        let composerStyle = inComposer ? """
+        :root{color-scheme:light dark}
+        html,body{background:transparent;color:CanvasText}
+        body{padding:0!important;font:16px/1.45 -apple-system,system-ui,sans-serif}
+        @media(prefers-color-scheme:dark){
+          .email-signature :is([style^="color: #333"],[style*="; color: #333"]){color:#ededed!important}
+          .email-signature :is([style^="color: #777"],[style*="; color: #777"], [style^="color: #888"],[style*="; color: #888"]){color:#b3b3b3!important}
+          .email-signature :is([style^="color: #ccc"],[style*="; color: #ccc"]){color:#888!important}
+          .email-signature td[style*="solid #ccc"]{border-color:#626262!important}
+        }
+        """ : ""
         return """
         <!doctype html><html><head><meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="\(policy)">
@@ -80,8 +93,10 @@ struct EmailHTMLView: UIViewRepresentable {
         html,body{margin:0!important;min-width:0!important;width:100%!important;max-width:100%!important;box-sizing:border-box!important;overflow-wrap:anywhere}
         body{padding:12px!important}
         img,table{max-width:100%!important}pre{white-space:pre-wrap}
+        .email-signature td:first-child:not(:only-child){white-space:nowrap;overflow-wrap:normal}
         #cxmail-native-viewport{position:relative;width:100%;min-width:0}
         #cxmail-native-content{display:flow-root;position:relative;width:100%;transform-origin:top left}
+        \(composerStyle)
         </style></head><body><div id="cxmail-native-viewport"><div id="cxmail-native-content">\(html)</div></div></body></html>
         """
     }
@@ -125,7 +140,10 @@ struct EmailHTMLView: UIViewRepresentable {
         var ready = false
         var fitting = false
         var fitAgain = false
-        init(height: Binding<CGFloat>, onLoaded: (() -> Void)?) { self.height = height; self.onLoaded = onLoaded }
+        let minimumHeight: CGFloat
+        init(height: Binding<CGFloat>, onLoaded: (() -> Void)?, minimumHeight: CGFloat) {
+            self.height = height; self.onLoaded = onLoaded; self.minimumHeight = minimumHeight
+        }
         func fit(_ view: WKWebView) {
             guard ready, !view.isLoading else { return }
             guard !fitting else { fitAgain = true; return }
@@ -136,14 +154,14 @@ struct EmailHTMLView: UIViewRepresentable {
                 self.fitting = false
                 if case .success(let value) = result, let metrics = value as? [String: Any],
                    let measured = metrics["height"] as? Double, measured.isFinite, measured > 0 {
-                    let next = max(100, min(30_000, CGFloat(measured)))
+                    let next = max(self.minimumHeight, min(30_000, CGFloat(measured)))
                     if abs(self.height.wrappedValue - next) > 0.5 { self.height.wrappedValue = next }
                     view.scrollView.isScrollEnabled = false
                 } else {
                     // A failed app-side measurement must not leave wide content
                     // inaccessible. Permit panning rather than silently clipping it.
                     view.scrollView.isScrollEnabled = true
-                    let next = max(100, min(30_000, view.scrollView.contentSize.height))
+                    let next = max(self.minimumHeight, min(30_000, view.scrollView.contentSize.height))
                     if abs(self.height.wrappedValue - next) > 0.5 { self.height.wrappedValue = next }
                 }
                 self.onLoaded?()

@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import UIKit
 
 /// Fiction-only, in-process transport. UI tests can never touch a real mailbox.
 @MainActor enum Fixtures {
@@ -13,6 +14,7 @@ import Foundation
     static var starred = Set<Int>()
     static var read = Set<Int>()
     static var saved = false
+    static var editedSubject: String?
     static var sent = false
     static var revision = 0
     static var bodyRequests = 0
@@ -52,6 +54,21 @@ import Foundation
                 "has_remote_images": true, "blocked_reason": "Images require your permission."]
     }
     static let html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head><body style='font:17px -apple-system;line-height:1.6;padding:20px;color:#202124;background:white'><p>Hi Chris,</p><p>Thanks for the thoughtful notes. I’ve had a chance to work through the outline, and I think we have a good place to pick this up.</p><p>Could we find a little time next week to talk through the next steps? Tuesday or Thursday would work well on my end.</p><p>I especially liked the idea of keeping the first version focused. Let’s start with what we’ll actually use, then take it from there.</p><p>Talk soon,<br>Jordan</p></body></html>"
+    static let signature = """
+    <div class="email-signature" style="margin-top:16px;font-family:-apple-system,sans-serif">
+      <table cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr>
+        <td style="padding-right:16px;vertical-align:middle;border-right:2px solid #ccc">
+          <div style="font-size:36px;font-weight:700;letter-spacing:2px; color: #999;line-height:1">BS</div>
+          <div style="font-size:9px;letter-spacing:3px; color: #aaa">STUDIO</div>
+        </td>
+        <td style="padding-left:16px;vertical-align:middle">
+          <div style="font-size:16px;font-weight:600; color: #333">Morgan Reese</div>
+          <div style="font-size:13px; color: #777">Bluebird Studio</div>
+          <div style="margin-top:8px;font-size:12px; color: #888">morgan@example.com · bluebird.example.org</div>
+        </td>
+      </tr></table>
+    </div>
+    """
     // Same 600px table class as fixed-width account notices, with fiction only.
     static let fixedWidthHTML = """
     <html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -73,6 +90,9 @@ import Foundation
         var result: Any = ["ok": true]
         switch path {
         case "/api/accounts": result = [["id": "work", "email": "me@example.com", "name": "Work", "hidden": false], ["id": "personal", "email": "personal@example.com", "name": "Personal", "hidden": false]]
+        case "/api/compose-context":
+            result = ["from": q["account"] == "personal" ? "personal@example.com" : "me@example.com",
+                      "html": q["account"] == "personal" ? NSNull() as Any : signature]
         case "/api/messages":
             if ProcessInfo.processInfo.arguments.contains("--offline") { throw URLError(.notConnectedToInternet) }
             if ProcessInfo.processInfo.arguments.contains("--empty") || (q["q"] != nil && q["q"] != "project") { result = [[String: Any]]() }
@@ -129,7 +149,26 @@ import Foundation
                 missingDrafts.insert(uid); throw MailError.draftUnavailable
             }
             if ProcessInfo.processInfo.arguments.contains("--draft-preview-unavailable") && draftPreviewRequests == 1 { throw URLError(.timedOut) }
-            result = ["account_id": "work", "folder": "Drafts", "uid": uid, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "attachments": [], "sendable": true, "digest": String(repeating: "a", count: 64)]
+            result = ["account_id": "work", "folder": "Drafts", "uid": uid, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": uid == 21 ? (editedSubject ?? "Re: A good place to pick this up") : "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "edit_text": "Thanks, Tuesday works.", "attachments": ProcessInfo.processInfo.arguments.contains("--draft-attachment-fixture") ? ["Study-planner.docx"] : [], "sendable": true, "digest": String(repeating: "a", count: 64)]
+        case "/api/draft-edit":
+            guard body?["uid"] as? Int == 20, body?["digest"] as? String == String(repeating: "a", count: 64),
+                  body?["bcc"] as? [String] == ["copy@example.org"]
+            else { throw MailError.reviewExpired }
+            editedSubject = body?["subject"] as? String
+            result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 21]]
+        case "/api/draft-attachment":
+            guard q["uid"] == "20", q["index"] == "0", q["digest"] == String(repeating: "a", count: 64)
+            else { throw MailError.reviewExpired }
+            if ProcessInfo.processInfo.arguments.contains("--attachment-review-expired") { throw MailError.reviewExpired }
+            if q["render"] == "word", ProcessInfo.processInfo.arguments.contains("--word-page-fixture") {
+                return UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 612, height: 792)).pdfData { output in
+                    output.beginPage()
+                    ("Study planner QA sample" as NSString).draw(at: CGPoint(x: 60, y: 60), withAttributes: [
+                        .font: UIFont.systemFont(ofSize: 24), .foregroundColor: UIColor.black,
+                    ])
+                }
+            }
+            return Data(base64Encoded: "UEsDBBQAAAAIAFl7cV10JJxTuwAAAD4BAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbJWQuQ7CMAyGX6XKiqgRAwNquwArMPACVuq2EbkUuxxvT8o1sDHa//FZrk73SFzcnPVcq0EkrgFYD+SQyxDJZ6ULyaHkMfUQUZ+xJ1guFivQwQt5mcvUoZpqSx2OVordLa/ZBF+rRJZVsXkZJ1atMEZrNErW4eLbH8r8TShz8unhwUSeZYOCpjpcKCXTUnHEJHt0uQ6uIbXQBj26jCgn41+80HVG0zc/tcUUNDEb3ztbfhWHxn/ugOfbmgdQSwMEFAAAAAgAWXtxXWF7L0OJAAAA8gAAAAsAAABfcmVscy8ucmVsc43POw4CIRAG4KsQDrCzWlgYoLLZ1ngBAsMjLo8MGPX2UlisxsJy5p98f0accdU9ltxCrI090pqb5KH3egRoJmDSbSoV80hcoaT7GMlD1eaqPcJ+ng9AW4MrsTXZYiWnxe44uzwr/mMX56LBUzG3hLn/qPi6GLImj13yeyEL9r2eBstBCfh4Ub0AUEsDBBQAAAAIAFl7cV19AY7jgQAAAKkAAAARAAAAd29yZC9kb2N1bWVudC54bWxFzkEKwyAQBdCrSA7QCV10IVboEUpPYNQmAWccRoPN7RvTRTfvM3z4jGk6ZL9hpKo+mKjodh+WWlkDFL9EdOWSOdLRvbOgq8cpM7QsgSX7WMpKMya4juMN0K00WNP0lMPekzvSqfZVt7ArTo4oino+VHHIKRroZVdO+fQ3AP/n7BdQSwECFAMUAAAACABZe3FddCScU7sAAAA+AQAAEwAAAAAAAAAAAAAAgAEAAAAAW0NvbnRlbnRfVHlwZXNdLnhtbFBLAQIUAxQAAAAIAFl7cV1hey9DiQAAAPIAAAALAAAAAAAAAAAAAACAAewAAABfcmVscy8ucmVsc1BLAQIUAxQAAAAIAFl7cV19AY7jgQAAAKkAAAARAAAAAAAAAAAAAACAAZ4BAAB3b3JkL2RvY3VtZW50LnhtbFBLBQYAAAAAAwADALkAAABOAgAAAAA=")!
         case "/api/send":
             if ProcessInfo.processInfo.arguments.contains("--stale-draft") { throw MailError.server("The draft changed after you reviewed it. Reopen it and review again.") }
             sent = true; result = ["ok": true, "draft_removed": true]

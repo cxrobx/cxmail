@@ -159,3 +159,16 @@ describe("reopening a draft in compose (T186)", () => {
     expectHealthy(stored);
   });
 });
+
+it("repairs a signature whose logo table and contact details were split", () => {
+  const signature = "<table><tr><td>CX Ventures</td><td><p>Chris Example</p><p>chris@example.org</p></td></tr></table>";
+  const stored = '<div dir="ltr"><p>Hello</p><div><div><table><tr><td>CX Ventures</td></tr></table></div></div></div>'
+    + "<div></div><div><p>Chris Example</p><p>chris@example.org</p></div><blockquote>Earlier message</blockquote>";
+  const repaired = openEditSave(stored, signature, "Updated");
+  const doc = new DOMParser().parseFromString(repaired, "text/html");
+  const blocks = doc.querySelectorAll("div.email-signature");
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0]?.querySelectorAll("td")).toHaveLength(2);
+  expect(doc.querySelector("blockquote")?.textContent).toContain("Earlier message");
+  expect(doc.body.textContent?.match(/chris@example.org/g)).toHaveLength(1);
+});

@@ -32,7 +32,8 @@ with open(FAKE_BIN, "w") as f:
     f.write("""#!/bin/sh
 echo "$@" >> %s
 case "$2" in
-  preview-draft) echo '{"account_id":"'$3'","folder":"'$4'","uid":'$5',"from":{"name":null,"email":"me@example.com"},"to":[{"name":"Ann","email":"ann@example.org"}],"cc":[],"bcc":[{"name":null,"email":"b@example.org"}],"subject":"Hi","sanitized_html":"<p>body</p>","plain_text":"body","attachments":[],"sendable":true,"blocked_reason":null,"digest":"%s"}' ;;
+  preview-draft) echo '{"account_id":"'$3'","folder":"'$4'","uid":'$5',"from":{"name":null,"email":"me@example.com"},"to":[{"name":"Ann","email":"ann@example.org"}],"cc":[],"bcc":[{"name":null,"email":"b@example.org"}],"subject":"Hi","sanitized_html":"<p>body</p>","plain_text":"body","attachments":["plan.docx"],"sendable":true,"blocked_reason":null,"digest":"%s"}' ;;
+  draft-attachment) echo '{"data":"UEsDBA=="}' ;;
   send-draft) if [ "$6" = "%s" ]; then echo '{"message_id":"<x@cxmail.app>","draft_removed":true,"note":null}'; else echo '{"error":"The draft changed after you reviewed it."}'; exit 1; fi ;;
   silent) exit 1 ;;
   chat)
@@ -805,6 +806,54 @@ class Api(unittest.TestCase):
         self.assertEqual(open(CALLS).read().splitlines()[-1], "remote send-draft a1 [Gmail]/Drafts 3 " + DIGEST)
         self.assertEqual(self.j("/api/drafts"), [])  # gone before the app syncs
 
+    def test_draft_attachment_requires_exact_review_and_returns_download_bytes(self):
+        ref = "account=a1&folder=%5BGmail%5D%2FDrafts&uid=3"
+        path = "/api/draft-attachment?" + ref + "&index=0&digest="
+        self.assertEqual(self.req(path + DIGEST, login=None)[0], 403)
+        self.assertEqual(self.req(path + DIGEST)[0], 409)
+        self.j("/api/draft-preview?" + ref)
+        self.assertEqual(self.req(path + ("b" * 64))[0], 409)
+        self.assertEqual(self.req(path.replace("index=0", "index=1") + DIGEST)[0], 404)
+        code, headers, raw = self.req(path + DIGEST)
+        self.assertEqual(code, 200)
+        self.assertEqual(raw, b"PK\x03\x04")
+        self.assertEqual(headers["Content-Disposition"], "attachment")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        with patch.object(server, "run_send_bin", side_effect=server.SendError("The draft changed after you reviewed it.")):
+            code, _, raw = self.req(path + DIGEST)
+            self.assertEqual(code, 409)
+            self.assertEqual(json.loads(raw)["code"], "review_expired")
+        self.assertIsNone(server.PREVIEWS.get("a1", "[Gmail]/Drafts", 3, DIGEST))
+
+    def test_edit_draft_returns_fresh_revision_without_sending(self):
+        ref = {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3}
+        fields = {"to": ["ann@example.org"], "cc": [], "bcc": ["b@example.org"],
+                  "subject": "Revised", "body": "An edited reply"}
+        edit = dict(ref, digest=DIGEST, **fields)
+        with patch.object(server, "run_send_bin", return_value={"uid": 4, "old_removed": True}) as save:
+            self.assertEqual(self.req("/api/draft-edit", dict(edit, digest="wrong"))[0], 409)
+            save.assert_not_called()
+            new = self.j("/api/draft-edit", body=edit)["draft"]
+            self.assertEqual(new, dict(ref, uid=4))
+            save.assert_called_once_with("edit-draft", "a1", "[Gmail]/Drafts", 3, DIGEST, payload=fields)
+        with patch.object(server, "run_send_bin", side_effect=server.SendError("The draft changed after you reviewed it.")):
+            code, _, raw = self.req("/api/draft-edit", edit)
+            self.assertEqual(code, 409)
+            self.assertEqual(json.loads(raw)["code"], "review_expired")
+
+    def test_word_preview_uses_the_reviewed_attachment_bytes(self):
+        ref = "account=a1&folder=%5BGmail%5D%2FDrafts&uid=3"
+        path = "/api/draft-attachment?" + ref + "&index=0&render=word&digest="
+        with patch.object(server, "render_word", return_value=b"%PDF-test") as render:
+            self.assertEqual(self.req(path + ("f" * 64))[0], 409)
+            render.assert_not_called()
+            self.j("/api/draft-preview?" + ref)
+            code, headers, raw = self.req(path + DIGEST)
+            self.assertEqual(code, 200)
+            self.assertTrue(headers["Content-Type"].startswith("application/pdf"))
+            self.assertEqual(raw, b"%PDF-test")
+            render.assert_called_once_with(b"PK\x03\x04")
+
     def test_missing_draft_returns_typed_gone_and_stays_out_after_service_restart(self):
         old = server.run_send_bin
         def gone(*args):
@@ -977,15 +1026,31 @@ class Api(unittest.TestCase):
     def test_draft_never_sends_and_threads_replies(self):
         self.calls.clear()
         self.j("/api/draft", body={"account": "a1", "to": ["ann@example.org", "not-an-address"], "subject": "Re: x",
-                                   "body": "ok", "reply_folder": "INBOX", "reply_uid": 10})
+                                   "body": "ok", "bcc": ["hidden@example.org"], "reply_folder": "INBOX", "reply_uid": 10})
         tool, args = self.calls[-1]
         self.assertEqual(tool, "compose_draft")
         self.assertNotIn("send_email", [t for t, _ in self.calls])
         self.assertEqual(args["to"], ["ann@example.org"])
+        self.assertEqual(args["bcc"], ["hidden@example.org"])
         self.assertEqual((args["reply_to_folder"], args["reply_to_uid"]), ("INBOX", 10))
         self.assertFalse(args["is_html"])
         self.assertNotIn("send_email", server.ACTIONS)
         self.assertEqual(self.req("/api/draft", {"account": "a1", "to": []})[0], 400)
+
+    def test_compose_context_resolves_reply_identity_and_binds_saved_tail_to_review(self):
+        compose = '/api/compose-context?account=a1&folder=INBOX&uid=1'
+        identity = {"from": "alias@example.org", "html": "<p>Configured signature</p>"}
+        self.assertEqual(self.req(compose, login=None)[0], 403)
+        with patch.object(server, 'run_send_bin', return_value=identity) as command:
+            self.assertEqual(self.j(compose), identity)
+            command.assert_called_once_with("compose-identity", "a1", "INBOX", "1")
+        raw = {'account_id': 'a1', 'folder': 'Drafts', 'uid': 41, 'digest': DIGEST,
+               'from': {'email': 'old@example.org'}, 'edit_tail_html': '<p>Saved signature</p>'}
+        with patch.object(server, 'run_send_bin', return_value=raw):
+            self.assertNotIn('edit_tail_html', self.j('/api/draft-preview?account=a1&folder=Drafts&uid=41'))
+        saved = '/api/compose-context?account=a1&folder=Drafts&uid=41&digest='
+        self.assertEqual(self.req(saved + 'b' * 64)[0], 409)
+        self.assertEqual(self.j(saved + DIGEST), {'from': 'old@example.org', 'html': '<p>Saved signature</p>'})
 
 
 REAL_DB = os.path.expanduser("~/Library/Application Support/com.cxmail.app/cxmail.db")

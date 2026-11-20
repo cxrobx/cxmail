@@ -32,9 +32,16 @@ account, set `CXMAIL_ASC_KEY_PATH`, `CXMAIL_ASC_KEY_ID`, and
 - Native message navigation, swipe/context actions, archive, star, read/unread,
   move and recoverable Trash; linked conversation messages.
 - Plain-text composing/reply/reply-all, local recovery, save on the mini, and
-  review-before-send. From/To/Cc/Bcc and body are fetched from the mini; sending
+  review-before-send. The compose screen shows the Mac account signature below
+  the writing area. From/To/Cc/Bcc and body are fetched from the mini; sending
   requires separate confirmation and the exact reviewed digest. No automatic
   send retry after an ambiguous connection failure.
+- Tap Edit draft in review to edit recipients, subject and body. Saving creates
+  a new review and retains the original attachments.
+- Tap an attachment in draft review to inspect it. Word, Excel and PowerPoint
+  use paginated previews from the mini when available. Quick Look handles the original
+  if conversion fails and previews other supported attachments. Share uses the
+  original file. The mini checks the reviewed digest before returning either file.
 - If a draft was edited, sent or removed elsewhere, an authoritative missing
   revision clears that obsolete reference from all phone caches and refreshes
   Drafts. Choose the current draft for a fresh review. Network failures retain
@@ -387,9 +394,8 @@ draft-link work, verified, then installed and launched on Duo.
 
 ## Current boundaries
 
-Attachments are listed; opening them or sending drafts containing them still
-requires the Mac. No rich-text editor, share extension or
-undo-send delay in this version. Draft creation matches the current API's To/Cc
+Attachments in received mail show their names. No rich-text editor, share
+extension or undo-send delay in this version. Draft creation matches the current API's To/Cc
 surface; review still shows Bcc on drafts created elsewhere. Drafts are never
 silently sent or discarded when connectivity changes.
 
@@ -399,6 +405,7 @@ Agent-created drafts can open directly in the native review screen through HTTPS
 universal links. Deploy/configure the metadata host and Associated Domains profile
 before installing: see [draft links](../docs/draft-links.md). The mini remains the
 only mail engine, and every send still requires recipient review and confirmation.
+
 
 ## Smart notifications
 

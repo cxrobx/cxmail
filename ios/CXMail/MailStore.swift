@@ -41,6 +41,7 @@ final class MailStore {
     var pending = Set<String>()
     var composer: LocalDraft?
     var recoveredDraft: LocalDraft?
+    var recoveredEdits: [String: LocalDraft] = [:]
     var draftLinkRequest = 0
     var pendingDraftLink: String?
     var draftLinkError: String?
@@ -73,6 +74,7 @@ final class MailStore {
         // The first remote protocol could cache MCP metadata as body text.
         cache.remove("mail.json")
         recoveredDraft = cache.load("draft.json")
+        recoveredEdits = cache.load("draft-edits.json") ?? [:]
         rows = snapshot.lists[listKey] ?? []
     }
     func requestSession(for ref: MessageRef) {
@@ -285,16 +287,44 @@ final class MailStore {
         composer = reply.map { LocalDraft.reply(to: $0, all: all) } ?? .init(account: account.isEmpty ? snapshot.accounts.first(where: { !$0.hidden })?.id ?? snapshot.accounts.first?.id ?? "" : account)
     }
     func remember(_ draft: LocalDraft) {
-        do { try cache.save(draft, name: "draft.json"); recoveredDraft = draft }
-        catch { self.error = "Couldn’t save the reply on this phone. Keep the composer open and save it to the mini." }
+        do {
+            if let revision = draft.revision {
+                var edits = recoveredEdits
+                edits[revision.ref.id] = draft
+                try cache.save(edits, name: "draft-edits.json")
+                recoveredEdits = edits
+            } else {
+                try cache.save(draft, name: "draft.json")
+                recoveredDraft = draft
+            }
+        } catch { self.error = "Couldn’t save changes on this phone. Keep the composer open and save to the mini." }
     }
-    func clearDraft() { cache.remove("draft.json"); recoveredDraft = nil; composer = nil }
+    func clearDraft(_ draft: LocalDraft? = nil) {
+        if let revision = draft?.revision {
+            recoveredEdits.removeValue(forKey: revision.ref.id)
+            do { try cache.save(recoveredEdits, name: "draft-edits.json") }
+            catch { self.error = "Couldn’t clear the recovered draft edit on this phone." }
+            if composer?.id == draft?.id { composer = nil }
+        } else {
+            cache.remove("draft.json")
+            recoveredDraft = nil
+            composer = nil
+        }
+    }
     func saveDraft(_ draft: LocalDraft) async throws -> DraftResult {
         guard draft.valid else { throw MailError.server("Check the account and recipient email addresses.") }
-        var body: [String: Any] = ["account": draft.account, "to": LocalDraft.addresses(draft.to), "cc": LocalDraft.addresses(draft.cc), "subject": draft.subject, "body": draft.body]
+        var body: [String: Any] = ["account": draft.account, "to": LocalDraft.addresses(draft.to), "cc": LocalDraft.addresses(draft.cc), "bcc": LocalDraft.addresses(draft.bcc ?? ""), "subject": draft.subject, "body": draft.body]
         if let reply = draft.reply { body["reply_folder"] = reply.folder; body["reply_uid"] = reply.uid }
-        let result: DraftResult = try await api.post("/api/draft", body: body)
-        clearDraft(); snapshot.lists = [:]; persist(); return result
+        let result: DraftResult
+        if let revision = draft.revision {
+            body["folder"] = revision.ref.folder
+            body["uid"] = revision.ref.uid
+            body["digest"] = revision.digest
+            result = try await api.post("/api/draft-edit", body: body)
+        } else {
+            result = try await api.post("/api/draft", body: body)
+        }
+        clearDraft(draft); snapshot.lists = [:]; persist(); return result
     }
     func persist() {
         do { try cache.save(snapshot, name: "mail-v2.json") }

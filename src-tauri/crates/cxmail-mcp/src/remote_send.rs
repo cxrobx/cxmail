@@ -2,16 +2,17 @@
 //!
 //! This is **not** an MCP tool, on purpose. The MCP never delivers mail
 //! (`send_email` refuses by design), and every agent on the machine can reach
-//! the MCP. These two functions are reached only through the
+//! the MCP. These functions are reached only through the
 //! `cxmail-mcp remote …` subcommands, which CXMail Remote (`remote/`) calls
 //! after a person has looked at the draft on their phone:
 //!
 //! 1. `preview_draft` fetches the draft fresh from IMAP and returns everything
-//!    that would go out (From, every To/Cc/Bcc, subject, body) plus a SHA-256
+//!    that would go out (From, every To/Cc/Bcc, subject, body, attachment names) plus a SHA-256
 //!    of the stored message.
 //! 2. `send_draft` fetches it again, refuses unless the bytes still hash to
-//!    the digest the person approved, then sends through the same
-//!    `smtp::send_email` the compose window uses and retires the draft.
+//!    the digest the person approved, then sends the original MIME body using
+//!    the compose window's SMTP transport and retires the draft.
+//! 3. `preview_attachment` checks the same digest before returning one file.
 //!
 //! So what is approved is exactly what leaves: a draft edited anywhere after
 //! the review (the Mac, an agent's `edit_draft`) gets a new UID or new bytes,
@@ -44,9 +45,9 @@ pub struct DraftPreview {
     /// Ammonia-sanitised, for display only (architecture invariant 2).
     pub sanitized_html: Option<String>,
     pub plain_text: Option<String>,
-    /// Non-inline attachment file names. A draft with any attachment is
-    /// refused at send time in this version; listing them lets the review
-    /// screen say so before the person taps Send.
+    pub edit_text: String,
+    pub edit_tail_html: Option<String>,
+    /// Attachment names shown before the person taps Send.
     pub attachments: Vec<String>,
     pub sendable: bool,
     pub blocked_reason: Option<String>,
@@ -80,22 +81,6 @@ fn bracket(id: &str) -> String {
 pub fn blocked_reason(parsed: &parser::ParsedMessage) -> Option<String> {
     if parsed.to_list.is_empty() && parsed.cc_list.is_empty() && parsed.bcc_list.is_empty() {
         return Some("The draft has no recipients.".into());
-    }
-    let named: Vec<&str> = parsed
-        .attachments
-        .iter()
-        .filter(|a| !a.is_inline)
-        .map(|a| a.filename.as_deref().unwrap_or("attachment"))
-        .collect();
-    if !parsed.attachments.is_empty() {
-        let what = if named.is_empty() {
-            "inline images".to_string()
-        } else {
-            named.join(", ")
-        };
-        return Some(format!(
-            "The draft carries attachments ({what}). Sending those from the phone isn't supported yet: send it from CXMail on the Mac."
-        ));
     }
     if parsed.html_body.is_none() && parsed.plain_text.is_none() {
         return Some("The draft has no body.".into());
@@ -169,6 +154,7 @@ fn addrs(list: &[parser::EmailAddress]) -> Vec<Addr> {
 struct Fetched {
     account: db::accounts::Account,
     raw: Vec<u8>,
+    uidvalidity: u32,
     parsed: parser::ParsedMessage,
 }
 
@@ -193,8 +179,8 @@ async fn fetch_draft(
         account
     };
     let mut session = imap::connect_for_account(&account).await?;
-    imap::select_folder(&mut session, folder).await?;
-    if !imap::uid_exists(&mut session, folder, uid).await? {
+    let (uidvalidity, _) = imap::select_folder(&mut session, folder).await?;
+    if !selected_uid_exists(&mut session, uid).await? {
         let _ = imap::disconnect(session, &account.email).await;
         return Err(AppError::NotFound(
             "That draft is gone: it was sent, deleted, or edited (an edit saves it under a new UID). Reopen Drafts.".into(),
@@ -202,9 +188,15 @@ async fn fetch_draft(
     }
     let raw = imap::fetch_body(&mut session, uid).await?;
     // Gotcha #9: the parser can panic on hostile HTML.
-    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser::parse_message(&raw)))
+    let parsed = std::panic::catch_unwind(|| parser::parse_message_without_attachment_text(&raw))
         .map_err(|_| AppError::Parse("The draft could not be parsed.".into()))?;
-    Ok((Fetched { account, raw, parsed }, session))
+    Ok((Fetched { account, raw, parsed, uidvalidity }, session))
+}
+
+async fn selected_uid_exists(session: &mut imap::ImapSession, uid: u32) -> Result<bool, AppError> {
+    session.uid_search(format!("UID {uid}")).await
+        .map(|uids| uids.contains(&uid))
+        .map_err(|error| AppError::Imap(format!("Draft UID lookup failed: {error}")))
 }
 
 pub async fn preview_draft(
@@ -216,7 +208,9 @@ pub async fn preview_draft(
     let (f, session) = fetch_draft(db_path, account_id, folder, uid).await?;
     let _ = imap::disconnect(session, &f.account.email).await;
     let p = &f.parsed;
-    let blocked = blocked_reason(p);
+    let blocked = blocked_reason(p).or_else(|| {
+        parser::reviewed_draft_mime(&f.raw).err().map(str::to_owned)
+    });
     Ok(DraftPreview {
         account_id: account_id.to_string(),
         folder: folder.to_string(),
@@ -231,16 +225,200 @@ pub async fn preview_draft(
         subject: p.subject.clone().unwrap_or_default(),
         sanitized_html: p.sanitized_html.clone(),
         plain_text: p.plain_text.clone(),
-        attachments: p
-            .attachments
-            .iter()
-            .filter(|a| !a.is_inline)
-            .map(|a| a.filename.clone().unwrap_or_else(|| "attachment".into()))
-            .collect(),
+        edit_text: parser::editable_draft_text(p),
+        edit_tail_html: parser::editable_draft_tail(p).map(str::to_owned),
+        attachments: parser::draft_attachment_names(&f.raw),
         sendable: blocked.is_none(),
         blocked_reason: blocked,
         digest: digest(&f.raw),
     })
+}
+
+pub fn compose_identity(
+    db_path: &str,
+    account_id: &str,
+    reply: Option<(&str, u32)>,
+) -> Result<serde_json::Value, AppError> {
+    let conn = rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    crate::mcp::server::compose_identity(&conn, account_id, reply)
+}
+
+const CHANGED_DRAFT: &str = "The draft changed after you reviewed it. Review the draft again.";
+
+pub async fn preview_attachment(
+    db_path: &str,
+    account_id: &str,
+    folder: &str,
+    uid: u32,
+    approved_digest: &str,
+    index: usize,
+) -> Result<Vec<u8>, AppError> {
+    let (f, session) = fetch_draft(db_path, account_id, folder, uid).await?;
+    let _ = imap::disconnect(session, &f.account.email).await;
+    if digest(&f.raw) != approved_digest {
+        return Err(AppError::General(CHANGED_DRAFT.into()));
+    }
+    parser::reviewed_draft_attachment(&f.raw, index, 25 * 1024 * 1024)
+        .map_err(|reason| AppError::General(reason.into()))
+}
+
+#[derive(serde::Deserialize)]
+pub struct DraftEdit {
+    to: Vec<String>,
+    cc: Vec<String>,
+    bcc: Vec<String>,
+    subject: String,
+    body: String,
+}
+
+impl DraftEdit {
+    fn validate(&self) -> Result<(), AppError> {
+        let invalid = [&self.to, &self.cc, &self.bcc].into_iter().any(|list| {
+            list.len() > 50 || list.iter().any(|a| {
+                let Some((local, domain)) = a.split_once('@') else { return true; };
+                a.len() >= 320 || local.is_empty() || !domain.contains('.') || domain.contains('@')
+                    || a.chars().any(|c| c.is_control() || c.is_whitespace() || "<>,;".contains(c))
+            })
+        });
+        if invalid || self.to.is_empty() || self.subject.len() > 998
+            || self.subject.chars().any(char::is_control) || self.body.len() > 256 * 1024
+            || self.body.contains('\0')
+        {
+            return Err(AppError::General("Check the draft recipients, subject and body.".into()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+pub struct DraftEditOutcome {
+    pub uid: u32,
+    pub old_removed: bool,
+}
+
+fn build_edited_draft(
+    f: &Fetched,
+    edit: &DraftEdit,
+    draft_id: &str,
+    new_id: &str,
+) -> Result<Vec<u8>, AppError> {
+    use mail_builder::{headers::raw::Raw, mime::MimePart, MessageBuilder};
+    let mime = if edit.body == parser::editable_draft_text(&f.parsed) {
+        let (mut headers, body) = parser::reviewed_draft_mime(&f.raw)
+            .map_err(|e| AppError::Parse(e.into()))?;
+        headers.extend_from_slice(body);
+        headers
+    } else {
+        parser::replace_draft_prose(&f.raw, &f.parsed, &edit.body)
+            .map_err(|e| AppError::Parse(e.into()))?
+    };
+    let p = &f.parsed;
+    let to = draft_recipients(&edit.to, &p.to_list);
+    let cc = draft_recipients(&edit.cc, &p.cc_list);
+    let bcc = draft_recipients(&edit.bcc, &p.bcc_list);
+    let mut message = MessageBuilder::new()
+        .message_id(new_id)
+        .header(cxmail_email::email::draft_local::DRAFT_ID_HEADER, Raw::new(draft_id))
+        .subject(&edit.subject)
+        .to(smtp::to_address_list(&to));
+    if let Some(name) = &p.from_name {
+        message = message.from((name.as_str(), p.from_email.as_str()));
+    } else {
+        message = message.from(p.from_email.as_str());
+    }
+    if !cc.is_empty() { message = message.cc(smtp::to_address_list(&cc)); }
+    if !bcc.is_empty() { message = message.bcc(smtp::to_address_list(&bcc)); }
+    if let Some(id) = &p.in_reply_to {
+        message = message.in_reply_to(smtp::strip_message_id_brackets(id));
+    }
+    let references = p.references.iter().map(|id| bracket(id)).collect::<Vec<_>>().join(" ");
+    if !references.is_empty() {
+        message = message.header("References", Raw::new(references));
+    }
+    Ok(message.body(MimePart::raw(mime)).write_to_vec()?)
+}
+
+fn draft_recipients(values: &[String], original: &[parser::EmailAddress]) -> Vec<smtp::EmailRecipient> {
+    values.iter().map(|email| smtp::EmailRecipient {
+        email: email.clone(),
+        name: original.iter().find(|r| r.email.eq_ignore_ascii_case(email)).and_then(|r| r.name.clone()),
+    }).collect()
+}
+
+pub async fn edit_reviewed_draft(
+    db_path: &str,
+    account_id: &str,
+    folder: &str,
+    uid: u32,
+    expected_digest: &str,
+    edit: DraftEdit,
+) -> Result<DraftEditOutcome, AppError> {
+    use cxmail_email::email::{draft_local, draft_revisions};
+    edit.validate()?;
+    let conn = rusqlite::Connection::open(db_path)?;
+    let known = db::drafts::find_by_uid(&conn, account_id, folder, uid)?;
+    let (f, mut session) = fetch_draft(db_path, account_id, folder, uid).await?;
+    let mut claim = None;
+    let result = async {
+        if digest(&f.raw) != expected_digest {
+            return Err(AppError::General(CHANGED_DRAFT.into()));
+        }
+        let scan = draft_revisions::scan(&mut session, folder).await?;
+        let id = scan.draft_id_of(uid).map(str::to_owned)
+            .or_else(|| known.as_ref().map(|row| row.draft_id.clone()))
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        // A draft identifier is a generated UUID. Foreign headers don't get
+        // to inject an arbitrary value into the revision header we write.
+        if uuid::Uuid::parse_str(&id).is_err() {
+            return Err(AppError::General("This draft identifier could not be validated.".into()));
+        }
+        let revisions = scan.revisions(&id);
+        if matches!(draft_revisions::resolve(revisions, uid, false), draft_revisions::Resolution::Moved { .. })
+            || known.as_ref().is_some_and(|row| row.uidvalidity != scan.uidvalidity || row.draft_id != id)
+            || scan.uidvalidity != f.uidvalidity
+            || !selected_uid_exists(&mut session, uid).await?
+        {
+            return Err(AppError::General(CHANGED_DRAFT.into()));
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        match db::drafts::claim(&conn, &id, uid, &token)? {
+            db::drafts::ClaimOutcome::Claimed => claim = Some((id.clone(), token)),
+            db::drafts::ClaimOutcome::Missing => {}
+            _ => return Err(AppError::General(CHANGED_DRAFT.into())),
+        }
+        let new_id = format!("{}@cxmail.app", uuid::Uuid::new_v4());
+        let raw = build_edited_draft(&f, &edit, &id, &new_id)?;
+        session.append(folder, Some("(\\Seen \\Draft)"), None, &raw)
+            .await.map_err(|e| AppError::Imap(format!("Saving draft failed: {e}")))?;
+        let new_uid = imap::find_uid_by_message_id(&mut session, folder, &bracket(&new_id)).await?;
+        let retired = draft_revisions::retire(
+            &mut session, folder, &draft_revisions::superseded(revisions, uid, new_uid),
+        ).await;
+        let pointed = if let Some((_, token)) = &claim {
+            db::drafts::advance(&conn, &id, token, scan.uidvalidity, new_uid)
+        } else {
+            db::drafts::link(&conn, &id, account_id, folder, scan.uidvalidity, new_uid)
+        };
+        if let Err(e) = pointed {
+            log::warn!("Could not advance phone-edited draft {id}: {e}");
+        }
+        if let Err(e) = db::messages::delete_uids(&conn, account_id, folder, &retired) {
+            log::warn!("Could not evict superseded phone-edited draft rows: {e}");
+        }
+        if let Err(e) = draft_local::persist_local_draft(&conn, account_id, folder, new_uid, &raw) {
+            log::warn!("Could not cache phone-edited draft {id}: {e}");
+        }
+        Ok(DraftEditOutcome { uid: new_uid, old_removed: retired.contains(&uid) })
+    }.await;
+    if let Some((id, token)) = claim {
+        let _ = db::drafts::release(&conn, &id, &token);
+    }
+    let _ = imap::disconnect(session, &f.account.email).await;
+    if let Ok(saved) = &result {
+        notify(&Envelope::new("draft-updated", account_id, folder, saved.uid)
+            .with_old_uid(uid).with_tool("remote_edit_draft")).await;
+    }
+    result
 }
 
 pub async fn send_draft(
@@ -278,7 +456,7 @@ pub async fn send_draft(
     };
 
     // Point of no return. A failure past here must never lead to a resend.
-    let message_id = match smtp::send_email(&f.account, &email).await {
+    let message_id = match smtp::send_reviewed_draft(&f.account, &email, &f.raw).await {
         Ok(id) => id,
         Err(e) => {
             let _ = imap::disconnect(session, &f.account.email).await;
@@ -376,15 +554,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_no_recipients_and_attachments() {
+    fn refuses_no_recipients() {
         let none = DRAFT
             .replace("To: Ann <ann@example.org>\r\n", "")
             .replace("Cc: bob@example.org\r\n", "")
             .replace("Bcc: secret@example.org\r\n", "");
         assert!(outgoing_from_draft(&parse(&none), &from()).unwrap_err().contains("no recipients"));
-
-        let with_att = "From: me@example.com\r\nTo: ann@example.org\r\nSubject: x\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=plan.pdf\r\n\r\nJVBERi0=\r\n--b--\r\n";
-        let err = outgoing_from_draft(&parse(with_att), &from()).unwrap_err();
-        assert!(err.contains("plan.pdf"), "{err}");
     }
 }

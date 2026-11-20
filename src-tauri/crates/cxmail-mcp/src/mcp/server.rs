@@ -829,6 +829,24 @@ fn signature_for_send_as(
         .or_else(|| get_signature_html(conn, account_id))
 }
 
+/// Preview the same identity and signature the draft writer resolves, without saving.
+pub(crate) fn compose_identity(
+    conn: &rusqlite::Connection,
+    account_id: &str,
+    reply: Option<(&str, u32)>,
+) -> Result<serde_json::Value, cxmail_core::error::AppError> {
+    use cxmail_core::error::AppError;
+    let account = db::accounts::get_by_id(conn, account_id)?
+        .filter(|account| account.is_active)
+        .ok_or_else(|| AppError::NotFound("Account not found".into()))?;
+    let target = reply.map(|(folder, uid)| ReplyTarget::Coordinates { folder: folder.to_owned(), uid });
+    let from = resolve_draft_from(conn, &account, None, target.as_ref(), None)
+        .map_err(|error| AppError::General(error.to_string()))?;
+    let html = signature_for_send_as(conn, account_id, &from)
+        .map(|signature| sanitize_html_lossy(&append_signature("", &signature)));
+    Ok(serde_json::json!({"from": from.email, "html": html}))
+}
+
 /// A one-line note naming the From, emitted only when it is NOT the account's
 /// own address — silence for the ordinary case, so the note means something
 /// when it appears (#34's reasoning).

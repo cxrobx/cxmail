@@ -105,33 +105,69 @@ pub async fn send_email_with_message_id(
     email: &OutgoingEmail,
     message_id: Option<&str>,
 ) -> Result<String, AppError> {
-    let transport = get_smtp_transport(account).await?;
-    let SmtpTransport {
-        host,
-        port,
-        implicit_tls,
-        auth,
-    } = transport;
+    let msg_id = outgoing_message_id(message_id);
+    let styled_html = super::inline_styles::apply_inline_font_styles(&email.html_body);
+    let mut message = outgoing_headers(email, &msg_id).html_body(&styled_html);
+    if let Some(plain) = &email.plain_body {
+        message = message.text_body(plain);
+    }
 
-    log::info!("Sending email via {}:{} as {}", host, port, email.from_email);
+    // Attachments
+    for att in &email.attachments {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&att.data_base64)
+            .map_err(|e| AppError::General(format!("Invalid base64 attachment: {}", e)))?;
+        message = message.attachment(&att.content_type, &att.filename, decoded);
+    }
 
-    // Generate a stable Message-ID before building the message. The public API
-    // uses the bracketed form `<id@host>` (matches what shows up in IMAP threading
-    // headers and what callers store). Internally, mail-builder's MessageBuilder
-    // wraps the value in `<>` itself — passing a bracketed value would produce
-    // `<<id@host>>` in the actual header and break thread correlation.
-    let msg_id = message_id
+    deliver(account, email, &msg_id, serialize_message(message)?).await
+}
+
+/// Send an already reviewed draft with its original MIME body intact.
+pub async fn send_reviewed_draft(
+    account: &Account,
+    email: &OutgoingEmail,
+    raw: &[u8],
+) -> Result<String, AppError> {
+    let msg_id = outgoing_message_id(None);
+    let message = build_reviewed_draft(email, &msg_id, raw)?;
+    deliver(account, email, &msg_id, message).await
+}
+
+fn build_reviewed_draft(
+    email: &OutgoingEmail,
+    msg_id: &str,
+    raw: &[u8],
+) -> Result<Vec<u8>, AppError> {
+    let (mime_headers, body) = super::parser::reviewed_draft_mime(raw)
+        .map_err(|reason| AppError::Parse(reason.into()))?;
+    let mut message = serialize_message(
+        outgoing_headers(email, msg_id).body(mail_builder::mime::MimePart::raw(mime_headers)),
+    )?;
+    message.extend_from_slice(body);
+    Ok(message)
+}
+
+fn serialize_message(message: MessageBuilder<'_>) -> Result<Vec<u8>, AppError> {
+    message
+        .write_to_vec()
+        .map_err(|e| AppError::General(format!("Build message failed: {e}")))
+}
+
+fn outgoing_message_id(message_id: Option<&str>) -> String {
+    // The public API returns bracketed IDs, matching IMAP threading headers.
+    let id = message_id
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("<{}@cxmail.app>", uuid::Uuid::new_v4()));
-    let msg_id = if msg_id.starts_with('<') && msg_id.ends_with('>') {
-        msg_id
+    if id.starts_with('<') && id.ends_with('>') {
+        id
     } else {
-        format!("<{}>", msg_id)
-    };
-    let bare_message_id = msg_id
-        .trim_start_matches('<')
-        .trim_end_matches('>');
+        format!("<{id}>")
+    }
+}
 
+fn outgoing_headers<'a>(email: &'a OutgoingEmail, msg_id: &'a str) -> MessageBuilder<'a> {
+    let bare_message_id = strip_message_id_brackets(msg_id);
     let mut message = MessageBuilder::new();
     message = message.message_id(bare_message_id);
 
@@ -158,13 +194,6 @@ pub async fn send_email_with_message_id(
     // recipient could see who was Bcc'd unless the server happened to strip
     // it. Bcc recipients travel in the SMTP envelope only (`envelope_rcpts`).
     message = message.subject(&email.subject);
-    let styled_html = super::inline_styles::apply_inline_font_styles(&email.html_body);
-    message = message.html_body(&styled_html);
-
-    if let Some(plain) = &email.plain_body {
-        message = message.text_body(plain);
-    }
-
     if let Some(reply_to) = &email.in_reply_to {
         // Pass the bare ID — mail-builder re-wraps in `<` `>`. See strip_message_id_brackets.
         message = message.in_reply_to(strip_message_id_brackets(reply_to));
@@ -174,13 +203,24 @@ pub async fn send_email_with_message_id(
         message = message.header("References", mail_builder::headers::raw::Raw::new(refs.as_str()));
     }
 
-    // Attachments
-    for att in &email.attachments {
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&att.data_base64)
-            .map_err(|e| AppError::General(format!("Invalid base64 attachment: {}", e)))?;
-        message = message.attachment(&att.content_type, &att.filename, decoded);
-    }
+    message
+}
+
+async fn deliver(
+    account: &Account,
+    email: &OutgoingEmail,
+    msg_id: &str,
+    message: Vec<u8>,
+) -> Result<String, AppError> {
+    let transport = get_smtp_transport(account).await?;
+    let SmtpTransport {
+        host,
+        port,
+        implicit_tls,
+        auth,
+    } = transport;
+
+    log::info!("Sending email via {}:{} as {}", host, port, email.from_email);
 
     // `mail-send`'s builder default is a 3600-SECOND timeout, so a dead socket
     // parks a send for an hour with no signal. Everything else in CXMail that
@@ -206,15 +246,13 @@ pub async fn send_email_with_message_id(
         .send(mail_send::smtp::message::Message::new(
             email.from_email.as_str(),
             envelope_rcpts(email),
-            message
-                .write_to_vec()
-                .map_err(|e| AppError::General(format!("Build message failed: {}", e)))?,
+            message,
         ))
         .await
         .map_err(|e| AppError::Imap(format!("SMTP send failed: {}", e)))?;
 
     log::info!("Email sent successfully with Message-ID: {}", msg_id);
-    Ok(msg_id)
+    Ok(msg_id.to_owned())
 }
 
 /// Open and immediately close an authenticated SMTP session.
@@ -338,9 +376,8 @@ mod tests {
         super::EmailRecipient { name: None, email: e.into() }
     }
 
-    #[test]
-    fn envelope_carries_bcc_and_dedupes() {
-        let email = super::OutgoingEmail {
+    fn outgoing_email() -> super::OutgoingEmail {
+        super::OutgoingEmail {
             from_email: "me@example.com".into(),
             from_name: None,
             to: vec![rcpt("ann@example.org"), rcpt(" ")],
@@ -353,27 +390,100 @@ mod tests {
             references: None,
             track_opens: None,
             attachments: vec![],
-        };
+        }
+    }
+
+    #[test]
+    fn envelope_carries_bcc_and_dedupes() {
         assert_eq!(
-            super::envelope_rcpts(&email),
+            super::envelope_rcpts(&outgoing_email()),
             ["ann@example.org", "bob@example.org", "secret@example.org"]
         );
     }
 
     /// The send path must never hand Bcc to the builder: mail-send writes the
     /// builder's headers verbatim, so a `.bcc(...)` there shows every Bcc
-    /// recipient to everyone. (Drafts are different: they keep Bcc.)
+    /// recipient to everyone (gotcha #67). Drafts are different: they keep
+    /// Bcc. Both send entry points build headers in `outgoing_headers` and go
+    /// out through `deliver`, so those two bodies are what this scans.
     #[test]
     fn send_path_never_writes_a_bcc_header() {
         let src = include_str!("smtp.rs");
-        let start = src.find("pub async fn send_email_with_message_id").unwrap();
-        let end = start + src[start..].find("\n}\n").unwrap();
-        let code: String = src[start..end]
-            .lines()
-            .map(|l| l.split("//").next().unwrap_or(""))
-            .collect();
-        assert!(!code.contains(".bcc("), "send_email_with_message_id writes a Bcc header");
-        assert!(code.contains("envelope_rcpts(email)"), "the envelope must carry every recipient");
+        let body = |sig: &str| -> String {
+            let start = src.find(sig).unwrap_or_else(|| panic!("{sig} not found"));
+            let end = start + src[start..].find("\n}\n").unwrap();
+            src[start..end].lines().map(|l| l.split("//").next().unwrap_or("")).collect()
+        };
+        let headers = body("fn outgoing_headers");
+        let deliver = body("async fn deliver");
+        assert!(!headers.contains(".bcc("), "outgoing_headers writes a Bcc header");
+        assert!(!deliver.contains(".bcc("), "deliver writes a Bcc header");
+        assert!(deliver.contains("envelope_rcpts(email)"), "the envelope must carry every recipient");
+        for entry in ["pub async fn send_email_with_message_id", "pub async fn send_reviewed_draft"] {
+            assert!(body(entry).contains("deliver("), "{entry} must send through deliver");
+        }
+    }
+
+    #[test]
+    fn reviewed_draft_keeps_files_and_inline_images_without_copying_bcc() {
+        let raw = concat!(
+            "From: draft@example.com\r\n",
+            "To: original@example.org\r\n",
+            "Bcc: secret@example.org\r\n",
+            "X-CXMail-Draft-Id: private\r\n",
+            "Message-ID: <old@example.com>\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed;\r\n boundary=mixed\r\n\r\n",
+            "--mixed\r\nContent-Type: multipart/related; boundary=related\r\n\r\n",
+            "--related\r\nContent-Type: text/html\r\n\r\n<p>See attached<img src=\"cid:logo\"></p>\r\n",
+            "--related\r\nContent-Type: image/png\r\nContent-ID: <logo>\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nAAECAw==\r\n--related--\r\n",
+            "--mixed\r\nContent-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document\r\n",
+            "Content-Disposition: attachment; filename=plan.docx\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nUEsDBA==\r\n",
+            "--mixed\r\nContent-Type: image/png\r\n",
+            "Content-Disposition: attachment; filename=photo.png\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nBAUGBw==\r\n--mixed--\r\n",
+        );
+        let id = "<new@example.com>";
+        let wire = super::build_reviewed_draft(&outgoing_email(), id, raw.as_bytes()).unwrap();
+        let wire_text = std::str::from_utf8(&wire).unwrap();
+        let (headers, body) = wire_text.split_once("\r\n\r\n").unwrap();
+        assert!(headers.contains("Message-ID: <new@example.com>"));
+        assert!(headers.contains("From: <me@example.com>"));
+        for private in ["Bcc:", "secret@example.org", "X-CXMail-Draft-Id", "<old@example.com>"] {
+            assert!(!headers.contains(private), "{private} leaked into the message");
+        }
+        assert_eq!(body, raw.split_once("\r\n\r\n").unwrap().1);
+        assert_eq!(
+            crate::email::parser::draft_attachment_names(&wire),
+            ["plan.docx", "photo.png"],
+        );
+        let attachments = crate::email::parser::extract_all_attachments(&wire);
+        let (_, _, bytes, _) = attachments.iter().find(|part| part.0 == "plan.docx").unwrap();
+        assert_eq!(bytes, b"PK\x03\x04");
+        let parser = crate::email::parser::reviewed_draft_attachment;
+        assert_eq!(parser(raw.as_bytes(), 0, 4).unwrap(), b"PK\x03\x04");
+        assert_eq!(parser(raw.as_bytes(), 1, 4).unwrap(), [4, 5, 6, 7]);
+        assert!(parser(raw.as_bytes(), 0, 3).is_err());
+        assert!(parser(raw.as_bytes(), 2, 4).is_err());
+        let parsed = mail_parser::MessageParser::default().parse(&wire).unwrap();
+        assert!(parsed.body_html(0).unwrap().contains("cid:logo"));
+    }
+
+    #[test]
+    fn reviewed_text_attachment_keeps_original_charset() {
+        let raw = b"From: me@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nHello\r\n--b\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Disposition: attachment; filename=notes.txt\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\ncaf=E9\r\n--b--\r\n";
+        assert_eq!(
+            crate::email::parser::reviewed_draft_attachment(raw, 0, 4).unwrap(),
+            b"caf\xe9",
+        );
+    }
+
+    #[test]
+    fn reviewed_draft_refuses_bare_cr_in_mime_header() {
+        let raw = b"Content-Type: text/plain\rBcc: secret@example.org\r\n\r\nhello\r\n";
+        assert!(super::build_reviewed_draft(&outgoing_email(), "<new@example.com>", raw).is_err());
     }
 
     #[test]

@@ -247,6 +247,15 @@ struct MailboxView: View {
                     }.accessibilityIdentifier("recoverDraft")
                 }
             }
+            if tab == .drafts, !store.recoveredEdits.isEmpty {
+                Section("Draft edits on this iPhone") {
+                    ForEach(store.recoveredEdits.values.sorted { $0.subject < $1.subject }) { draft in
+                        Button { store.composer = draft } label: {
+                            Label(draft.subject.isEmpty ? "Continue draft edit" : draft.subject, systemImage: "square.and.pencil")
+                        }
+                    }
+                }
+            }
             if tab == .search, !store.query.isEmpty, let status = store.searchStatusText {
                 Section {
                     HStack {

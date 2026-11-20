@@ -123,6 +123,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Signature lookup is read-only even during startup.
+    if args.get(1).map(String::as_str) == Some("remote") && args.get(2).map(String::as_str) == Some("compose-identity") {
+        let (code, out) = run_remote(&db_path.to_string_lossy(), &args[2..]).await;
+        println!("{out}");
+        std::process::exit(code);
+    }
+
     tracing::info!("CXMail MCP server starting, DB: {:?}", db_path);
 
     // Run schema migrations. The Tauri app also runs these on startup, but the
@@ -354,6 +361,18 @@ async fn run_remote(db_path: &str, args: &[String]) -> (i32, String) {
     let err = |m: String| (1, serde_json::json!({ "error": m }).to_string());
     let uid = |s: Option<&String>| s.and_then(|s| s.parse::<u32>().ok());
     match args.first().map(String::as_str) {
+        Some("compose-identity") if args.len() == 2 || args.len() == 4 => {
+            let reply = if args.len() == 4 {
+                let Some(u) = uid(args.get(3)).filter(|u| *u > 0) else {
+                    return err("Invalid reply UID".into());
+                };
+                Some((args[2].as_str(), u))
+            } else { None };
+            match rs::compose_identity(db_path, &args[1], reply) {
+                Ok(identity) => (0, identity.to_string()),
+                Err(e) => err(e.to_string()),
+            }
+        }
         Some("image-policy") if args.len() == 4 => match uid(args.get(3)) {
             Some(u) => match cxmail_lib::email::image_policy::load(std::path::Path::new(db_path), &args[1], &args[2], u).await {
                 Ok(p) => (0, serde_json::to_string(&p).unwrap_or_default()),
@@ -372,6 +391,29 @@ async fn run_remote(db_path: &str, args: &[String]) -> (i32, String) {
             Some(u) => match rs::preview_draft(db_path, &args[1], &args[2], u).await {
                 Ok(p) => (0, serde_json::to_string(&p).unwrap_or_default()),
                 Err(e) => err(e.to_string()),
+            },
+            None => err("uid must be a number".into()),
+        },
+        Some("draft-attachment") if args.len() == 6 => {
+            match (uid(args.get(3)), args[5].parse::<usize>()) {
+                (Some(u), Ok(index)) => match rs::preview_attachment(db_path, &args[1], &args[2], u, &args[4], index).await {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        (0, serde_json::json!({ "data": encoded }).to_string())
+                    }
+                    Err(e) => err(e.to_string()),
+                },
+                _ => err("Invalid draft UID or attachment index".into()),
+            }
+        }
+        Some("edit-draft") if args.len() == 5 => match uid(args.get(3)) {
+            Some(u) => match serde_json::from_reader(std::io::stdin().lock()) {
+                Ok(edit) => match rs::edit_reviewed_draft(db_path, &args[1], &args[2], u, &args[4], edit).await {
+                    Ok(saved) => (0, serde_json::to_string(&saved).unwrap_or_default()),
+                    Err(e) => err(e.to_string()),
+                },
+                Err(_) => err("Invalid draft edit".into()),
             },
             None => err("uid must be a number".into()),
         },

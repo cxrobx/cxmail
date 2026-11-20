@@ -107,6 +107,7 @@ struct DraftPreview: Decodable {
     var bcc: [MailAddress]
     var subject: String
     var plainText: String?
+    var editText: String?
     var attachments: [String]
     var sendable: Bool
     var blockedReason: String?
@@ -115,6 +116,7 @@ struct DraftPreview: Decodable {
 }
 
 struct DraftResult: Decodable { var ok: Bool; var result: String?; var draft: MessageRef? }
+struct ComposeContext: Decodable { var from: String; var html: String? }
 struct SendResult: Decodable { var ok: Bool; var draftRemoved: Bool; var note: String? }
 struct ScheduledSend: Decodable, Identifiable {
     var id: Int
@@ -150,6 +152,13 @@ enum MailTab: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+struct DraftRevision: Codable, Equatable {
+    var ref: MessageRef
+    var digest: String
+    var from: String
+    var attachments: [String]
+}
+
 struct LocalDraft: Codable, Equatable, Identifiable {
     var id = UUID()
     var account = ""
@@ -158,13 +167,18 @@ struct LocalDraft: Codable, Equatable, Identifiable {
     var subject = ""
     var body = ""
     var reply: MessageRef?
+    var revision: DraftRevision?
+    var bcc: String?
     var hasContent: Bool { !to.isEmpty || !subject.isEmpty || !body.isEmpty }
     static func addresses(_ raw: String) -> [String] {
         raw.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace }).map(String.init)
     }
     var valid: Bool {
         let recipients = Self.addresses(to)
-        return !account.isEmpty && !recipients.isEmpty && recipients.count <= 50 && Self.addresses(cc).count <= 50 && (recipients + Self.addresses(cc)).allSatisfy {
+        let copies = Self.addresses(cc)
+        let blindCopies = Self.addresses(bcc ?? "")
+        return !account.isEmpty && !recipients.isEmpty && recipients.count <= 50 && copies.count <= 50
+            && blindCopies.count <= 50 && (recipients + copies + blindCopies).allSatisfy {
             $0.count < 320 &&
             $0.range(of: #"^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$"#, options: .regularExpression) != nil
         } && subject.count <= 998

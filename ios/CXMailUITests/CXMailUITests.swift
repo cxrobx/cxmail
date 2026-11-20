@@ -252,6 +252,121 @@ final class CXMailUITests: XCTestCase {
         confirmSend()
         XCTAssertTrue(app.alerts.staticTexts["Sent."].waitForExistence(timeout: 10))
     }
+
+    func testComposerShowsSignatureBelowWritingArea() {
+        XCUIDevice.shared.orientation = .portrait
+        launch()
+        if app.frame.width >= 669 {
+            app.terminate()
+            XCUIDevice.shared.orientation = .landscapeLeft
+            launch(["--duo-flat"])
+        }
+        let compose = app.buttons["compose"]
+        if !compose.exists, app.buttons["showInbox"].exists { app.buttons["showInbox"].tap() }
+        XCTAssertTrue(compose.waitForExistence(timeout: 10))
+        compose.tap()
+        let body = app.textFields["composeBody"]
+        let signature = app.webViews.staticTexts["Morgan Reese"]
+        XCTAssertTrue(signature.waitForExistence(timeout: 10))
+        XCTAssertLessThan(body.frame.minY, signature.frame.minY)
+        XCTAssertTrue(app.webViews.staticTexts["Bluebird Studio"].exists)
+        XCTAssertTrue(app.buttons["saveDraft"].exists)
+        capture("Writing area and desktop signature")
+        let from = app.buttons["composeFrom"]
+        from.tap()
+        let personal = app.buttons["personal@example.com"]
+        XCTAssertTrue(personal.waitForExistence(timeout: 5))
+        personal.tap()
+        XCTAssertFalse(signature.exists)
+        from.tap()
+        app.buttons["me@example.com"].tap()
+        XCTAssertTrue(signature.waitForExistence(timeout: 5))
+        app.buttons["showComposeCopies"].tap()
+        XCTAssertTrue(app.textFields["composeCc"].exists)
+        XCTAssertTrue(app.textFields["composeBcc"].exists)
+    }
+
+    func testComposerAtLargestTextSize() {
+        XCUIDevice.shared.orientation = .portrait
+        launch(["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let compose = app.buttons["compose"]
+        XCTAssertTrue(compose.waitForExistence(timeout: 10))
+        compose.tap()
+        let to = app.textFields["composeTo"]
+        XCTAssertTrue(to.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(to.frame.height, 35, "The large text override must reach the composer")
+        XCTAssertGreaterThan(to.frame.width, 210, "Leave room to type with Cc/Bcc below")
+        let from = app.buttons["composeFrom"]
+        XCTAssertTrue(from.exists)
+        XCTAssertLessThanOrEqual(from.frame.maxY, to.frame.minY)
+        capture("Composer at accessibility XXXL")
+    }
+    func testEditSavedDraftFromReview() {
+        let fixture = ["--draft-attachment-fixture"]
+        launch(fixture)
+        if app.frame.width >= 669 {
+            app.terminate()
+            XCUIDevice.shared.orientation = .landscapeLeft
+            launch(fixture + ["--duo-flat"])
+        }
+        tapDraftsTab()
+        let draft = app.buttons["message-20"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 10))
+        draft.tap()
+        let edit = app.buttons["editReviewedDraft"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10))
+        edit.tap()
+        XCTAssertTrue(app.navigationBars["Edit draft"].waitForExistence(timeout: 10))
+        let subject = app.textFields["composeSubject"]
+        XCTAssertTrue(subject.waitForExistence(timeout: 10))
+        capture("Editing a saved draft")
+        subject.tap()
+        subject.typeText(" tomorrow")
+        let changedSubject = subject.value as? String ?? ""
+        XCTAssertTrue(changedSubject.contains("tomorrow"))
+        app.buttons["reviewCompose"].tap()
+        XCTAssertTrue(app.staticTexts[changedSubject].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons["reviewAttachment-0"].label, "Study-planner.docx")
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
+    }
+
+    func testDraftAttachmentPreviewAndExpiredReview() {
+        var fixture = ["--draft-attachment-fixture", "--word-page-fixture"]
+        launch(fixture)
+        if app.frame.width >= 669 {
+            app.terminate()
+            XCUIDevice.shared.orientation = .landscapeLeft
+            fixture.append("--duo-flat")
+            launch(fixture)
+        }
+        tapDraftsTab()
+        let row = app.buttons["message-20"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let attachment = app.buttons["reviewAttachment-0"]
+        XCTAssertTrue(attachment.waitForExistence(timeout: 15))
+        XCTAssertEqual(attachment.label, "Study-planner.docx")
+        capture("Clickable Word attachment tile")
+        attachment.tap()
+        let page = app.descendants(matching: .any).matching(identifier: "wordPagePreview").firstMatch
+        XCTAssertTrue(page.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["shareDraftAttachment"].isEnabled)
+        capture("Paginated Word attachment")
+        app.buttons["closeDraftAttachment"].tap()
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].isEnabled)
+
+        app.terminate()
+        launch(fixture + ["--attachment-review-expired"])
+        tapDraftsTab()
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertTrue(attachment.waitForExistence(timeout: 15))
+        attachment.tap()
+        XCTAssertTrue(app.staticTexts["sendError"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["sendReviewedDraft"].isEnabled)
+    }
+
     func testCompactSendToolbarScheduleAndCancel() {
         launch()
         if app.frame.width >= 669 {

@@ -1,7 +1,7 @@
 import Foundation
 
 enum MailError: LocalizedError {
-    case configuration, server(String), unexpected, draftUnavailable, searchExpired, searchBusy
+    case configuration, server(String), unexpected, draftUnavailable, reviewExpired, searchExpired, searchBusy
     var errorDescription: String? {
         switch self {
         case .configuration: "The mini’s HTTPS address is missing. Rebuild with scripts/configure.sh."
@@ -9,6 +9,7 @@ enum MailError: LocalizedError {
         case .unexpected: "The mini returned an unexpected response."
         case .searchExpired: "Search expired. Search again to refresh the results."
         case .searchBusy: "Search is busy. Try again shortly."
+        case .reviewExpired: "The draft review expired or the draft changed. Refresh before sending."
         case .draftUnavailable: "That draft changed or was removed. Choose its latest version from Drafts."
         }
     }
@@ -63,7 +64,7 @@ final class APIClient {
     static func timeout(for path: String) -> TimeInterval {
         if path == "/api/search" { return 45 }
         if path == "/api/message" { return 210 }
-        if ["/api/send", "/api/schedule", "/api/draft-preview", "/api/body", "/api/image-trust"].contains(path) { return 150 }
+        if ["/api/send", "/api/schedule", "/api/draft-preview", "/api/draft-edit", "/api/draft-attachment", "/api/body", "/api/image-trust"].contains(path) { return 150 }
         return path == "/api/chat/events" ? 35 : 100
     }
     func data(_ path: String, query: [URLQueryItem] = [], body: [String: Any]? = nil) async throws -> Data {
@@ -81,7 +82,11 @@ final class APIClient {
             let data = try Fixtures.response(path, query: query, body: body)
             let mode = query.first { $0.name == "images" }?.value
             let allow = mode == "1" || (mode == "auto" && Fixtures.imageSenderTrusted && !ProcessInfo.processInfo.arguments.contains("--image-auth-failed"))
-            let response = HTTPURLResponse(url: URL(string: "https://fixture.example.ts.net")!, statusCode: 200, httpVersion: nil, headerFields: ["X-CXMail-Images-Allowed": allow ? "1" : "0"])!
+            var headers = ["X-CXMail-Images-Allowed": allow ? "1" : "0"]
+            if path == "/api/draft-attachment" {
+                headers["Content-Type"] = data.starts(with: "%PDF-".utf8) ? "application/pdf" : "application/octet-stream"
+            }
+            let response = HTTPURLResponse(url: URL(string: "https://fixture.example.ts.net")!, statusCode: 200, httpVersion: nil, headerFields: headers)!
             return (data, response)
         }
         #endif
@@ -92,6 +97,7 @@ final class APIClient {
             let error = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             if response.statusCode == 410 && error?["code"] as? String == "search_expired" { throw MailError.searchExpired }
             if response.statusCode == 429 && error?["code"] as? String == "search_busy" { throw MailError.searchBusy }
+            if response.statusCode == 409 && error?["code"] as? String == "review_expired" { throw MailError.reviewExpired }
             if response.statusCode == 410 && error?["code"] as? String == "draft_gone" { throw MailError.draftUnavailable }
             if response.statusCode == 403 { throw MailError.server("Access denied. Connect Tailscale using the mini’s allowed account.") }
             throw MailError.server(error?["error"] as? String ?? "The mini returned HTTP \(response.statusCode).")
@@ -103,6 +109,18 @@ final class APIClient {
     }
     func post<T: Decodable>(_ path: String, body: [String: Any], as: T.Type = T.self) async throws -> T {
         try APIClient.decoder.decode(T.self, from: await data(path, body: body))
+    }
+    func draftAttachment(query: [URLQueryItem]) async throws -> Data {
+        let (data, response) = try await transfer("/api/draft-attachment", query: query, body: nil)
+        guard response.mimeType == "application/octet-stream" else { throw MailError.unexpected }
+        return data
+    }
+    func officeAttachmentPreview(query: [URLQueryItem], format: String) async throws -> Data {
+        let (data, response) = try await transfer("/api/draft-attachment",
+            query: query + [.init(name: "render", value: format)], body: nil)
+        guard response.mimeType == "application/pdf", data.starts(with: "%PDF-".utf8)
+        else { throw MailError.unexpected }
+        return data
     }
     func imageDocument(query: [URLQueryItem]) async throws -> ImageDocument {
         let (data, response) = try await transfer("/api/body", query: query, body: nil)

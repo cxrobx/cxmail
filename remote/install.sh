@@ -26,6 +26,10 @@ fi
 
 SEARCH_BIN=${CXMAIL_SEARCH_BIN:-/Applications/CXMail.app/Contents/MacOS/cxmail-mcp}
 [[ -x "$SEARCH_BIN" ]] || { echo "Missing signed search helper: $SEARCH_BIN" >&2; exit 1; }
+# A standalone send helper can be updated without replacing the desktop app.
+# Preserve an existing override when reinstalling the Remote service.
+SEND_BIN=${CXMAIL_SEND_BIN-$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CXMAIL_SEND_BIN' "$PLIST" 2>/dev/null || true)}
+[[ -z "$SEND_BIN" || -x "$SEND_BIN" ]] || { echo "Missing signed send helper: $SEND_BIN" >&2; exit 1; }
 
 LOGIN=${CXMAIL_REMOTE_LOGINS:-$("$TS" status --json | /usr/bin/python3 -c '
 import json, sys
@@ -55,6 +59,10 @@ cat > "$PLIST" <<EOF
 </dict>
 </plist>
 EOF
+if [[ -n "$SEND_BIN" ]]; then
+  plutil -insert EnvironmentVariables.CXMAIL_SEND_BIN -string "$SEND_BIN" "$PLIST"
+  plutil -convert xml1 "$PLIST"
+fi
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"

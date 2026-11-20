@@ -2,6 +2,7 @@ use crate::email::calendar as ical_util;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use chrono::{FixedOffset, TimeZone, Utc};
+use mail_parser::MimeHeaders;
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -442,6 +443,208 @@ fn parse_message_opts(raw: &[u8], extract_attachment_text: bool) -> ParsedMessag
     }
 }
 
+/// Return the top-level MIME headers and the untouched body of an IMAP draft.
+///
+/// The SMTP builder supplies fresh message headers. Copy only MIME fields,
+/// including their folded lines, so draft metadata and Bcc can't leak.
+pub fn reviewed_draft_mime(raw: &[u8]) -> Result<(Vec<u8>, &[u8]), &'static str> {
+    let invalid = "The draft has malformed headers. Reopen and save it before sending.";
+    let end = find_header_block_end(raw)
+        .filter(|&end| end <= RAW_HEADER_CAP)
+        .ok_or(invalid)?;
+    let body = raw[end..]
+        .strip_prefix(b"\r\n")
+        .or_else(|| raw[end..].strip_prefix(b"\n"))
+        .ok_or(invalid)?;
+    let mut headers = Vec::new();
+    let mut keep = false;
+    for line in raw[..end].split_inclusive(|&b| b == b'\n') {
+        let line = line.strip_suffix(b"\n").ok_or(invalid)?;
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.iter().any(|&b| b.is_ascii_control() && b != b'\t') {
+            return Err(invalid);
+        }
+        if !line.starts_with(b" ") && !line.starts_with(b"\t") {
+            let colon = line.iter().position(|&b| b == b':').ok_or(invalid)?;
+            let name = &line[..colon];
+            if name.is_empty() || name.iter().any(|&b| !b.is_ascii_graphic()) {
+                return Err(invalid);
+            }
+            keep = [
+                b"Content-Type".as_slice(),
+                b"Content-Transfer-Encoding",
+                b"Content-Disposition",
+                b"Content-ID",
+                b"Content-Description",
+                b"Content-Language",
+                b"Content-Location",
+            ]
+            .iter()
+            .any(|field| name.eq_ignore_ascii_case(field));
+        }
+        if keep {
+            headers.extend_from_slice(line);
+            headers.extend_from_slice(b"\r\n");
+        }
+    }
+    headers.extend_from_slice(b"\r\n");
+    Ok((headers, body))
+}
+
+/// Signature, quoted history and complex HTML below the editable prose travel
+/// with the original file parts when editing a draft as plain text.
+fn draft_html_parts(html: &str) -> (&str, &str) {
+    static TAIL: OnceLock<Regex> = OnceLock::new();
+    let tail = TAIL.get_or_init(|| {
+        Regex::new(r#"(?is)<(?:table|blockquote)\b|<div\b[^>]*(?:data-cx-signature|email-signature|gmail_quote)[^>]*>"#)
+            .expect("draft tail expression")
+    });
+    html.split_at(tail.find(html).map_or(html.len(), |m| m.start()))
+}
+
+pub fn editable_draft_text(parsed: &ParsedMessage) -> String {
+    if let Some(html) = &parsed.html_body {
+        let (prose, _) = draft_html_parts(html);
+        html_to_plain_text(prose)
+    } else {
+        parsed.plain_text.clone().unwrap_or_default()
+    }
+    .trim()
+    .replace("\r\n", "\n")
+}
+
+pub fn editable_draft_tail(parsed: &ParsedMessage) -> Option<&str> {
+    let (_, tail) = draft_html_parts(parsed.sanitized_html.as_deref()?);
+    (!tail.trim().is_empty()).then_some(tail)
+}
+
+/// Rewrite the body leaves only. File parts, their MIME boundaries and their
+/// encoded bytes remain in the original message.
+pub fn replace_draft_prose(
+    raw: &[u8],
+    parsed: &ParsedMessage,
+    text: &str,
+) -> Result<Vec<u8>, &'static str> {
+    let unsupported = "The draft body format could not be edited safely.";
+    let message = mail_parser::MessageParser::default().parse(raw).ok_or(unsupported)?;
+    let mut parts: Vec<_> = message.html_body.iter().chain(&message.text_body).copied().collect();
+    parts.sort_unstable();
+    parts.dedup();
+    if parts.is_empty() || parts.iter().any(|&id| id >= message.parts.len()) {
+        return Err(unsupported);
+    }
+    let mut ranges = Vec::new();
+    for id in parts {
+        let part = &message.parts[id];
+        if part.is_encoding_problem || part.offset_header >= part.offset_end || part.offset_end > raw.len() {
+            return Err(unsupported);
+        }
+        let original = part.text_contents().ok_or(unsupported)?;
+        let (kind, body) = match part.body {
+            mail_parser::PartType::Html(_) => {
+                let (_, remainder) = draft_html_parts(original);
+                let escaped = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+                ("text/html", format!("<p>{}</p>{remainder}", escaped.replace('\n', "<br>")))
+            }
+            mail_parser::PartType::Text(_) => {
+                let prose = editable_draft_text(parsed);
+                // Carry a corresponding plain-text signature only when the
+                // original alternative begins with the exact editable prose.
+                let normalized = original.replace("\r\n", "\n");
+                let tail = normalized.strip_prefix(&prose).filter(|tail| !prose.is_empty() && tail.starts_with('\n'));
+                ("text/plain", format!("{text}{}", tail.unwrap_or("")))
+            }
+            _ => return Err(unsupported),
+        };
+        // Encode the entire replacement. Authored lines can never collide
+        // with one of the original multipart boundary markers.
+        let mut transfer = Vec::new();
+        mail_builder::encoders::base64::base64_encode_mime(body.as_bytes(), &mut transfer, false)
+            .map_err(|_| unsupported)?;
+        let mut mime = mail_builder::mime::MimePart::new(format!("{kind}; charset=utf-8"), transfer)
+            .transfer_encoding("base64");
+        if let Some(cid) = part.content_id() {
+            if cid.chars().any(char::is_control) { return Err(unsupported); }
+            mime = mime.cid(cid.trim_matches(['<', '>']));
+        }
+        let mut replacement = Vec::new();
+        mime.write_part(&mut replacement).map_err(|_| unsupported)?;
+        ranges.push((id, part.offset_header, part.offset_end, replacement));
+    }
+    if let [(0, .., replacement)] = ranges.as_slice() {
+        // The caller supplies the outer message headers.
+        return Ok(replacement.clone());
+    }
+    // A multipart message's outer MIME headers still name the original boundaries.
+    ranges.sort_by_key(|(_, start, _, _)| *start);
+    let (headers, original_body) = reviewed_draft_mime(raw)?;
+    let mut result = headers;
+    let mut cursor = raw.len() - original_body.len();
+    for (_, start, end, replacement) in ranges {
+        let prefix = raw.get(cursor..start).ok_or(unsupported)?;
+        result.extend_from_slice(prefix);
+        result.extend_from_slice(&replacement);
+        cursor = end;
+    }
+    result.extend_from_slice(&raw[cursor..]);
+    Ok(result)
+}
+
+/// Files shown in draft review, in the same order as the attachment endpoint.
+pub fn draft_attachment_names(raw: &[u8]) -> Vec<String> {
+    let Some(message) = mail_parser::MessageParser::default().parse(raw) else {
+        return Vec::new();
+    };
+    draft_file_parts(&message).map(|part| draft_filename(part)).collect()
+}
+
+/// Return the reviewed file, with a size limit before copying decoded bytes.
+pub fn reviewed_draft_attachment(raw: &[u8], index: usize, limit: usize) -> Result<Vec<u8>, &'static str> {
+    let message = mail_parser::MessageParser::default().parse(raw).ok_or("The draft could not be parsed.")?;
+    let part = draft_file_parts(&message).nth(index).ok_or("That attachment is unavailable.")?;
+    if part.is_encoding_problem || part.sub_parts().is_some() {
+        return Err("This attachment could not be decoded.");
+    }
+    // mail-parser transcodes text bodies to UTF-8. A downloadable file must
+    // keep its own charset and bytes after MIME transfer decoding.
+    let contents = if matches!(part.body, mail_parser::PartType::Text(_) | mail_parser::PartType::Html(_)) {
+        use mail_parser::{decoders, Encoding};
+        let error = "This attachment could not be decoded.";
+        let encoded = raw.get(part.offset_body..part.offset_end).ok_or(error)?;
+        match part.encoding {
+            Encoding::None => std::borrow::Cow::Borrowed(encoded),
+            Encoding::Base64 => std::borrow::Cow::Owned(decoders::base64::base64_decode(encoded).ok_or(error)?),
+            Encoding::QuotedPrintable => std::borrow::Cow::Owned(decoders::quoted_printable::quoted_printable_decode(encoded).ok_or(error)?),
+        }
+    } else {
+        std::borrow::Cow::Borrowed(part.contents())
+    };
+    if contents.len() > limit {
+        return Err("This attachment is too large to preview on the phone.");
+    }
+    Ok(contents.into_owned())
+}
+
+fn draft_filename(part: &mail_parser::MessagePart<'_>) -> String {
+    filename_from_headers(part.headers()).unwrap_or_else(|| "attachment".into())
+}
+
+fn draft_file_parts<'a, 'r>(
+    message: &'a mail_parser::Message<'r>,
+) -> impl Iterator<Item = &'a mail_parser::MessagePart<'r>> + 'a {
+    real_attachment_indices(message, orphan_body_index(message))
+        .into_iter()
+        .filter_map(|index| {
+            let part = message.attachment(index)?;
+            let disposition = part.content_disposition();
+            let attached = disposition.is_some_and(|d| d.is_attachment());
+            let inline = disposition.is_some_and(|d| d.is_inline())
+                || (part.content_id().is_some()
+                    && part.content_type().is_some_and(|ct| ct.ctype().eq_ignore_ascii_case("image")));
+            (attached || !inline).then_some(part)
+        })
+}
+
 /// Extract the binary data of an attachment by index from raw message bytes.
 pub fn extract_attachment(raw: &[u8], index: usize) -> Option<(String, Vec<u8>)> {
     let message = mail_parser::MessageParser::default().parse(raw)?;
@@ -752,6 +955,34 @@ mod tests {
     /// each UTF-8 byte of `“` became its own char and was re-encoded — the inbox
     /// list showed `âA writerâand` for `“A writer—and`. Mutation-fails if the
     /// byte accumulator is reverted to a String of `as char` pushes.
+    #[test]
+    fn mobile_draft_edit_keeps_signature_quote_and_file() {
+        let raw = concat!(
+            "From: me@example.com\r\nTo: ann@example.org\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n",
+            "--m\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n",
+            "--a\r\nContent-Type: text/plain\r\n\r\nHello\r\nMy signature\r\n",
+            "--a\r\nContent-Type: text/html\r\n\r\n",
+            "<p>Hello</p><div class=\"email-signature\"><table><tr><td>My signature</td></tr></table></div>",
+            "<blockquote>Original quote</blockquote>\r\n--a--\r\n",
+            "--m\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=plan.pdf\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nAAECAw==\r\n--m--\r\n",
+        );
+        let parsed = super::parse_message_without_attachment_text(raw.as_bytes());
+        assert_eq!(super::editable_draft_text(&parsed), "Hello");
+        let tail = super::editable_draft_tail(&parsed).unwrap();
+        assert!(tail.starts_with("<div class=\"email-signature\">"));
+        assert!(tail.contains("Original quote"));
+        let edited = super::replace_draft_prose(raw.as_bytes(), &parsed, "Updated & <clear>").unwrap();
+        let mut wire = b"From: me@example.com\r\nTo: ann@example.org\r\nMIME-Version: 1.0\r\n".to_vec();
+        wire.extend(edited);
+        let reopened = super::parse_message_without_attachment_text(&wire);
+        let html = reopened.html_body.unwrap();
+        assert!(html.contains("Updated &amp; &lt;clear&gt;"), "{html}");
+        assert!(html.contains("<table>") && html.contains("My signature") && html.contains("Original quote"), "{html}");
+        assert!(reopened.plain_text.unwrap().contains("Updated & <clear>"));
+        assert_eq!(super::reviewed_draft_attachment(&wire, 0, 1024).unwrap(), [0, 1, 2, 3]);
+    }
+
     #[test]
     fn html_to_plain_text_keeps_multibyte_characters_intact() {
         let html = "<p>\u{201C}A writer\u{2014}and, I believe, generally all \
