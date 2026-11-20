@@ -191,6 +191,26 @@ def reader_mcp(responses):
     return client
 
 
+class ClientHangup(unittest.TestCase):
+    def test_reply_to_a_closed_client_is_not_an_error(self):
+        # The iPhone reader cancels its mark-read when you leave a message;
+        # the reply then hits a closed pipe. That must end quietly, not raise
+        # into do_POST's OSError branch and get relabelled as a 503.
+        class Closed:
+            def write(self, _):
+                raise BrokenPipeError(32, "Broken pipe")
+        h = server.Handler.__new__(server.Handler)
+        h.wfile = Closed()
+        h.request_version = "HTTP/1.1"
+        h.command, h.path = "POST", "/api/action"
+        h.requestline = "POST /api/action HTTP/1.1"
+        h.client_address = ("127.0.0.1", 0)
+        h.close_connection = False
+        with patch.object(sys, "stderr"):
+            h._send(200, {"ok": True})
+        self.assertTrue(h.close_connection)
+
+
 class ReaderEnvelope(unittest.TestCase):
     def test_nonce_must_match_and_envelope_must_be_complete(self):
         block = fenced_block("read_email", "body")

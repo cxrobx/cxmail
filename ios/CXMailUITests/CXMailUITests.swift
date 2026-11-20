@@ -190,6 +190,8 @@ final class CXMailUITests: XCTestCase {
         app.buttons["BackButton"].tap()
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         XCTAssertTrue(row.isEnabled, "A pending read acknowledgement must not block navigation")
+        XCTAssertFalse(app.buttons["retryConnection"].waitForExistence(timeout: 2),
+                       "Leaving the reader cancels its mark-read; that is not a connection failure")
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.75)).tap()
         XCTAssertTrue(app.staticTexts["readerSubject"].waitForExistence(timeout: 5))
         capture("Reopened with one tap during mark-read")

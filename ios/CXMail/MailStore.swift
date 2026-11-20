@@ -265,9 +265,19 @@ final class MailStore {
             if name != "read" { notice = ["archive": "Archived", "trash": "Moved to Trash", "move": "Moved", "star": "Starred", "unstar": "Star removed", "unread": "Marked unread"][name] }
             return true
         } catch {
+            // A cancelled request is not a failed one: the reader's
+            // `.task(id:)` cancels its automatic mark-read when you leave the
+            // message, often after the mini already applied it. Keep the
+            // optimistic state and stay quiet; the next refresh reconciles.
+            if Self.isCancellation(error) { return false }
             if listKey == key && generation == token { rows = previous }
             self.error = friendly(error); return false
         }
+    }
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let url = error as? URLError, url.code == .cancelled { return true }
+        return false
     }
     func newDraft(reply: MailMessage? = nil, all: Bool = false) {
         guard composer == nil else { return }
@@ -308,6 +318,7 @@ final class MailStore {
         snapshot = .init(accounts: snapshot.accounts); rows = []; selected = nil; cache.remove("mail-v2.json")
     }
     func friendly(_ error: Error) -> String {
+        if Self.isCancellation(error) { return "The request was cancelled before the mini answered." }
         if error is URLError { return "Can’t reach the mini. Check Tailscale and that CXMail is running. Saved mail is still available." }
         return error.localizedDescription
     }

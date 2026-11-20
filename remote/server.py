@@ -1273,8 +1273,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         for k, v in (extra or {}).items():
             self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The client hung up before the reply (the iPhone reader cancels
+            # its mark-read when you leave a message). The work already
+            # happened; this is not a server failure, so it must not reach a
+            # handler's OSError branch and be relabelled as a 503.
+            self.close_connection = True
+            sys.stderr.write("client closed before reply: {} {}\n".format(self.command, self.path.split("?")[0]))
 
     def _err(self, code, msg):
         self._send(code, {"error": msg})
