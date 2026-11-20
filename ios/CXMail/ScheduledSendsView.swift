@@ -14,7 +14,7 @@ struct ScheduleSendView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            MailForm {
                 Section {
                     Text(preview.subject.isEmpty ? "(no subject)" : preview.subject).font(.headline)
                     AddressLine(title: "From", addresses: [preview.from])
@@ -86,7 +86,7 @@ struct ScheduledSendsView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            List {
+            MailForm {
                 if let error {
                     Section {
                         Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)

@@ -64,7 +64,7 @@ struct ChatMarkdown: View {
                         }.padding(.horizontal, 12)
                         ScrollView(.horizontal) { Text(code).font(.footnote.monospaced()).textSelection(.enabled).padding(12) }
                     }
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(Color.mailSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
         }

@@ -100,7 +100,7 @@ struct ChatView: View {
             }
         }
         .padding(12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color.mailSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .mailGlass()
         .frame(maxWidth: 720).padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity)
     }
@@ -183,7 +183,7 @@ struct ChatItemView: View {
                         }
                     } else { Text(item.permissionState).font(.footnote).foregroundStyle(.secondary) }
                 }
-                .padding(16).background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .padding(16).background(Color.mailSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
     }

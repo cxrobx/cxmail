@@ -26,7 +26,7 @@ struct SettingsView: View {
     @State private var clear = false
     var body: some View {
         NavigationStack {
-            Form {
+            MailForm {
                 Section("Appearance") {
                     Picker("Appearance", selection: $appearance) {
                         ForEach(AppAppearance.allCases) { mode in Text(mode.title).tag(mode) }

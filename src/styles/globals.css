@@ -108,9 +108,11 @@
 [data-theme="light"] {
   --bg-primary: 248 247 245;
   --bg-sidebar: 243 242 240;
-  --bg-surface: 255 255 254;
+  /* Warm off-whites, no pure white: the surface sits one step above the
+     #F8F7F5 canvas (the T3 Code background) instead of jumping to #FFFFFE. */
+  --bg-surface: 252 251 249;
   --bg-elevated: 251 250 248;
-  --bg-input: 255 255 254;
+  --bg-input: 252 251 249;
 
   --border-default: 225 222 218;
   --border-subtle: 238 236 232;
