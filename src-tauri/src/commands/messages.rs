@@ -676,45 +676,68 @@ async fn prefetch_missing_snippets(
     }
 
     log::info!("Prefetching snippets for {} messages in {}", uids_to_fetch.len(), folder);
-    let prefetch_result = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        async {
-            let mut session = imap::connect_for_account(account).await?;
-            // Phase 1: Fetch + parse bodies without holding the DB lock
-            let mut parsed_results: Vec<(u32, parser::ParsedMessage)> = Vec::new();
-            if imap::select_folder(&mut session, folder).await.is_ok() {
-                for &uid in &uids_to_fetch {
-                    match imap::fetch_body(&mut session, uid).await {
-                        Ok(raw_body) => {
-                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser::parse_message(&raw_body))) {
-                                Ok(parsed) => parsed_results.push((uid, parsed)),
-                                Err(_) => {
-                                    log::error!("parse_message panicked for UID {}, skipping", uid);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to prefetch body for UID {uid}: {e}");
-                        }
+    // `connect_for_account` carries its own 15 s timeout.
+    let mut session = match imap::connect_for_account(account).await {
+        Ok(session) => session,
+        Err(e) => {
+            log::warn!("Snippet prefetch failed for {folder}: {e}");
+            return;
+        }
+    };
+
+    // Phase 1: fetch + parse inside a time BUDGET, never under one outer
+    // timeout. An outer timeout dropped the whole future mid-FETCH: the
+    // session vanished without LOGOUT or a ledger entry (the account's
+    // `unaccounted` climbed to 83), and the bodies already parsed were
+    // discarded with it, so the next sync refetched the same 20 UIDs forever.
+    // Now each fetch is bounded by what is left, the session is always
+    // closed through `disconnect`, and whatever arrived is persisted.
+    let started = std::time::Instant::now();
+    let mut parsed_results: Vec<(u32, parser::ParsedMessage)> = Vec::new();
+    if imap::select_folder(&mut session, folder).await.is_ok() {
+        for &uid in &uids_to_fetch {
+            let Some(remaining) = prefetch_time_left(started.elapsed()) else {
+                log::info!(
+                    "Snippet prefetch budget spent for {folder}; {} of {} fetched, the rest next sync",
+                    parsed_results.len(),
+                    uids_to_fetch.len()
+                );
+                break;
+            };
+            match tokio::time::timeout(remaining, imap::fetch_body(&mut session, uid)).await {
+                Ok(Ok(raw_body)) => {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser::parse_message(&raw_body))) {
+                        Ok(parsed) => parsed_results.push((uid, parsed)),
+                        Err(_) => log::error!("parse_message panicked for UID {}, skipping", uid),
                     }
                 }
+                Ok(Err(e)) => log::warn!("Failed to prefetch body for UID {uid}: {e}"),
+                Err(_) => {
+                    // The FETCH is abandoned mid-response, so the session's
+                    // stream is no longer in a known state: stop using it.
+                    log::warn!("Snippet prefetch for UID {uid} in {folder} hit the time budget");
+                    break;
+                }
             }
-            let _ = imap::disconnect(session, &account.email).await;
-
-            // Phase 2: batch-write SQLite metadata (FTS triggers index it).
-            if let Err(e) = persist_bodies_batch(state, &account.id, folder, &parsed_results) {
-                log::error!("Failed to persist snippet prefetch batch: {e}");
-            }
-            Ok::<(), AppError>(())
-        },
-    )
-    .await;
-
-    match prefetch_result {
-        Ok(Err(e)) => log::warn!("Snippet prefetch failed for {folder}: {e}"),
-        Err(_) => log::warn!("Snippet prefetch timed out after 15s for {folder}"),
-        _ => {}
+        }
     }
+    let _ = imap::disconnect(session, &account.email).await;
+
+    // Phase 2: batch-write SQLite metadata (FTS triggers index it). Stored
+    // bodies drop out of `uids_without_snippets`, so each sync makes progress.
+    if let Err(e) = persist_bodies_batch(state, &account.id, folder, &parsed_results) {
+        log::error!("Failed to persist snippet prefetch batch: {e}");
+    }
+}
+
+/// Time the snippet prefetch may spend fetching bodies after connecting.
+const PREFETCH_FETCH_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// What is left of the fetch budget, or `None` once it is spent.
+fn prefetch_time_left(elapsed: std::time::Duration) -> Option<std::time::Duration> {
+    PREFETCH_FETCH_BUDGET
+        .checked_sub(elapsed)
+        .filter(|left| !left.is_zero())
 }
 
 #[tauri::command]
@@ -2583,4 +2606,39 @@ pub(crate) async fn reclassify_impl(
         junk,
         skipped_user_override,
     })
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::{prefetch_time_left, PREFETCH_FETCH_BUDGET};
+    use std::time::Duration;
+
+    #[test]
+    fn budget_shrinks_then_runs_out() {
+        assert_eq!(prefetch_time_left(Duration::ZERO), Some(PREFETCH_FETCH_BUDGET));
+        assert_eq!(prefetch_time_left(Duration::from_secs(10)), Some(Duration::from_secs(2)));
+        assert_eq!(prefetch_time_left(PREFETCH_FETCH_BUDGET), None);
+        assert_eq!(prefetch_time_left(Duration::from_secs(60)), None);
+    }
+
+    /// An outer `tokio::time::timeout` around the session dropped it mid-FETCH:
+    /// no LOGOUT, no ledger entry, and every parsed body thrown away, so the
+    /// same UIDs were refetched on every sync. Each fetch is bounded instead,
+    /// and the session always ends in `disconnect` before persisting.
+    #[test]
+    fn prefetch_bounds_each_fetch_and_always_disconnects() {
+        let src = include_str!("messages.rs");
+        let start = src.find("async fn prefetch_missing_snippets").unwrap();
+        let end = start + src[start..].find("\n}\n").unwrap();
+        let code: String = src[start..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(code.matches("tokio::time::timeout(").count(), 1, "only the per-fetch timeout");
+        assert!(code.contains("tokio::time::timeout(remaining, imap::fetch_body("));
+        let disconnect = code.find("imap::disconnect(session").expect("session must be closed");
+        let persist = code.find("persist_bodies_batch(").expect("bodies must be persisted");
+        assert!(disconnect < persist, "close the session, then persist what arrived");
+    }
 }
