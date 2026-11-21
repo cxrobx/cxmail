@@ -113,7 +113,7 @@ final class CXMailUITests: XCTestCase {
         launch(); capture("Inbox")
         openMessage(); capture("Reader")
         app.buttons["readerReply"].tap()
-        let body = app.textFields["composeBody"]
+        let body = app.textViews["composeBody"]
         XCTAssertTrue(body.waitForExistence(timeout: 5))
         body.tap(); body.typeText("Tuesday works well. See you then!")
         capture("Reply with keyboard")
@@ -123,7 +123,7 @@ final class CXMailUITests: XCTestCase {
         launch(reset: false)
         let recover = app.buttons["recoverDraft"]
         XCTAssertTrue(recover.waitForExistence(timeout: 10)); recover.tap()
-        XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well. See you then!")
+        XCTAssertEqual(app.textViews["composeBody"].value as? String, "Tuesday works well. See you then!")
         capture("Recovered reply")
     }
     func testSmartNotificationSettingsStayInsideFixture() {
@@ -226,7 +226,7 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.buttons["compose"].waitForExistence(timeout: 10)); app.buttons["compose"].tap()
         let to = app.textFields["composeTo"]; XCTAssertTrue(to.waitForExistence(timeout: 5)); to.tap(); to.typeText("jordan@example.org")
         app.textFields["composeSubject"].tap(); app.textFields["composeSubject"].typeText("Tuesday")
-        app.textFields["composeBody"].tap(); app.textFields["composeBody"].typeText("Tuesday works well.")
+        app.textViews["composeBody"].tap(); app.textViews["composeBody"].typeText("Tuesday works well.")
         let review = app.buttons["reviewCompose"]
         XCTAssertTrue(review.isHittable, "Review must stay available while typing")
         let hide = app.buttons["hideComposeKeyboard"]
@@ -238,8 +238,8 @@ final class CXMailUITests: XCTestCase {
         hide.tap()
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
         waitForExpectations(timeout: 5)
-        XCTAssertEqual(app.textFields["composeBody"].value as? String, "Tuesday works well.")
-        app.textFields["composeBody"].tap()
+        XCTAssertEqual(app.textViews["composeBody"].value as? String, "Tuesday works well.")
+        app.textViews["composeBody"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(review.isHittable)
         review.tap()
@@ -265,7 +265,7 @@ final class CXMailUITests: XCTestCase {
         if !compose.exists, app.buttons["showInbox"].exists { app.buttons["showInbox"].tap() }
         XCTAssertTrue(compose.waitForExistence(timeout: 10))
         compose.tap()
-        let body = app.textFields["composeBody"]
+        let body = app.textViews["composeBody"]
         let signature = app.webViews.staticTexts["Morgan Reese"]
         XCTAssertTrue(signature.waitForExistence(timeout: 10))
         XCTAssertLessThan(body.frame.minY, signature.frame.minY)
@@ -448,7 +448,7 @@ final class CXMailUITests: XCTestCase {
     func testClaudePermissionAndStopControls() {
         launch()
         XCTAssertTrue(app.buttons["openChat"].waitForExistence(timeout: 10)); app.buttons["openChat"].tap()
-        let input = app.textFields["chatInput"]; XCTAssertTrue(input.waitForExistence(timeout: 10))
+        let input = app.textViews["chatInput"]; XCTAssertTrue(input.waitForExistence(timeout: 10))
         input.tap(); input.typeText("Draft a reply")
         app.buttons["chatSend"].tap()
         let deny = app.buttons["permissionDeny"]
@@ -463,7 +463,7 @@ final class CXMailUITests: XCTestCase {
     func testChatMarkdownAndComposer() {
         launch(["--chat-rich"])
         app.buttons["openChat"].tap()
-        let input = app.textFields["chatInput"]
+        let input = app.textViews["chatInput"]
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         input.tap(); input.typeText("Write a short plan")
         capture("Chat multiline composer")
@@ -479,38 +479,42 @@ final class CXMailUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Current email"].isEnabled, "Email context requires an open message")
         app.buttons["Your mail"].tap()
     }
-    /// Fixtures swap the system Paste button (which ignores synthesized taps)
-    /// for a plain one that runs the same clipboard-to-photo path.
-    func tapPaste(_ paste: XCUIElement, expecting photo: XCUIElement) {
-        XCTAssertTrue(paste.waitForExistence(timeout: 5))
-        paste.tap()
-        XCTAssertTrue(photo.waitForExistence(timeout: 5))
+    /// Paste the way a person does: long-press in the text, then Paste from the edit menu.
+    func pasteFromMenu(into field: XCUIElement) {
+        field.press(forDuration: 1.2)
+        let menuItem = app.menuItems["Paste"]
+        let button = app.buttons["Paste"]
+        if menuItem.waitForExistence(timeout: 3) { menuItem.tap() }
+        else { XCTAssertTrue(button.waitForExistence(timeout: 2), "Paste must be offered when the clipboard holds an image"); button.tap() }
     }
     func testPastedPhotoGoesWithEmailAndChat() {
         launch(["--paste-photo"])
         XCTAssertTrue(app.buttons["compose"].waitForExistence(timeout: 10)); app.buttons["compose"].tap()
         let to = app.textFields["composeTo"]; XCTAssertTrue(to.waitForExistence(timeout: 5)); to.tap(); to.typeText("jordan@example.org")
-        app.textFields["composeBody"].tap(); app.textFields["composeBody"].typeText("Here is the photo.")
-        let paste = app.buttons["pastePhoto"]
-        XCTAssertTrue(paste.waitForExistence(timeout: 5), "Paste must be offered while typing when the clipboard holds an image")
-        XCTAssertTrue(app.buttons["addPhoto"].exists)
+        let body = app.textViews["composeBody"]
+        body.tap(); body.typeText("Here is the photo.")
+        XCTAssertTrue(app.buttons["addPhoto"].exists); XCTAssertTrue(app.buttons["addFile"].exists)
         let photo = app.descendants(matching: .any)["composePhoto"]
-        tapPaste(paste, expecting: photo)
+        pasteFromMenu(into: body)
+        XCTAssertTrue(photo.waitForExistence(timeout: 5))
+        XCTAssertEqual(body.value as? String, "Here is the photo.", "An image paste must not change the text")
         capture("Composer with pasted photo")
         app.buttons["removePhoto"].firstMatch.tap()
         XCTAssertFalse(photo.waitForExistence(timeout: 1))
-        tapPaste(paste, expecting: photo)
+        pasteFromMenu(into: body)
+        XCTAssertTrue(photo.waitForExistence(timeout: 5))
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "composePhoto").count, 1)
         app.buttons["reviewCompose"].tap()
         XCTAssertTrue(app.buttons["sendReviewedDraft"].waitForExistence(timeout: 10), "The fixture refuses a draft without exactly one valid photo")
 
         app.terminate(); launch(["--paste-photo", "--show-reader"])
         XCTAssertTrue(app.buttons["readerChat"].waitForExistence(timeout: 10)); app.buttons["readerChat"].tap()
-        let input = app.textFields["chatInput"]
+        let input = app.textViews["chatInput"]
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         input.tap(); input.typeText("What is in this picture?")
         let chatPhoto = app.descendants(matching: .any)["composePhoto"]
-        tapPaste(app.buttons["pastePhoto"], expecting: chatPhoto)
+        pasteFromMenu(into: input)
+        XCTAssertTrue(chatPhoto.waitForExistence(timeout: 5))
         capture("Chat with pasted photo")
         app.buttons["chatSend"].tap()
         // The turn is appended before the request; check it before the reply scrolls it away.
@@ -524,7 +528,7 @@ final class CXMailUITests: XCTestCase {
     func testChatContextPickerKeepsConversationAndDraft() {
         launch(["--show-reader", "--chat-rich"])
         XCTAssertTrue(app.buttons["readerChat"].waitForExistence(timeout: 10)); app.buttons["readerChat"].tap()
-        let input = app.textFields["chatInput"]
+        let input = app.textViews["chatInput"]
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         input.tap(); input.typeText("Write a short plan"); app.buttons["chatSend"].tap()
         XCTAssertTrue(app.staticTexts["Next steps"].waitForExistence(timeout: 10))
@@ -548,7 +552,7 @@ final class CXMailUITests: XCTestCase {
         app.terminate(); launch(["--duo-flat", "--show-reader", "--chat-rich"])
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
         app.buttons["readerChat"].tap()
-        let input = app.textFields["chatInput"]
+        let input = app.textViews["chatInput"]
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         input.tap(); input.typeText("Write a short plan")
         app.buttons["chatSend"].tap()
@@ -722,7 +726,7 @@ final class CXMailUITests: XCTestCase {
         let hierarchy = XCTAttachment(string: app.debugDescription); hierarchy.name = "Open viewport hierarchy"; hierarchy.lifetime = .keepAlways; add(hierarchy)
         capture("Exact open Duo viewport")
         app.buttons["readerReply"].tap()
-        let body = app.textFields["composeBody"]
+        let body = app.textViews["composeBody"]
         XCTAssertTrue(body.waitForExistence(timeout: 5)); body.tap(); body.typeText("Keep this through a fold.")
         XCUIDevice.shared.orientation = .portrait
         XCTAssertEqual(body.value as? String, "Keep this through a fold.")

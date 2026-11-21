@@ -1078,6 +1078,33 @@ class Api(unittest.TestCase):
         too_many = [base64.b64encode(jpeg).decode()] * (server.MAX_DRAFT_PHOTOS + 1)
         self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "photos": too_many})[0], 400)
 
+    def test_draft_files_keep_a_safe_name_and_are_removed_after(self):
+        seen = {}
+        old = server.MCP.call
+        def capture(tool, args):
+            seen["paths"] = list(args.get("attachments", []))
+            seen["bytes"] = [open(p, "rb").read() for p in seen["paths"]]
+            return "Draft saved to Drafts (uid 78)"
+        server.MCP.call = capture
+        old_root, server.UPLOAD_ROOT = server.UPLOAD_ROOT, os.path.join(TMP, "uploads")
+        try:
+            files = [{"name": "../../Quote v2.pdf", "data": base64.b64encode(b"%PDF-1.7 x").decode()},
+                     {"name": "Quote v2.pdf", "data": base64.b64encode(b"second").decode()}]
+            self.j("/api/draft", body={"account": "a1", "to": ["ann@example.org"], "files": files})
+            paths = seen["paths"]
+            self.assertEqual([os.path.basename(p) for p in paths], ["Quote v2.pdf", "Quote v2.pdf"])
+            self.assertEqual(len(set(paths)), 2)
+            self.assertTrue(all(os.path.realpath(p).startswith(os.path.realpath(server.UPLOAD_ROOT)) for p in paths))
+            self.assertEqual(seen["bytes"], [b"%PDF-1.7 x", b"second"])
+            self.assertFalse(any(os.path.exists(p) for p in paths))
+            self.assertEqual(server._safe_filename("..."), "attachment")
+            too_many = [{"name": "a.txt", "data": "YQ=="}] * (server.MAX_DRAFT_PHOTOS + 1)
+            self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "files": too_many})[0], 400)
+            self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "files": [{"name": "a"}]})[0], 400)
+        finally:
+            server.MCP.call = old
+            server.UPLOAD_ROOT = old_root
+
     def test_large_bodies_only_allowed_on_photo_paths(self):
         big = {"account": "a1", "folder": "INBOX", "uid": 1, "action": "archive", "pad": "x" * (600 * 1024)}
         self.assertEqual(self.req("/api/action", big)[0], 413)

@@ -307,6 +307,7 @@ final class MailStore {
             if composer?.id == draft?.id { composer = nil }
         } else {
             for id in draft?.photos ?? recoveredDraft?.photos ?? [] { removePhoto(id) }
+            for file in draft?.files ?? recoveredDraft?.files ?? [] { removePhoto(file.id) }
             cache.remove("draft.json")
             recoveredDraft = nil
             composer = nil
@@ -315,11 +316,18 @@ final class MailStore {
     private var photoDirectory: URL { cache.directory.appendingPathComponent("compose-photos", isDirectory: true) }
     func storePhoto(_ photo: ComposePhoto) throws {
         try FileManager.default.createDirectory(at: photoDirectory, withIntermediateDirectories: true)
-        try photo.data.write(to: photoDirectory.appendingPathComponent(photo.id.uuidString + ".jpg"),
+        try photo.data.write(to: photoDirectory.appendingPathComponent(photo.id.uuidString + (photo.isImage ? ".jpg" : ".bin")),
                              options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
     func removePhoto(_ id: UUID) {
-        try? FileManager.default.removeItem(at: photoDirectory.appendingPathComponent(id.uuidString + ".jpg"))
+        for ext in [".jpg", ".bin"] {
+            try? FileManager.default.removeItem(at: photoDirectory.appendingPathComponent(id.uuidString + ext))
+        }
+    }
+    func loadFiles(_ refs: [DraftFile]) -> [ComposePhoto] {
+        refs.compactMap { ref in
+            (try? Data(contentsOf: photoDirectory.appendingPathComponent(ref.id.uuidString + ".bin"))).map { ComposePhoto(file: $0, name: ref.name, id: ref.id) }
+        }
     }
     func loadPhotos(_ ids: [UUID]) -> [ComposePhoto] {
         ids.compactMap { id in
@@ -331,10 +339,14 @@ final class MailStore {
         var body: [String: Any] = ["account": draft.account, "to": LocalDraft.addresses(draft.to), "cc": LocalDraft.addresses(draft.cc), "bcc": LocalDraft.addresses(draft.bcc ?? ""), "subject": draft.subject, "body": draft.body]
         if let reply = draft.reply { body["reply_folder"] = reply.folder; body["reply_uid"] = reply.uid }
         let photos = loadPhotos(draft.photos ?? [])
-        guard photos.count == (draft.photos ?? []).count else {
-            throw MailError.server("A photo on this draft couldn’t be read. Remove it and add it again.")
+        let files = loadFiles(draft.files ?? [])
+        guard photos.count == (draft.photos ?? []).count, files.count == (draft.files ?? []).count else {
+            throw MailError.server("An attachment on this draft couldn’t be read. Remove it and add it again.")
         }
-        if !photos.isEmpty && draft.revision == nil { body["photos"] = photos.map { $0.data.base64EncodedString() } }
+        if draft.revision == nil {
+            if !photos.isEmpty { body["photos"] = photos.map { $0.data.base64EncodedString() } }
+            if !files.isEmpty { body["files"] = files.map { ["name": $0.name, "data": $0.data.base64EncodedString()] } }
+        }
         let result: DraftResult
         if let revision = draft.revision {
             body["folder"] = revision.ref.folder

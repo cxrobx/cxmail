@@ -13,6 +13,8 @@ struct ComposerView: View {
     @State private var contextHeight: CGFloat = 1
     @State private var attachment: DraftAttachment?
     @State private var photos: [ComposePhoto]
+    /// The body is a UIKit text view (so it accepts pasted images); it reports focus here.
+    @State private var bodyFocused = false
     @ScaledMetric(relativeTo: .body) private var labelWidth: CGFloat = 64
     @FocusState private var focus: Field?
     @Environment(\.dismiss) private var dismiss
@@ -23,7 +25,7 @@ struct ComposerView: View {
         self.store = store
         _draft = State(initialValue: initial)
         _showCopies = State(initialValue: !initial.cc.isEmpty || !(initial.bcc ?? "").isEmpty)
-        _photos = State(initialValue: store.loadPhotos(initial.photos ?? []))
+        _photos = State(initialValue: store.loadPhotos(initial.photos ?? []) + store.loadFiles(initial.files ?? []))
     }
 
     var body: some View {
@@ -43,7 +45,7 @@ struct ComposerView: View {
             .scrollDismissesKeyboard(.interactively)
             .background(Color.mailPaper)
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if focus == nil {
+                if !editing {
                     VStack(spacing: 0) {
                         Divider()
                         HStack {
@@ -71,8 +73,8 @@ struct ComposerView: View {
                 }
                 // A keyboard accessory toolbar can drop the navigation actions on Duo.
                 ToolbarItem(placement: .topBarTrailing) {
-                    if focus != nil {
-                        Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { focus = nil }
+                    if editing {
+                        Button("Hide keyboard", systemImage: "keyboard.chevron.compact.down") { focus = nil; bodyFocused = false }
                             .accessibilityIdentifier("hideComposeKeyboard")
                     }
                 }
@@ -99,7 +101,9 @@ struct ComposerView: View {
                     do { try store.storePhoto(photo) } catch { self.error = "Couldn’t keep that photo on this phone. Save the draft before leaving." }
                 }
                 for photo in old where !kept.contains(photo.id) { store.removePhoto(photo.id) }
-                draft.photos = new.isEmpty ? nil : new.map(\.id)
+                let images = new.filter(\.isImage), files = new.filter { !$0.isImage }
+                draft.photos = images.isEmpty ? nil : images.map(\.id)
+                draft.files = files.isEmpty ? nil : files.map { DraftFile(id: $0.id, name: $0.name) }
             }
             .task(id: draft.account) { await loadContext() }
         }
@@ -181,9 +185,14 @@ struct ComposerView: View {
 
     private var writingArea: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TextField("Write your message…", text: $draft.body, axis: .vertical)
-                .frame(minHeight: 58, alignment: .topLeading)
-                .focused($focus, equals: .body).accessibilityIdentifier("composeBody")
+            PastingTextView(text: $draft.body, isFocused: $bodyFocused, placeholder: "Write your message…",
+                            minLines: 3, identifier: "composeBody") { images in
+                if canAddPhotos {
+                    if let problem = PhotoEncoder.add(images: images, to: &photos, limit: 10, maxPixel: PhotoEncoder.mailPixels) { error = problem }
+                } else {
+                    error = "Photos can be added to new messages and replies. Send this draft from the Mac to add one."
+                }
+            }
             if canAddPhotos {
                 // Between the text and the signature, so it stays in view while typing.
                 photoControls.padding(.leading, -12)
@@ -210,7 +219,7 @@ struct ComposerView: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(revision.attachments.indices, id: \.self) { index in
                     let item = DraftAttachment(index: index, name: revision.attachments[index], ref: revision.ref, digest: revision.digest)
-                    Button { focus = nil; attachment = item } label: { DraftAttachmentTile(item: item) }
+                    Button { focus = nil; bodyFocused = false; attachment = item } label: { DraftAttachmentTile(item: item) }
                         .buttonStyle(.plain)
                         .accessibilityLabel(item.name)
                         .accessibilityHint("Preview this attachment")
@@ -224,8 +233,10 @@ struct ComposerView: View {
     private var canAddPhotos: Bool { draft.revision == nil }
 
     private var photoControls: some View {
-        PhotoAddControls(photos: $photos, limit: 10, maxPixel: PhotoEncoder.mailPixels) { error = $0 }
+        PhotoAddControls(photos: $photos, limit: 10, maxPixel: PhotoEncoder.mailPixels, anyFile: true) { error = $0 }
     }
+
+    private var editing: Bool { focus != nil || bodyFocused }
 
     private var displayedContext: ComposeContext? {
         contextAccount == draft.account ? context : nil
@@ -256,7 +267,7 @@ struct ComposerView: View {
 
     private func save(review: Bool) async {
         guard !saving else { return }
-        focus = nil; saving = true; error = nil
+        focus = nil; bodyFocused = false; saving = true; error = nil
         do {
             let result = try await store.saveDraft(draft)
             dismiss()

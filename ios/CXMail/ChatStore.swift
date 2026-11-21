@@ -91,7 +91,7 @@ final class ChatStore {
         busy = true; sending = true; error = nil
         defer { sending = false }
         // Put the outgoing turn before polling can append its streamed reply.
-        items.append(.init(kind: .user, text: text, photos: photos.map(\.thumbnail)))
+        items.append(.init(kind: .user, text: text, photos: photos.compactMap(\.thumbnail)))
         let request = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(See the attached photo.)" : text
         var body: [String: Any] = ["text": Self.requestText(request, context: context)]
         if !photos.isEmpty { body["images"] = photos.map { $0.data.base64EncodedString() } }

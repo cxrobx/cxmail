@@ -1231,6 +1231,37 @@ def _decode_images(value, limit, max_bytes):
     return out
 
 
+MAX_FILE_BYTES = 20 * 1024 * 1024
+
+
+def _safe_filename(name):
+    base = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    base = "".join(c for c in base if c.isprintable() and c not in '/:"<>|?*').strip(" .")
+    return base[:120] or "attachment"
+
+
+def _decode_files(value, room):
+    """[{name, data}] from the phone's Files picker -> [(bytes, safe name)]."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > room:
+        raise ValueError("at most {} attachments".format(MAX_DRAFT_PHOTOS))
+    out = []
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("data"), str):
+            raise ValueError("each file needs a name and data")
+        if len(item["data"]) > MAX_FILE_BYTES // 3 * 4 + 4:
+            raise ValueError("each file must be under 20 MB")
+        try:
+            raw = base64.b64decode(item["data"], validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("file is not valid base64")
+        if not raw or len(raw) > MAX_FILE_BYTES:
+            raise ValueError("each file must be under 20 MB")
+        out.append((raw, _safe_filename(item.get("name"))))
+    return out
+
+
 def _emails(v):
     if not isinstance(v, list):
         return []
@@ -1622,14 +1653,23 @@ class Handler(BaseHTTPRequestHandler):
                     args["reply_to_folder"] = str(data["reply_folder"])
                     args["reply_to_uid"] = int(data["reply_uid"])
                 photos = _decode_images(data.get("photos"), MAX_DRAFT_PHOTOS, MAX_PHOTO_BYTES)
+                files = _decode_files(data.get("files"), MAX_DRAFT_PHOTOS - len(photos))
                 folder = None
                 try:
-                    if photos:
+                    if photos or files:
                         os.makedirs(UPLOAD_ROOT, mode=0o700, exist_ok=True)
                         folder = tempfile.mkdtemp(dir=UPLOAD_ROOT)
                         args["attachments"] = []
                         for i, (raw, ext) in enumerate(photos, 1):
                             path = os.path.join(folder, "photo-{}.{}".format(i, ext))
+                            with open(path, "wb") as f:
+                                f.write(raw)
+                            args["attachments"].append(path)
+                        for i, (raw, name) in enumerate(files, 1):
+                            # One folder per file keeps the phone's exact name without collisions.
+                            sub = os.path.join(folder, "f{}".format(i))
+                            os.mkdir(sub)
+                            path = os.path.join(sub, name)
                             with open(path, "wb") as f:
                                 f.write(raw)
                             args["attachments"].append(path)

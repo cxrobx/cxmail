@@ -11,7 +11,8 @@ struct ChatView: View {
     @State private var following = true
     @State private var nearBottom = true
     @State private var scrolling = false
-    @FocusState private var focused: Bool
+    /// The input is a UIKit text view (so it accepts pasted images); it reports focus here.
+    @State private var focused = false
 
     var body: some View {
         NavigationStack {
@@ -81,9 +82,12 @@ struct ChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !chat.photos.isEmpty { PhotoStrip(photos: $chat.photos, size: 56) }
-            TextField("Ask about your mail…", text: $chat.draft, axis: .vertical)
-                .font(.body).lineLimit(2...8).focused($focused)
-                .accessibilityIdentifier("chatInput").padding(.horizontal, 4)
+            PastingTextView(text: $chat.draft, isFocused: $focused, placeholder: "Ask about your mail…",
+                            minLines: 2, maxLines: 8, identifier: "chatInput") { images in
+                if chat.busy || chat.sending { return }
+                if let problem = PhotoEncoder.add(images: images, to: &chat.photos, limit: 4, maxPixel: PhotoEncoder.chatPixels) { chat.error = problem }
+            }
+            .padding(.horizontal, 4)
             HStack(spacing: 8) {
                 PhotoAddControls(photos: $chat.photos, limit: 4, maxPixel: PhotoEncoder.chatPixels) { chat.error = $0 }
                     .disabled(chat.busy || chat.sending)

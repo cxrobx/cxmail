@@ -159,6 +159,9 @@ struct DraftRevision: Codable, Equatable {
     var attachments: [String]
 }
 
+/// A file attached on the phone; its bytes live beside draft.json by id.
+struct DraftFile: Codable, Equatable { var id: UUID; var name: String }
+
 struct LocalDraft: Codable, Equatable, Identifiable {
     var id = UUID()
     var account = ""
@@ -172,7 +175,8 @@ struct LocalDraft: Codable, Equatable, Identifiable {
     /// Photos added on the phone, stored beside draft.json by id (never inline,
     /// since the draft is re-saved on every keystroke).
     var photos: [UUID]?
-    var hasContent: Bool { !to.isEmpty || !subject.isEmpty || !body.isEmpty || !(photos ?? []).isEmpty }
+    var files: [DraftFile]?
+    var hasContent: Bool { !to.isEmpty || !subject.isEmpty || !body.isEmpty || !(photos ?? []).isEmpty || !(files ?? []).isEmpty }
     static func addresses(_ raw: String) -> [String] {
         raw.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace }).map(String.init)
     }
