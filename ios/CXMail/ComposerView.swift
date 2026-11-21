@@ -15,6 +15,9 @@ struct ComposerView: View {
     @State private var photos: [ComposePhoto]
     /// The body is a UIKit text view (so it accepts pasted images); it reports focus here.
     @State private var bodyFocused = false
+    /// A newer revision of this draft saved elsewhere, waiting on the text choice.
+    @State private var newer: NewerRevision?
+    struct NewerRevision { let preview: DraftPreview; let review: Bool }
     @ScaledMetric(relativeTo: .body) private var labelWidth: CGFloat = 64
     @FocusState private var focus: Field?
     @Environment(\.dismiss) private var dismiss
@@ -32,6 +35,7 @@ struct ComposerView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let newer { newerRevisionChoice(newer) }
                     headers
                     writingArea
                     attachments
@@ -91,7 +95,11 @@ struct ComposerView: View {
                     error = store.friendly(failure)
                 }
             }
+
             .onChange(of: draft) { _, value in
+                // A saved or discarded composer has been cleared; a late change
+                // notification must not reopen it or resurrect its recovered copy.
+                guard store.composer?.id == value.id else { return }
                 store.composer = value
                 store.remember(value)
             }
@@ -258,6 +266,7 @@ struct ComposerView: View {
     private func save(review: Bool) async {
         guard !saving else { return }
         focus = nil; bodyFocused = false; saving = true; error = nil
+        var follow = false
         do {
             let result = try await store.saveDraft(draft)
             dismiss()
@@ -272,10 +281,93 @@ struct ComposerView: View {
                 }
             } else { store.notice = draft.revision == nil ? "Saved to Drafts on the mini." : result.result ?? "Draft updated." }
             Task { await store.load() }
+        } catch MailError.draftUnavailable where draft.revision?.draftId != nil {
+            // The revision this edit started from was replaced. Follow the draft, never guess.
+            follow = true
         } catch {
             self.error = store.friendly(error) + " Your changes are still saved on this iPhone. If the connection dropped while saving, check Drafts before trying again."
         }
         saving = false
+        if follow { await followNewerRevision(review: review) }
+    }
+
+    /// Finds the draft's latest revision by its stable id. Identical text saves straight
+    /// onto it; different text asks which to keep. Photos and files always come along.
+    private func followNewerRevision(review: Bool) async {
+        guard let old = draft.revision, let id = old.draftId else { return }
+        do {
+            let latest: MessageRef = try await store.api.get("/api/draft-link", query: [.init(name: "id", value: id)])
+            guard latest != old.ref else {
+                error = MailError.draftUnavailable.localizedDescription + " Your changes are still saved on this iPhone."
+                return
+            }
+            let preview: DraftPreview = try await store.api.get("/api/draft-preview", query: latest.query)
+            let found = NewerRevision(preview: preview, review: review)
+            if sameText(as: preview) { await rebase(onto: found, keepLatestText: false) } else { newer = found }
+        } catch {
+            self.error = "This draft was updated somewhere else and its latest version couldn’t be opened: "
+                + store.friendly(error) + " Your changes are still saved on this iPhone."
+        }
+    }
+
+    /// Shown inline, not as a dialog: a dialog inside this sheet can leave the sheet
+    /// stuck on screen when the save that follows closes it.
+    private func newerRevisionChoice(_ found: NewerRevision) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("This draft was updated somewhere else", systemImage: "arrow.triangle.2.circlepath")
+                .font(.subheadline.weight(.semibold))
+            Text(photos.isEmpty ? "Which text should the latest version keep?"
+                 : "Your photos and files go onto the latest version. Which text should it keep?")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { choiceButtons(found) }
+                VStack(alignment: .leading, spacing: 8) { choiceButtons(found) }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("newerRevisionChoice")
+    }
+
+    @ViewBuilder private func choiceButtons(_ found: NewerRevision) -> some View {
+        Button("Keep the latest text") { Task { await rebase(onto: found, keepLatestText: true) } }
+            .buttonStyle(.borderedProminent).disabled(saving)
+            .accessibilityIdentifier("keepLatestText")
+        Button("Use my text") { Task { await rebase(onto: found, keepLatestText: false) } }
+            .buttonStyle(.bordered).disabled(saving)
+            .accessibilityIdentifier("useMyText")
+    }
+
+    private func sameText(as preview: DraftPreview) -> Bool {
+        func set(_ raw: String) -> Set<String> { Set(LocalDraft.addresses(raw).map { $0.lowercased() }) }
+        func set(_ list: [MailAddress]) -> Set<String> { Set(list.map { $0.email.lowercased() }) }
+        let trim = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\r\n", with: "\n") }
+        return set(draft.to) == set(preview.to) && set(draft.cc) == set(preview.cc) && set(draft.bcc ?? "") == set(preview.bcc)
+            && trim(draft.subject) == trim(preview.subject) && trim(draft.body) == trim(preview.editText ?? "")
+    }
+
+    private func rebase(onto found: NewerRevision, keepLatestText: Bool) async {
+        guard let old = draft.revision else { return }
+        let p = found.preview
+        var next = draft
+        next.revision = DraftRevision(ref: p.ref, digest: p.digest, from: p.from.email,
+                                      attachments: p.attachments, draftId: p.draftId ?? old.draftId)
+        if keepLatestText {
+            next.to = p.to.map(\.email).joined(separator: ", ")
+            next.cc = p.cc.map(\.email).joined(separator: ", ")
+            next.bcc = p.bcc.map(\.email).joined(separator: ", ")
+            next.subject = p.subject
+            next.body = p.editText ?? ""
+            showCopies = !next.cc.isEmpty || !(next.bcc ?? "").isEmpty
+        }
+        newer = nil
+        store.moveEdit(from: old.ref, to: next)
+        draft = next
+        await save(review: found.review)
     }
 }
 
@@ -353,7 +445,8 @@ struct ReviewView: View {
                                     cc: preview.cc.map(\.email).joined(separator: ", "),
                                     subject: preview.subject, body: editable,
                                     revision: .init(ref: preview.ref, digest: preview.digest,
-                                                    from: preview.from.email, attachments: preview.attachments),
+                                                    from: preview.from.email, attachments: preview.attachments,
+                                                    draftId: preview.draftId),
                                     bcc: preview.bcc.map(\.email).joined(separator: ", ")
                                 ))
                             }

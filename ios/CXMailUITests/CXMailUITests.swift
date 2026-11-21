@@ -350,6 +350,27 @@ final class CXMailUITests: XCTestCase {
         XCTAssertEqual(app.buttons["reviewAttachment-0"].label, "Study-planner.docx", "Existing files stay on the draft")
     }
 
+    func testSaveFollowsANewerRevisionAndKeepsPhotos() {
+        launch(["--draft-attachment-fixture", "--paste-photo", "--newer-revision"])
+        tapDraftsTab()
+        let draft = app.buttons["message-20"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 10)); draft.tap()
+        let edit = app.buttons["editReviewedDraft"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10)); edit.tap()
+        let body = app.textViews["composeBody"]
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        pasteFromMenu(into: body)
+        XCTAssertTrue(app.descendants(matching: .any)["composePhoto"].waitForExistence(timeout: 5))
+        app.buttons["reviewCompose"].tap()
+        let keep = app.buttons["keepLatestText"].firstMatch
+        XCTAssertTrue(keep.waitForExistence(timeout: 10), "A replaced revision asks which text to keep instead of dead-ending")
+        XCTAssertTrue(app.buttons["useMyText"].firstMatch.exists)
+        capture("Newer revision choice")
+        keep.tap()
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].waitForExistence(timeout: 15),
+                      "The fixture only accepts revision 21 with its latest text and exactly one photo")
+    }
+
     func testDraftAttachmentPreviewAndExpiredReview() {
         var fixture = ["--draft-attachment-fixture", "--word-page-fixture"]
         launch(fixture)

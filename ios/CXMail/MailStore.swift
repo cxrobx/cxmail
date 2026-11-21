@@ -299,6 +299,12 @@ final class MailStore {
             }
         } catch { self.error = "Couldn’t save changes on this phone. Keep the composer open and save to the mini." }
     }
+    /// Re-keys a recovered edit after it follows its draft to a newer revision.
+    /// Photos and files stay: the edit still owns them.
+    func moveEdit(from old: MessageRef, to draft: LocalDraft) {
+        recoveredEdits.removeValue(forKey: old.id)
+        remember(draft)
+    }
     func clearDraft(_ draft: LocalDraft? = nil) {
         if let revision = draft?.revision {
             let edit = draft ?? recoveredEdits[revision.ref.id]

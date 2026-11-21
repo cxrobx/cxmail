@@ -112,6 +112,8 @@ struct DraftPreview: Decodable {
     var sendable: Bool
     var blockedReason: String?
     var digest: String
+    /// The draft's identity across revisions (nil while the mini's index catches up).
+    var draftId: String?
     var ref: MessageRef { .init(account: accountId, folder: folder, uid: uid) }
 }
 
@@ -157,6 +159,8 @@ struct DraftRevision: Codable, Equatable {
     var digest: String
     var from: String
     var attachments: [String]
+    /// Lets a save follow the draft when another client saved a newer revision.
+    var draftId: String? = nil
 }
 
 /// A file attached on the phone; its bytes live beside draft.json by id.

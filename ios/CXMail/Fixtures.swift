@@ -22,6 +22,7 @@ import UIKit
     static var lastChatText = ""
     static var lastChatImages = 0
     static var chatSentAt = Date.distantPast
+    static let newerRevisionText = "Thanks, Tuesday works. Added on the Mac."
     static var lastDraftPhotos = 0
     /// Same rule as the mini: base64 JPEG only from the phone.
     static func validPhotos(_ value: Any?) throws -> Int {
@@ -141,7 +142,7 @@ import UIKit
         case "/api/folders": result = [["name": "Archive", "label": "Archive", "type": "archive"], ["name": "Projects", "label": "Projects", "type": "other"]]
         case "/api/draft-link":
             if draftLinkUnavailable || ProcessInfo.processInfo.arguments.contains("--draft-link-unavailable") { throw URLError(.notConnectedToInternet) }
-            result = ["account": "work", "folder": "Drafts", "uid": draftLinkUID]
+            result = ["account": "work", "folder": "Drafts", "uid": ProcessInfo.processInfo.arguments.contains("--newer-revision") ? 21 : draftLinkUID]
         case "/api/drafts":
             var draft = message(20); draft["draft"] = true; draft["folder"] = "Drafts"; draft["subject"] = "Re: A good place to pick this up"
             var drafts = [draft]
@@ -163,7 +164,7 @@ import UIKit
         case "/api/draft":
             lastDraftPhotos = try validPhotos(body?["photos"])
             if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastDraftPhotos != 1 {
-                throw MailError.server("Expected exactly one pasted photo with this draft.")
+                throw MailError.server("Expected exactly one pasted photo with this draft (got \(lastDraftPhotos), files \((body?["files"] as? [Any])?.count ?? 0)).")
             }
             saved = true
             result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 20]]
@@ -174,15 +175,28 @@ import UIKit
                 missingDrafts.insert(uid); throw MailError.draftUnavailable
             }
             if ProcessInfo.processInfo.arguments.contains("--draft-preview-unavailable") && draftPreviewRequests == 1 { throw URLError(.timedOut) }
-            result = ["account_id": "work", "folder": "Drafts", "uid": uid, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": uid == 21 ? (editedSubject ?? "Re: A good place to pick this up") : "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "edit_text": "Thanks, Tuesday works.", "attachments": ProcessInfo.processInfo.arguments.contains("--draft-attachment-fixture") ? ["Study-planner.docx"] : [], "sendable": true, "digest": String(repeating: "a", count: 64)]
+            result = ["account_id": "work", "folder": "Drafts", "uid": uid, "from": ["name": "Chris", "email": "me@example.com"], "to": [["email": "jordan@example.org"]], "cc": [], "bcc": [["email": "copy@example.org"]], "subject": uid == 21 ? (editedSubject ?? "Re: A good place to pick this up") : "Re: A good place to pick this up", "plain_text": "Thanks, Tuesday works.", "edit_text": ProcessInfo.processInfo.arguments.contains("--newer-revision") && uid >= 21 ? newerRevisionText : "Thanks, Tuesday works.", "draft_id": "0c5c3b0e-1d2f-4a3b-9c4d-5e6f7a8b9c0d", "attachments": ProcessInfo.processInfo.arguments.contains("--draft-attachment-fixture") ? ["Study-planner.docx"] : [], "sendable": true, "digest": String(repeating: "a", count: 64)]
         case "/api/draft-edit":
+            if ProcessInfo.processInfo.arguments.contains("--newer-revision") {
+                // Revision 20 was replaced elsewhere by 21, whose text differs.
+                if body?["uid"] as? Int == 20 { throw MailError.draftUnavailable }
+                guard body?["uid"] as? Int == 21, body?["body"] as? String == newerRevisionText else {
+                    throw MailError.server("Expected the latest text on revision 21.")
+                }
+                lastDraftPhotos = try validPhotos(body?["photos"])
+                if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastDraftPhotos != 1 {
+                    throw MailError.server("Expected exactly one pasted photo with this draft (got \(lastDraftPhotos), files \((body?["files"] as? [Any])?.count ?? 0)).")
+                }
+                result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 22]]
+                break
+            }
             guard body?["uid"] as? Int == 20, body?["digest"] as? String == String(repeating: "a", count: 64),
                   body?["bcc"] as? [String] == ["copy@example.org"]
             else { throw MailError.reviewExpired }
             editedSubject = body?["subject"] as? String
             lastDraftPhotos = try validPhotos(body?["photos"])
             if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastDraftPhotos != 1 {
-                throw MailError.server("Expected exactly one pasted photo with this draft.")
+                throw MailError.server("Expected exactly one pasted photo with this draft (got \(lastDraftPhotos), files \((body?["files"] as? [Any])?.count ?? 0)).")
             }
             result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 21]]
         case "/api/draft-attachment":

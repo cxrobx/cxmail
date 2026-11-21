@@ -290,6 +290,18 @@ class Api(unittest.TestCase):
         finally:
             server.NOTIFICATIONS=original
 
+    def test_draft_preview_carries_the_logical_draft_id(self):
+        path = "/api/draft-preview?account=a1&folder=%5BGmail%5D%2FDrafts&uid=3"
+        self.assertIsNone(self.j(path)["draft_id"], "No index row yet means no id, never a guess")
+        draft_id = "5f0c1f7e-9d7e-4a77-9c2a-0e5b8f1c2d3e"
+        with sqlite3.connect(FIXTURE) as c:
+            c.execute("INSERT OR REPLACE INTO drafts VALUES (?,?,?,?,?)", (draft_id, "a1", "[Gmail]/Drafts", 3, 100))
+        try:
+            self.assertEqual(self.j(path)["draft_id"], draft_id)
+        finally:
+            with sqlite3.connect(FIXTURE) as c:
+                c.execute("DELETE FROM drafts WHERE draft_id=?", (draft_id,))
+
     def test_draft_link_resolves_latest_revision_without_message_cache(self):
         draft_id = "0278e6ec-4dd4-4661-bd7e-b1cf34edb637"
         with sqlite3.connect(FIXTURE) as c:

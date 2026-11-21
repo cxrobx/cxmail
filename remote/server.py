@@ -527,6 +527,14 @@ def resolve_draft_link(conn, draft_id):
     return {"account": row["account_id"], "folder": row["folder_name"], "uid": row["current_uid"]}
 
 
+def draft_id_of(conn, ref):
+    """The draft_id whose current revision is `ref`, or None while indexing lags."""
+    row = conn.execute(
+        "SELECT draft_id FROM drafts WHERE account_id=? AND folder_name=? AND current_uid=?",
+        (ref[0], ref[1], ref[2])).fetchone()
+    return row["draft_id"] if row and DRAFT_ID.fullmatch(row["draft_id"] or "") else None
+
+
 def draft_cache_token(conn, ref):
     """A missing UID applies only to this cached revision/UIDVALIDITY epoch."""
     row = conn.execute(
@@ -1476,6 +1484,10 @@ class Handler(BaseHTTPRequestHandler):
                 p = dict(p)
                 p.pop("sanitized_html", None)
                 p.pop("edit_tail_html", None)
+                # The logical draft identity outlives this revision: if another client
+                # saves a newer one, the phone follows it with /api/draft-link.
+                with db() as c:
+                    p["draft_id"] = draft_id_of(c, ref)
                 return self._send(200, p)
             if url.path == "/api/draft-attachment":
                 ref = self._ref(q)
