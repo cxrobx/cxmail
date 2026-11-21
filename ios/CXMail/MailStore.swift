@@ -301,6 +301,9 @@ final class MailStore {
     }
     func clearDraft(_ draft: LocalDraft? = nil) {
         if let revision = draft?.revision {
+            let edit = draft ?? recoveredEdits[revision.ref.id]
+            for id in edit?.photos ?? [] { removePhoto(id) }
+            for file in edit?.files ?? [] { removePhoto(file.id) }
             recoveredEdits.removeValue(forKey: revision.ref.id)
             do { try cache.save(recoveredEdits, name: "draft-edits.json") }
             catch { self.error = "Couldn’t clear the recovered draft edit on this phone." }
@@ -343,10 +346,9 @@ final class MailStore {
         guard photos.count == (draft.photos ?? []).count, files.count == (draft.files ?? []).count else {
             throw MailError.server("An attachment on this draft couldn’t be read. Remove it and add it again.")
         }
-        if draft.revision == nil {
-            if !photos.isEmpty { body["photos"] = photos.map { $0.data.base64EncodedString() } }
-            if !files.isEmpty { body["files"] = files.map { ["name": $0.name, "data": $0.data.base64EncodedString()] } }
-        }
+        // New drafts get them from compose_draft; saved drafts append them after their existing parts.
+        if !photos.isEmpty { body["photos"] = photos.map { $0.data.base64EncodedString() } }
+        if !files.isEmpty { body["files"] = files.map { ["name": $0.name, "data": $0.data.base64EncodedString()] } }
         let result: DraftResult
         if let revision = draft.revision {
             body["folder"] = revision.ref.folder

@@ -187,17 +187,11 @@ struct ComposerView: View {
         VStack(alignment: .leading, spacing: 0) {
             PastingTextView(text: $draft.body, isFocused: $bodyFocused, placeholder: "Write your message…",
                             minLines: 3, identifier: "composeBody") { images in
-                if canAddPhotos {
-                    if let problem = PhotoEncoder.add(images: images, to: &photos, limit: 10, maxPixel: PhotoEncoder.mailPixels) { error = problem }
-                } else {
-                    error = "Photos can be added to new messages and replies. Send this draft from the Mac to add one."
-                }
+                if let problem = PhotoEncoder.add(images: images, to: &photos, limit: 10, maxPixel: PhotoEncoder.mailPixels) { error = problem }
             }
-            if canAddPhotos {
-                // Between the text and the signature, so it stays in view while typing.
-                photoControls.padding(.leading, -12)
-                if !photos.isEmpty { PhotoStrip(photos: $photos).padding(.bottom, 8) }
-            }
+            // Between the text and the signature, so it stays in view while typing.
+            photoControls.padding(.leading, -12)
+            if !photos.isEmpty { PhotoStrip(photos: $photos).padding(.bottom, 8) }
             if let html = displayedContext?.html, !html.isEmpty {
                 EmailHTMLView(html: html, height: $contextHeight, inComposer: true)
                     .frame(height: contextHeight)
@@ -227,10 +221,6 @@ struct ComposerView: View {
             }.padding(16)
         }
     }
-
-    /// New messages and replies only: an already-saved draft's MIME is rebuilt
-    /// in place on the mini, which keeps its files but cannot add new ones yet.
-    private var canAddPhotos: Bool { draft.revision == nil }
 
     private var photoControls: some View {
         PhotoAddControls(photos: $photos, limit: 10, maxPixel: PhotoEncoder.mailPixels, anyFile: true) { error = $0 }

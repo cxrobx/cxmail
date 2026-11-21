@@ -269,6 +269,52 @@ pub struct DraftEdit {
     bcc: Vec<String>,
     subject: String,
     body: String,
+    /// Files added on the phone, appended after the draft's existing parts.
+    #[serde(default)]
+    files: Vec<NewDraftFile>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewDraftFile {
+    name: String,
+    /// Standard base64 of the file bytes.
+    data: String,
+}
+
+const MAX_NEW_FILES: usize = 10;
+const MAX_NEW_FILE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_NEW_FILES_TOTAL: usize = 40 * 1024 * 1024;
+
+impl DraftEdit {
+    /// Decoded `(name, content type, bytes)` for each new file, or why they were refused.
+    fn decoded_files(&self) -> Result<Vec<(String, String, Vec<u8>)>, AppError> {
+        use base64::Engine;
+        let refused = |why: &str| AppError::General(format!("The new attachment was refused: {why}."));
+        if self.files.len() > MAX_NEW_FILES {
+            return Err(refused("too many files"));
+        }
+        let mut total = 0;
+        let mut out = Vec::with_capacity(self.files.len());
+        for file in &self.files {
+            let name = file.name.trim();
+            if name.is_empty() || name.len() > 200 || name.chars().any(|c| c.is_control() || "/\\\"".contains(c)) {
+                return Err(refused("its name is not a plain file name"));
+            }
+            if file.data.len() > MAX_NEW_FILE_BYTES / 3 * 4 + 4 {
+                return Err(refused("each file must be under 25 MB"));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(file.data.as_bytes())
+                .map_err(|_| refused("it is not valid base64"))?;
+            total += bytes.len();
+            if bytes.is_empty() || bytes.len() > MAX_NEW_FILE_BYTES || total > MAX_NEW_FILES_TOTAL {
+                return Err(refused("files must be under 25 MB each and 40 MB together"));
+            }
+            let content_type = cxmail_email::email::attachment_file::guess_content_type(name);
+            out.push((name.to_string(), content_type, bytes));
+        }
+        Ok(out)
+    }
 }
 
 impl DraftEdit {
@@ -312,6 +358,12 @@ fn build_edited_draft(
         parser::replace_draft_prose(&f.raw, &f.parsed, &edit.body)
             .map_err(|e| AppError::Parse(e.into()))?
     };
+    let mime = parser::append_draft_files(
+        &mime,
+        &edit.decoded_files()?,
+        &format!("cxmail-{}", uuid::Uuid::new_v4().simple()),
+    )
+    .map_err(|e| AppError::Parse(e.into()))?;
     let p = &f.parsed;
     let to = draft_recipients(&edit.to, &p.to_list);
     let cc = draft_recipients(&edit.cc, &p.cc_list);
@@ -355,6 +407,8 @@ pub async fn edit_reviewed_draft(
 ) -> Result<DraftEditOutcome, AppError> {
     use cxmail_email::email::{draft_local, draft_revisions};
     edit.validate()?;
+    // Refuse bad files before any IMAP work.
+    edit.decoded_files()?;
     let conn = rusqlite::Connection::open(db_path)?;
     let known = db::drafts::find_by_uid(&conn, account_id, folder, uid)?;
     let (f, mut session) = fetch_draft(db_path, account_id, folder, uid).await?;
@@ -551,6 +605,39 @@ mod tests {
         let out = outgoing_from_draft(&parse(DRAFT), &from()).unwrap();
         assert_eq!(out.from_email, "me@example.com");
         assert_eq!(out.from_name.as_deref(), Some("Me"));
+    }
+
+    fn edit_with(files: serde_json::Value) -> Result<DraftEdit, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "to": ["ann@example.org"], "cc": [], "bcc": [], "subject": "s", "body": "b", "files": files,
+        }))
+    }
+
+    #[test]
+    fn phone_files_are_decoded_and_typed() {
+        let edit = edit_with(serde_json::json!([{"name": "Quote v2.pdf", "data": "JVBERi0x"}])).unwrap();
+        let files = edit.decoded_files().unwrap();
+        assert_eq!(files, [("Quote v2.pdf".to_string(), "application/pdf".to_string(), b"%PDF-1".to_vec())]);
+        // Older phone builds send no `files` key at all.
+        let plain: DraftEdit = serde_json::from_value(serde_json::json!({
+            "to": ["ann@example.org"], "cc": [], "bcc": [], "subject": "s", "body": "b",
+        })).unwrap();
+        assert!(plain.decoded_files().unwrap().is_empty());
+    }
+
+    #[test]
+    fn phone_files_refuse_paths_bad_bytes_and_excess() {
+        for bad in [
+            serde_json::json!([{"name": "../id_ed25519", "data": "YQ=="}]),
+            serde_json::json!([{"name": "a\u{7}.txt", "data": "YQ=="}]),
+            serde_json::json!([{"name": " ", "data": "YQ=="}]),
+            serde_json::json!([{"name": "a.txt", "data": "%%%"}]),
+            serde_json::json!([{"name": "a.txt", "data": ""}]),
+            serde_json::Value::Array(vec![serde_json::json!({"name": "a.txt", "data": "YQ=="}); MAX_NEW_FILES + 1]),
+        ] {
+            let edit = edit_with(bad.clone()).unwrap();
+            assert!(edit.decoded_files().is_err(), "accepted {bad}");
+        }
     }
 
     #[test]

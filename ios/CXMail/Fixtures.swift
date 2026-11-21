@@ -180,6 +180,10 @@ import UIKit
                   body?["bcc"] as? [String] == ["copy@example.org"]
             else { throw MailError.reviewExpired }
             editedSubject = body?["subject"] as? String
+            lastDraftPhotos = try validPhotos(body?["photos"])
+            if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastDraftPhotos != 1 {
+                throw MailError.server("Expected exactly one pasted photo with this draft.")
+            }
             result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 21]]
         case "/api/draft-attachment":
             guard q["uid"] == "20", q["index"] == "0", q["digest"] == String(repeating: "a", count: 64)

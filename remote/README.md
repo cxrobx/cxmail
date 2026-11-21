@@ -61,6 +61,23 @@ can preview files up to 25 MiB. Refresh the review if it expires or the draft ch
 If Remote uses a separately signed send helper, `remote/install.sh` carries
 its existing `CXMAIL_SEND_BIN` override through a reinstall.
 
+A Rust change to `remote_send.rs` (send, edit, attachment preview) reaches the
+phone only through that helper, not the desktop app: `cargo build --release --bin
+cxmail-mcp`, copy it under the name `cxmail-mcp` and `codesign --force --timestamp`
+it with the Developer ID (the default identifier `cxmail-mcp`; confirm `codesign -d -r-`
+matches the current helper's designated requirement, or the Keychain prompts), keep
+the old file in a dated `rollback-send-*` folder beside it, then `mv` the new one over
+`cxmail-remote-send`.
+
+## Photos and files from the phone
+
+`/api/draft`, `/api/draft-edit` and `/api/chat/send` accept base64 uploads (48 MiB
+per request; other routes keep 512 KiB). Photos must sniff as JPEG, PNG, GIF or WebP.
+Mail files keep a sanitized name. A new draft gets them through `compose_draft`, which
+reads them from a per-request folder under `~/Library/Caches/cxmail-remote/uploads`,
+deleted after the call. An edit passes them to the helper, which appends them after
+the draft's existing parts (`parser::append_draft_files`). Chat takes up to four images.
+
 Word, Excel and PowerPoint page previews use the corresponding workers from T3
 Code 0.1.7 on the mini.
 Install the preview driver with `npm ci --ignore-scripts --prefix remote/word-preview`.

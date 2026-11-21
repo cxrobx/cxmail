@@ -1478,6 +1478,7 @@ name = "cxmail-mcp"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "cxmail-core",
  "cxmail-db",

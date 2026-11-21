@@ -33,6 +33,7 @@ tracing = "0.1"
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 mail-builder = "0.3"
+base64 = { workspace = true }
 # CXMail Remote's approve-what-you-saw digest (remote_send.rs).
 sha2 = "0.10"
 rusqlite = { workspace = true }

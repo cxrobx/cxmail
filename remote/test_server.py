@@ -842,6 +842,22 @@ class Api(unittest.TestCase):
             self.assertEqual(code, 409)
             self.assertEqual(json.loads(raw)["code"], "review_expired")
 
+    def test_edit_draft_passes_new_photos_and_files_to_the_edit_binary(self):
+        ref = {"account": "a1", "folder": "[Gmail]/Drafts", "uid": 3}
+        fields = {"to": ["ann@example.org"], "cc": [], "bcc": [], "subject": "Revised", "body": "With files"}
+        jpeg = base64.b64encode(b"\xff\xd8\xff\xe0" + b"j" * 16).decode()
+        pdf = base64.b64encode(b"%PDF-1.7").decode()
+        edit = dict(ref, digest=DIGEST, photos=[jpeg], files=[{"name": "../Quote.pdf", "data": pdf}], **fields)
+        with patch.object(server, "run_send_bin", return_value={"uid": 4, "old_removed": True}) as save:
+            self.j("/api/draft-edit", body=edit)
+            payload = save.call_args.kwargs["payload"]
+        self.assertEqual({k: payload[k] for k in fields}, fields)
+        self.assertEqual(payload["files"], [{"name": "photo-1.jpg", "data": jpeg}, {"name": "Quote.pdf", "data": pdf}])
+        with patch.object(server, "run_send_bin") as save:
+            bad = dict(edit, photos=[base64.b64encode(b"not an image").decode()])
+            self.assertEqual(self.req("/api/draft-edit", bad)[0], 400)
+            save.assert_not_called()
+
     def test_word_preview_uses_the_reviewed_attachment_bytes(self):
         ref = "account=a1&folder=%5BGmail%5D%2FDrafts&uid=3"
         path = "/api/draft-attachment?" + ref + "&index=0&render=word&digest="

@@ -331,6 +331,25 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 15))
     }
 
+    func testPastePhotoIntoSavedDraft() {
+        launch(["--draft-attachment-fixture", "--paste-photo"])
+        tapDraftsTab()
+        let draft = app.buttons["message-20"]
+        XCTAssertTrue(draft.waitForExistence(timeout: 10)); draft.tap()
+        let edit = app.buttons["editReviewedDraft"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 10)); edit.tap()
+        XCTAssertTrue(app.navigationBars["Edit draft"].waitForExistence(timeout: 10))
+        let body = app.textViews["composeBody"]
+        XCTAssertTrue(body.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["addPhoto"].exists && app.buttons["addFile"].exists, "Saved drafts take attachments too")
+        pasteFromMenu(into: body)
+        XCTAssertTrue(app.descendants(matching: .any)["composePhoto"].waitForExistence(timeout: 5))
+        capture("Saved draft with pasted photo")
+        app.buttons["reviewCompose"].tap()
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].waitForExistence(timeout: 15), "The fixture refuses an edit without exactly one valid photo")
+        XCTAssertEqual(app.buttons["reviewAttachment-0"].label, "Study-planner.docx", "Existing files stay on the draft")
+    }
+
     func testDraftAttachmentPreviewAndExpiredReview() {
         var fixture = ["--draft-attachment-fixture", "--word-page-fixture"]
         launch(fixture)
@@ -481,6 +500,7 @@ final class CXMailUITests: XCTestCase {
     }
     /// Paste the way a person does: long-press in the text, then Paste from the edit menu.
     func pasteFromMenu(into field: XCUIElement) {
+        if !app.keyboards.firstMatch.exists { field.tap(); _ = app.keyboards.firstMatch.waitForExistence(timeout: 3) }
         field.press(forDuration: 1.2)
         let menuItem = app.menuItems["Paste"]
         let button = app.buttons["Paste"]

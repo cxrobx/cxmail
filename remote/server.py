@@ -1550,8 +1550,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(400, "bad request")
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            # Photos ride as base64 only on these two paths; everything else stays small.
-            limit = UPLOAD_REQUEST_BYTES if urllib.parse.urlparse(self.path).path in ("/api/draft", "/api/chat/send") else 512 * 1024
+            # Photos and files ride as base64 only on these paths; everything else stays small.
+            limit = UPLOAD_REQUEST_BYTES if urllib.parse.urlparse(self.path).path in ("/api/draft", "/api/draft-edit", "/api/chat/send") else 512 * 1024
             if n > limit:
                 # Read a modest overage so the client sees the 413 rather than a
                 # reset mid-upload; anything far larger just closes the connection.
@@ -1610,6 +1610,15 @@ class Handler(BaseHTTPRequestHandler):
                 digest = data.get("digest", "")
                 if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
                     return self._send(409, {"error": "Review expired. Refresh the draft.", "code": "review_expired"})
+                photos = _decode_images(data.get("photos"), MAX_DRAFT_PHOTOS, MAX_PHOTO_BYTES)
+                files = _decode_files(data.get("files"), MAX_DRAFT_PHOTOS - len(photos))
+                payload = {key: data.get(key) for key in ("to", "cc", "bcc", "subject", "body")}
+                if photos or files:
+                    # Validated here, re-validated by the edit binary, appended after existing parts.
+                    payload["files"] = [
+                        {"name": "photo-{}.{}".format(i, ext), "data": base64.b64encode(raw).decode("ascii")}
+                        for i, (raw, ext) in enumerate(photos, 1)
+                    ] + [{"name": name, "data": base64.b64encode(raw).decode("ascii")} for raw, name in files]
                 with db() as c:
                     token = draft_cache_token(c, ref)
                 queue = schedules()
@@ -1617,9 +1626,7 @@ class Handler(BaseHTTPRequestHandler):
                     if queue.active(ref):
                         raise ScheduleConflict("Cancel the scheduled send before editing this draft.")
                     try:
-                        saved = run_send_bin("edit-draft", *ref, digest, payload={
-                            key: data.get(key) for key in ("to", "cc", "bcc", "subject", "body")
-                        })
+                        saved = run_send_bin("edit-draft", *ref, digest, payload=payload)
                     except SendError as e:
                         if "The draft changed after you reviewed it." in str(e):
                             PREVIEWS.discard(ref, digest)

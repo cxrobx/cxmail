@@ -590,6 +590,81 @@ pub fn replace_draft_prose(
     Ok(result)
 }
 
+/// Add files to a draft's top-level MIME (MIME headers, a blank line, then the body:
+/// what `build_edited_draft` hands the message builder). A `multipart/mixed` draft gets
+/// the new parts just before its closing delimiter, so existing files, inline images
+/// and the signature keep their exact bytes. Any other structure is wrapped in a new
+/// `multipart/mixed` whose first part is the original, untouched. `boundary` must be
+/// unique (the caller passes a fresh UUID-based one).
+pub fn append_draft_files(
+    mime: &[u8],
+    files: &[(String, String, Vec<u8>)],
+    boundary: &str,
+) -> Result<Vec<u8>, &'static str> {
+    let unsupported = "The draft could not take new attachments safely.";
+    if files.is_empty() {
+        return Ok(mime.to_vec());
+    }
+    let mut parts = Vec::with_capacity(files.len());
+    for (name, content_type, data) in files {
+        let mut part = Vec::new();
+        mail_builder::mime::MimePart::new(content_type.clone(), data.clone())
+            .attachment(name.clone())
+            .write_part(&mut part)
+            .map_err(|_| unsupported)?;
+        parts.push(part);
+    }
+    fn trim_crlf(bytes: &[u8]) -> &[u8] {
+        let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        bytes.strip_suffix(b"\r").unwrap_or(bytes)
+    }
+    fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        (needle.len() <= haystack.len())
+            .then(|| (0..=haystack.len() - needle.len()).rev().find(|&i| haystack[i..].starts_with(needle)))
+            .flatten()
+    }
+    let message = mail_parser::MessageParser::default().parse(mime).ok_or(unsupported)?;
+    let root = message.parts.first().ok_or(unsupported)?;
+    let mixed = root.content_type().filter(|ct| {
+        ct.ctype().eq_ignore_ascii_case("multipart")
+            && ct.subtype().is_some_and(|s| s.eq_ignore_ascii_case("mixed"))
+    });
+    if let Some(content_type) = mixed {
+        let existing = content_type.attribute("boundary").ok_or(unsupported)?;
+        if existing.is_empty() || existing.chars().any(|c| c.is_control()) {
+            return Err(unsupported);
+        }
+        let close = format!("--{existing}--");
+        let at = rfind(mime, close.as_bytes()).ok_or(unsupported)?;
+        // The line break before a delimiter belongs to the delimiter.
+        let insert = if mime[..at].ends_with(b"\r\n") {
+            at - 2
+        } else if mime[..at].ends_with(b"\n") {
+            at - 1
+        } else {
+            return Err(unsupported);
+        };
+        let mut out = mime[..insert].to_vec();
+        for part in &parts {
+            out.extend_from_slice(format!("\r\n--{existing}\r\n").as_bytes());
+            out.extend_from_slice(trim_crlf(part));
+        }
+        out.extend_from_slice(&mime[insert..]);
+        return Ok(out);
+    }
+    if boundary.is_empty() || rfind(mime, boundary.as_bytes()).is_some() {
+        return Err(unsupported);
+    }
+    let mut out = format!("Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\n").into_bytes();
+    out.extend_from_slice(trim_crlf(mime));
+    for part in &parts {
+        out.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+        out.extend_from_slice(trim_crlf(part));
+    }
+    out.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Ok(out)
+}
+
 /// Files shown in draft review, in the same order as the attachment endpoint.
 pub fn draft_attachment_names(raw: &[u8]) -> Vec<String> {
     let Some(message) = mail_parser::MessageParser::default().parse(raw) else {
@@ -981,6 +1056,77 @@ mod tests {
         assert!(html.contains("<table>") && html.contains("My signature") && html.contains("Original quote"), "{html}");
         assert!(reopened.plain_text.unwrap().contains("Updated & <clear>"));
         assert_eq!(super::reviewed_draft_attachment(&wire, 0, 1024).unwrap(), [0, 1, 2, 3]);
+    }
+
+    fn top_mime(raw: &[u8]) -> Vec<u8> {
+        let (mut headers, body) = super::reviewed_draft_mime(raw).unwrap();
+        headers.extend_from_slice(body);
+        headers
+    }
+    fn wire(mime: Vec<u8>) -> Vec<u8> {
+        let mut wire = b"From: me@example.com\r\nTo: ann@example.org\r\nMIME-Version: 1.0\r\n".to_vec();
+        wire.extend(mime);
+        wire
+    }
+
+    /// A phone edit that adds a file to a draft that already has one: the new part
+    /// goes before the closing delimiter, every original byte is kept, and the
+    /// draft stays editable and sendable.
+    #[test]
+    fn appended_files_join_an_existing_mixed_draft() {
+        let raw = concat!(
+            "From: me@example.com\r\nTo: ann@example.org\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n",
+            "--m\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n",
+            "--a\r\nContent-Type: text/plain\r\n\r\nHello\r\nMy signature\r\n",
+            "--a\r\nContent-Type: text/html\r\n\r\n",
+            "<p>Hello</p><div class=\"email-signature\"><table><tr><td>My signature</td></tr></table></div>\r\n--a--\r\n",
+            "--m\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=plan.pdf\r\n",
+            "Content-Transfer-Encoding: base64\r\n\r\nAAECAw==\r\n--m--\r\n",
+        );
+        let photo = vec![0xFF, 0xD8, 0xFF, 0xE0, 9, 8, 7];
+        let files = vec![("Quote v2.jpg".to_string(), "image/jpeg".to_string(), photo.clone())];
+        let mime = super::append_draft_files(&top_mime(raw.as_bytes()), &files, "unused-boundary").unwrap();
+        assert!(!String::from_utf8_lossy(&mime).contains("unused-boundary"), "an existing mixed draft is not re-wrapped");
+        let wire = wire(mime);
+        assert_eq!(super::draft_attachment_names(&wire), ["plan.pdf", "Quote v2.jpg"]);
+        assert_eq!(super::reviewed_draft_attachment(&wire, 0, 1024).unwrap(), [0, 1, 2, 3]);
+        assert_eq!(super::reviewed_draft_attachment(&wire, 1, 1024).unwrap(), photo);
+        let parsed = super::parse_message_without_attachment_text(&wire);
+        assert_eq!(super::editable_draft_text(&parsed), "Hello");
+        assert!(super::editable_draft_tail(&parsed).unwrap().contains("My signature"));
+        let edited = super::replace_draft_prose(&wire, &parsed, "Updated").unwrap();
+        let reopened = wire_reparse(edited);
+        assert!(reopened.0.contains("Updated") && reopened.0.contains("My signature"));
+        assert_eq!(reopened.1, ["plan.pdf", "Quote v2.jpg"]);
+    }
+
+    fn wire_reparse(mime: Vec<u8>) -> (String, Vec<String>) {
+        let wire = wire(mime);
+        let parsed = super::parse_message_without_attachment_text(&wire);
+        (parsed.html_body.unwrap_or_default(), super::draft_attachment_names(&wire))
+    }
+
+    /// A draft with no files yet is wrapped once; a second addition joins that
+    /// wrapper rather than nesting another one.
+    #[test]
+    fn appended_files_wrap_a_single_part_draft_once() {
+        let raw = b"From: me@example.com\r\nTo: ann@example.org\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Sounds good.</p>\r\n";
+        let first = vec![("a.txt".to_string(), "text/plain".to_string(), b"alpha".to_vec())];
+        let once = super::append_draft_files(&top_mime(raw), &first, "cxmail-b1").unwrap();
+        let (html, names) = wire_reparse(once.clone());
+        assert!(html.contains("Sounds good."), "{html}");
+        assert_eq!(names, ["a.txt"]);
+        let wire_once = wire(once.clone());
+        assert_eq!(super::reviewed_draft_attachment(&wire_once, 0, 1024).unwrap(), b"alpha");
+        let second = vec![("b.pdf".to_string(), "application/pdf".to_string(), b"%PDF-1".to_vec())];
+        let twice = super::append_draft_files(&top_mime(&wire_once), &second, "cxmail-b2").unwrap();
+        assert!(!String::from_utf8_lossy(&twice).contains("cxmail-b2"), "no second wrapper");
+        let (html, names) = wire_reparse(twice);
+        assert!(html.contains("Sounds good."));
+        assert_eq!(names, ["a.txt", "b.pdf"]);
+        // A boundary already present in the draft is refused rather than reused.
+        assert!(super::append_draft_files(&top_mime(raw), &first, "Sounds").is_err());
+        assert_eq!(super::append_draft_files(&top_mime(raw), &[], "x").unwrap(), top_mime(raw));
     }
 
     #[test]
