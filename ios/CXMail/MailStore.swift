@@ -306,15 +306,35 @@ final class MailStore {
             catch { self.error = "Couldn’t clear the recovered draft edit on this phone." }
             if composer?.id == draft?.id { composer = nil }
         } else {
+            for id in draft?.photos ?? recoveredDraft?.photos ?? [] { removePhoto(id) }
             cache.remove("draft.json")
             recoveredDraft = nil
             composer = nil
+        }
+    }
+    private var photoDirectory: URL { cache.directory.appendingPathComponent("compose-photos", isDirectory: true) }
+    func storePhoto(_ photo: ComposePhoto) throws {
+        try FileManager.default.createDirectory(at: photoDirectory, withIntermediateDirectories: true)
+        try photo.data.write(to: photoDirectory.appendingPathComponent(photo.id.uuidString + ".jpg"),
+                             options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+    func removePhoto(_ id: UUID) {
+        try? FileManager.default.removeItem(at: photoDirectory.appendingPathComponent(id.uuidString + ".jpg"))
+    }
+    func loadPhotos(_ ids: [UUID]) -> [ComposePhoto] {
+        ids.compactMap { id in
+            (try? Data(contentsOf: photoDirectory.appendingPathComponent(id.uuidString + ".jpg"))).flatMap { ComposePhoto(jpeg: $0, id: id) }
         }
     }
     func saveDraft(_ draft: LocalDraft) async throws -> DraftResult {
         guard draft.valid else { throw MailError.server("Check the account and recipient email addresses.") }
         var body: [String: Any] = ["account": draft.account, "to": LocalDraft.addresses(draft.to), "cc": LocalDraft.addresses(draft.cc), "bcc": LocalDraft.addresses(draft.bcc ?? ""), "subject": draft.subject, "body": draft.body]
         if let reply = draft.reply { body["reply_folder"] = reply.folder; body["reply_uid"] = reply.uid }
+        let photos = loadPhotos(draft.photos ?? [])
+        guard photos.count == (draft.photos ?? []).count else {
+            throw MailError.server("A photo on this draft couldn’t be read. Remove it and add it again.")
+        }
+        if !photos.isEmpty && draft.revision == nil { body["photos"] = photos.map { $0.data.base64EncodedString() } }
         let result: DraftResult
         if let revision = draft.revision {
             body["folder"] = revision.ref.folder

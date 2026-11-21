@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import secrets
+import shutil
 import tempfile
 import urllib.error
 import urllib.parse
@@ -1187,6 +1188,49 @@ def _flag(m):
     return {"account_id": m["account"], "folder": m["folder"], "uid": m["uid"]}
 
 
+# Phone photos: decoded, sniffed, and written under $HOME only for the length of
+# one compose_draft call (the MCP accepts attachment paths inside $HOME only).
+UPLOAD_REQUEST_BYTES = 48 * 1024 * 1024
+MAX_DRAFT_PHOTOS = 10
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+MAX_CHAT_IMAGES = 4
+MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024
+UPLOAD_ROOT = os.path.expanduser("~/Library/Caches/cxmail-remote/uploads")
+
+
+def _image_type(raw):
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def _decode_images(value, limit, max_bytes):
+    """Base64 image strings -> [(bytes, ext)]. Anything else is a 400."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError("at most {} photos".format(limit))
+    out = []
+    for item in value:
+        if not isinstance(item, str) or len(item) > max_bytes // 3 * 4 + 4:
+            raise ValueError("each photo must be under {} MB".format(max_bytes // (1024 * 1024)))
+        try:
+            raw = base64.b64decode(item, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("photo is not valid base64")
+        ext = _image_type(raw)
+        if not raw or len(raw) > max_bytes or not ext:
+            raise ValueError("photos must be JPEG, PNG, GIF or WebP")
+        out.append((raw, ext))
+    return out
+
+
 def _emails(v):
     if not isinstance(v, list):
         return []
@@ -1475,8 +1519,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(400, "bad request")
         try:
             n = int(self.headers.get("Content-Length", "0"))
-            if n > 512 * 1024:
-                return self._err(413, "too large")
+            # Photos ride as base64 only on these two paths; everything else stays small.
+            limit = UPLOAD_REQUEST_BYTES if urllib.parse.urlparse(self.path).path in ("/api/draft", "/api/chat/send") else 512 * 1024
+            if n > limit:
+                # Read a modest overage so the client sees the 413 rather than a
+                # reset mid-upload; anything far larger just closes the connection.
+                self.close_connection = True
+                if n <= limit + 4 * 1024 * 1024:
+                    left = n
+                    while left > 0:
+                        chunk = self.rfile.read(min(left, 64 * 1024))
+                        if not chunk:
+                            break
+                        left -= len(chunk)
+                return self._err(413, "Those photos are too large together. Remove one and try again.")
             data = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(data, dict):
                 raise ValueError("JSON object required")
@@ -1565,7 +1621,22 @@ class Handler(BaseHTTPRequestHandler):
                 if data.get("reply_folder") and data.get("reply_uid") is not None:
                     args["reply_to_folder"] = str(data["reply_folder"])
                     args["reply_to_uid"] = int(data["reply_uid"])
-                result = MCP.call("compose_draft", args)
+                photos = _decode_images(data.get("photos"), MAX_DRAFT_PHOTOS, MAX_PHOTO_BYTES)
+                folder = None
+                try:
+                    if photos:
+                        os.makedirs(UPLOAD_ROOT, mode=0o700, exist_ok=True)
+                        folder = tempfile.mkdtemp(dir=UPLOAD_ROOT)
+                        args["attachments"] = []
+                        for i, (raw, ext) in enumerate(photos, 1):
+                            path = os.path.join(folder, "photo-{}.{}".format(i, ext))
+                            with open(path, "wb") as f:
+                                f.write(raw)
+                            args["attachments"].append(path)
+                    result = MCP.call("compose_draft", args)
+                finally:
+                    if folder:
+                        shutil.rmtree(folder, ignore_errors=True)
                 saved = _SAVED.search(result)
                 return self._send(200, {
                     "ok": True,
@@ -1602,9 +1673,12 @@ class Handler(BaseHTTPRequestHandler):
                 obj = {"cmd": cmd}
                 if cmd == "send":
                     text = str(data.get("text", ""))
-                    if not text.strip() or len(text) > 50000:
+                    images = _decode_images(data.get("images"), MAX_CHAT_IMAGES, MAX_CHAT_IMAGE_BYTES)
+                    if (not text.strip() and not images) or len(text) > 50000:
                         return self._err(400, "message is empty or over 50,000 characters")
                     obj["text"] = text
+                    if images:
+                        obj["images"] = [base64.b64encode(raw).decode("ascii") for raw, _ in images]
                 elif cmd == "answer":
                     obj.update(request_id=str(data.get("request_id", "")), allow=bool(data.get("allow")),
                                remember=bool(data.get("remember")))

@@ -12,6 +12,7 @@ struct ComposerView: View {
     @State private var contextFailed = false
     @State private var contextHeight: CGFloat = 1
     @State private var attachment: DraftAttachment?
+    @State private var photos: [ComposePhoto]
     @ScaledMetric(relativeTo: .body) private var labelWidth: CGFloat = 64
     @FocusState private var focus: Field?
     @Environment(\.dismiss) private var dismiss
@@ -22,6 +23,7 @@ struct ComposerView: View {
         self.store = store
         _draft = State(initialValue: initial)
         _showCopies = State(initialValue: !initial.cc.isEmpty || !(initial.bcc ?? "").isEmpty)
+        _photos = State(initialValue: store.loadPhotos(initial.photos ?? []))
     }
 
     var body: some View {
@@ -90,6 +92,14 @@ struct ComposerView: View {
             .onChange(of: draft) { _, value in
                 store.composer = value
                 store.remember(value)
+            }
+            .onChange(of: photos) { old, new in
+                let kept = Set(new.map(\.id))
+                for photo in new where !old.contains(photo) {
+                    do { try store.storePhoto(photo) } catch { self.error = "Couldn’t keep that photo on this phone. Save the draft before leaving." }
+                }
+                for photo in old where !kept.contains(photo.id) { store.removePhoto(photo.id) }
+                draft.photos = new.isEmpty ? nil : new.map(\.id)
             }
             .task(id: draft.account) { await loadContext() }
         }
@@ -174,6 +184,11 @@ struct ComposerView: View {
             TextField("Write your message…", text: $draft.body, axis: .vertical)
                 .frame(minHeight: 58, alignment: .topLeading)
                 .focused($focus, equals: .body).accessibilityIdentifier("composeBody")
+            if canAddPhotos {
+                // Between the text and the signature, so it stays in view while typing.
+                photoControls.padding(.leading, -12)
+                if !photos.isEmpty { PhotoStrip(photos: $photos).padding(.bottom, 8) }
+            }
             if let html = displayedContext?.html, !html.isEmpty {
                 EmailHTMLView(html: html, height: $contextHeight, inComposer: true)
                     .frame(height: contextHeight)
@@ -202,6 +217,14 @@ struct ComposerView: View {
                 }
             }.padding(16)
         }
+    }
+
+    /// New messages and replies only: an already-saved draft's MIME is rebuilt
+    /// in place on the mini, which keeps its files but cannot add new ones yet.
+    private var canAddPhotos: Bool { draft.revision == nil }
+
+    private var photoControls: some View {
+        PhotoAddControls(photos: $photos, limit: 10, maxPixel: PhotoEncoder.mailPixels) { error = $0 }
     }
 
     private var displayedContext: ComposeContext? {

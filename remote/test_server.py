@@ -7,6 +7,7 @@ in the real mailbox's schema, when that database is on this machine. It opens
 the database read-only.
 """
 
+import base64
 import json
 import os
 import sqlite3
@@ -981,6 +982,18 @@ class Api(unittest.TestCase):
                 break
         self.assertEqual(self.req("/api/chat/send", {"text": "again"})[0], 409)
 
+    def test_chat_send_relays_validated_images(self):
+        cid = self.j("/api/chat/start", body={})["chat"]
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"z" * 32).decode()
+        self.j("/api/chat/send", body={"text": "what is this", "images": [png]})
+        deadline = time.time() + 5
+        while png not in open(CALLS).read() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertIn(png, open(CALLS).read())
+        self.assertEqual(self.req("/api/chat/send", {"text": "x", "images": [base64.b64encode(b"text").decode()]})[0], 400)
+        self.assertEqual(self.req("/api/chat/send", {"text": "x", "images": [png] * 5})[0], 400)
+        self.j("/api/chat/stop", body={})
+
     def test_chat_events_reset_for_an_old_chat(self):
         cid = self.j("/api/chat/start", body={})["chat"]
         self.assertTrue(self.j("/api/chat/events?chat=%d&after=0" % (cid - 1)).get("reset"))
@@ -1036,6 +1049,38 @@ class Api(unittest.TestCase):
         self.assertFalse(args["is_html"])
         self.assertNotIn("send_email", server.ACTIONS)
         self.assertEqual(self.req("/api/draft", {"account": "a1", "to": []})[0], 400)
+
+    def test_draft_photos_become_attachments_and_are_removed_after(self):
+        jpeg = b"\xff\xd8\xff\xe0" + b"x" * 64
+        png = b"\x89PNG\r\n\x1a\n" + b"y" * 64
+        seen = {}
+        old = server.MCP.call
+        def capture(tool, args):
+            seen["args"] = args
+            seen["bytes"] = [open(p, "rb").read() for p in args.get("attachments", [])]
+            return "Draft saved to Drafts (uid 77)"
+        server.MCP.call = capture
+        old_root, server.UPLOAD_ROOT = server.UPLOAD_ROOT, os.path.join(TMP, "uploads")
+        try:
+            self.j("/api/draft", body={"account": "a1", "to": ["ann@example.org"], "body": "see photo",
+                                       "photos": [base64.b64encode(jpeg).decode(), base64.b64encode(png).decode()]})
+        finally:
+            server.MCP.call = old
+        paths = seen["args"]["attachments"]
+        self.assertTrue(all(p.startswith(server.UPLOAD_ROOT) for p in paths))
+        server.UPLOAD_ROOT = old_root
+        self.assertEqual([os.path.basename(p) for p in paths], ["photo-1.jpg", "photo-2.png"])
+        self.assertEqual(seen["bytes"], [jpeg, png])
+        self.assertFalse(any(os.path.exists(p) for p in paths), "uploaded photos must not outlive the call")
+        not_image = base64.b64encode(b"MZ executable").decode()
+        self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "photos": [not_image]})[0], 400)
+        self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "photos": ["%%%"]})[0], 400)
+        too_many = [base64.b64encode(jpeg).decode()] * (server.MAX_DRAFT_PHOTOS + 1)
+        self.assertEqual(self.req("/api/draft", {"account": "a1", "to": ["ann@example.org"], "photos": too_many})[0], 400)
+
+    def test_large_bodies_only_allowed_on_photo_paths(self):
+        big = {"account": "a1", "folder": "INBOX", "uid": 1, "action": "archive", "pad": "x" * (600 * 1024)}
+        self.assertEqual(self.req("/api/action", big)[0], 413)
 
     def test_compose_context_resolves_reply_identity_and_binds_saved_tail_to_review(self):
         compose = '/api/compose-context?account=a1&folder=INBOX&uid=1'

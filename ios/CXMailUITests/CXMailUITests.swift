@@ -479,6 +479,48 @@ final class CXMailUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Current email"].isEnabled, "Email context requires an open message")
         app.buttons["Your mail"].tap()
     }
+    /// Fixtures swap the system Paste button (which ignores synthesized taps)
+    /// for a plain one that runs the same clipboard-to-photo path.
+    func tapPaste(_ paste: XCUIElement, expecting photo: XCUIElement) {
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        XCTAssertTrue(photo.waitForExistence(timeout: 5))
+    }
+    func testPastedPhotoGoesWithEmailAndChat() {
+        launch(["--paste-photo"])
+        XCTAssertTrue(app.buttons["compose"].waitForExistence(timeout: 10)); app.buttons["compose"].tap()
+        let to = app.textFields["composeTo"]; XCTAssertTrue(to.waitForExistence(timeout: 5)); to.tap(); to.typeText("jordan@example.org")
+        app.textFields["composeBody"].tap(); app.textFields["composeBody"].typeText("Here is the photo.")
+        let paste = app.buttons["pastePhoto"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5), "Paste must be offered while typing when the clipboard holds an image")
+        XCTAssertTrue(app.buttons["addPhoto"].exists)
+        let photo = app.descendants(matching: .any)["composePhoto"]
+        tapPaste(paste, expecting: photo)
+        capture("Composer with pasted photo")
+        app.buttons["removePhoto"].firstMatch.tap()
+        XCTAssertFalse(photo.waitForExistence(timeout: 1))
+        tapPaste(paste, expecting: photo)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "composePhoto").count, 1)
+        app.buttons["reviewCompose"].tap()
+        XCTAssertTrue(app.buttons["sendReviewedDraft"].waitForExistence(timeout: 10), "The fixture refuses a draft without exactly one valid photo")
+
+        app.terminate(); launch(["--paste-photo", "--show-reader"])
+        XCTAssertTrue(app.buttons["readerChat"].waitForExistence(timeout: 10)); app.buttons["readerChat"].tap()
+        let input = app.textFields["chatInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap(); input.typeText("What is in this picture?")
+        let chatPhoto = app.descendants(matching: .any)["composePhoto"]
+        tapPaste(app.buttons["pastePhoto"], expecting: chatPhoto)
+        capture("Chat with pasted photo")
+        app.buttons["chatSend"].tap()
+        // The turn is appended before the request; check it before the reply scrolls it away.
+        XCTAssertTrue(app.images["chatSentPhoto"].waitForExistence(timeout: 2.5), "The sent turn shows its photo")
+        capture("Chat turn with photo")
+        XCTAssertTrue(app.buttons["permissionAllow"].waitForExistence(timeout: 10),
+                      "The fixture only answers a message carrying exactly one valid photo")
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Couldn’t confirm delivery")).firstMatch.exists)
+        XCTAssertFalse(chatPhoto.exists, "Sent photos leave the input")
+    }
     func testChatContextPickerKeepsConversationAndDraft() {
         launch(["--show-reader", "--chat-rich"])
         XCTAssertTrue(app.buttons["readerChat"].waitForExistence(timeout: 10)); app.buttons["readerChat"].tap()

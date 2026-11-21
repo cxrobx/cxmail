@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatItem: Identifiable {
     enum Kind { case user, assistant, tool, permission, notice }
@@ -11,6 +12,7 @@ struct ChatItem: Identifiable {
     var requestID: String?
     var rememberable = false
     var permissionState = "pending"
+    var photos: [UIImage] = []
 }
 
 @MainActor @Observable
@@ -25,6 +27,8 @@ final class ChatStore {
     var starting = false
     var error: String?
     var draft = ""
+    /// Photos waiting to go with the next message; like `draft`, they survive docking.
+    var photos: [ComposePhoto] = []
     var sending = false
     private var pollTask: Task<Void, Never>?
     private var pollEpoch: UUID?
@@ -80,17 +84,21 @@ final class ChatStore {
             }
         }
     }
-    func send(_ text: String, context: MessageRef? = nil) async -> Bool {
-        guard !busy, !starting, !sending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+    func send(_ text: String, context: MessageRef? = nil, photos: [ComposePhoto] = []) async -> Bool {
+        guard !busy, !starting, !sending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty else { return false }
         if !alive { await start(seed: context) }
         guard alive else { return false }
         busy = true; sending = true; error = nil
         defer { sending = false }
         // Put the outgoing turn before polling can append its streamed reply.
-        items.append(.init(kind: .user, text: text))
+        items.append(.init(kind: .user, text: text, photos: photos.map(\.thumbnail)))
+        let request = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(See the attached photo.)" : text
+        var body: [String: Any] = ["text": Self.requestText(request, context: context)]
+        if !photos.isEmpty { body["images"] = photos.map { $0.data.base64EncodedString() } }
         do {
-            let _: OK = try await api.post("/api/chat/send", body: ["text": Self.requestText(text, context: context)])
+            let _: OK = try await api.post("/api/chat/send", body: body)
             if draft == text { draft = "" }
+            let sent = Set(photos.map(\.id)); self.photos.removeAll { sent.contains($0.id) }
             resume(); return true
         } catch { busy = false; self.error = "Couldn’t confirm delivery. Check the conversation before retrying. " + error.localizedDescription; return false }
     }

@@ -20,6 +20,27 @@ import UIKit
     static var bodyRequests = 0
     static var chatStarts = 0
     static var lastChatText = ""
+    static var lastChatImages = 0
+    static var chatSentAt = Date.distantPast
+    static var lastDraftPhotos = 0
+    /// Same rule as the mini: base64 JPEG only from the phone.
+    static func validPhotos(_ value: Any?) throws -> Int {
+        guard let list = value as? [String] else { return 0 }
+        for item in list {
+            guard let data = Data(base64Encoded: item), data.starts(with: [0xFF, 0xD8, 0xFF]) else {
+                throw MailError.server("photos must be JPEG, PNG, GIF or WebP")
+            }
+        }
+        return list.count
+    }
+    /// A fiction-only clipboard image so UI tests can exercise Paste.
+    static func seedPasteboardPhoto() {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 320, height: 240)).image { ctx in
+            UIColor.systemTeal.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 320, height: 240))
+            UIColor.white.setFill(); ctx.fill(CGRect(x: 100, y: 70, width: 120, height: 100))
+        }
+        UIPasteboard.general.image = image
+    }
     static var scheduled: [[String: Any]] = []
     static var missingDrafts = Set<Int>()
     static var draftPreviewRequests = 0
@@ -140,6 +161,10 @@ import UIKit
             default: break
             }
         case "/api/draft":
+            lastDraftPhotos = try validPhotos(body?["photos"])
+            if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastDraftPhotos != 1 {
+                throw MailError.server("Expected exactly one pasted photo with this draft.")
+            }
             saved = true
             result = ["ok": true, "draft": ["account": "work", "folder": "Drafts", "uid": 20]]
         case "/api/draft-preview":
@@ -184,6 +209,11 @@ import UIKit
         case "/api/chat/start": chatStarts += 1; revision = 0; result = ["ok": true, "chat": 1]
         case "/api/chat/events":
             if q["after"] == "0" { result = ["chat": 1, "seq": 1, "alive": true, "events": [["event": ["type": "ready"]]]] }
+            else if revision == 1, ProcessInfo.processInfo.arguments.contains("--paste-photo"),
+                    Date().timeIntervalSince(chatSentAt) < 3 {
+                // Hold the reply so the test can see the sent photo before it scrolls away.
+                result = ["chat": 1, "seq": 1, "alive": true, "events": []]
+            }
             else if revision == 1 {
                 revision = 2
                 if ProcessInfo.processInfo.arguments.contains("--chat-rich") {
@@ -199,7 +229,12 @@ import UIKit
                 revision = 4
                 result = ["chat": 1, "seq": 4, "alive": true, "events": [["event": ["type": "turn_done"]]]]
             } else { result = ["chat": 1, "seq": revision >= 4 ? 4 : revision == 2 ? 3 : 1, "alive": true, "events": []] }
-        case "/api/chat/send": lastChatText = body?["text"] as? String ?? ""; revision = 1
+        case "/api/chat/send":
+            lastChatText = body?["text"] as? String ?? ""; revision = 1; chatSentAt = Date()
+            lastChatImages = try validPhotos(body?["images"])
+            if ProcessInfo.processInfo.arguments.contains("--paste-photo") && lastChatImages != 1 {
+                throw MailError.server("Expected exactly one pasted photo with this message.")
+            }
         case "/api/chat/interrupt": revision = 3
         case "/api/claude-thread":
             if ProcessInfo.processInfo.arguments.contains("--session-fixture") {

@@ -169,7 +169,10 @@ struct LocalDraft: Codable, Equatable, Identifiable {
     var reply: MessageRef?
     var revision: DraftRevision?
     var bcc: String?
-    var hasContent: Bool { !to.isEmpty || !subject.isEmpty || !body.isEmpty }
+    /// Photos added on the phone, stored beside draft.json by id (never inline,
+    /// since the draft is re-saved on every keystroke).
+    var photos: [UUID]?
+    var hasContent: Bool { !to.isEmpty || !subject.isEmpty || !body.isEmpty || !(photos ?? []).isEmpty }
     static func addresses(_ raw: String) -> [String] {
         raw.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace }).map(String.init)
     }

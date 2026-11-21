@@ -18,6 +18,7 @@ struct CXMailApp: App {
         #endif
         let model = MailStore(api: APIClient(baseURL: url, fixture: fixture), cache: cache)
         #if DEBUG
+        if fixture && ProcessInfo.processInfo.arguments.contains("--paste-photo") { Fixtures.seedPasteboardPhoto() }
         if fixture && ProcessInfo.processInfo.arguments.contains("--show-reader") { model.selected = .init(account: "work", folder: "INBOX", uid: 10) }
         #endif
         _store = State(initialValue: model)

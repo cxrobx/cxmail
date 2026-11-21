@@ -80,15 +80,18 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !chat.photos.isEmpty { PhotoStrip(photos: $chat.photos, size: 56) }
             TextField("Ask about your mail…", text: $chat.draft, axis: .vertical)
                 .font(.body).lineLimit(2...8).focused($focused)
                 .accessibilityIdentifier("chatInput").padding(.horizontal, 4)
             HStack(spacing: 8) {
+                PhotoAddControls(photos: $chat.photos, limit: 4, maxPixel: PhotoEncoder.chatPixels) { chat.error = $0 }
+                    .disabled(chat.busy || chat.sending)
                 contextPicker
                 Spacer(minLength: 8)
                 Button {
                     if chat.busy { Task { await chat.interrupt() } }
-                    else { let text = chat.draft; let context = mail.chatSeed; Task { _ = await chat.send(text, context: context) } }
+                    else { let text = chat.draft; let context = mail.chatSeed; let photos = chat.photos; Task { _ = await chat.send(text, context: context, photos: photos) } }
                 } label: {
                     Image(systemName: chat.busy ? "stop.fill" : "arrow.up")
                         .font(.body.weight(.semibold)).foregroundStyle(.white)
@@ -105,7 +108,7 @@ struct ChatView: View {
         .frame(maxWidth: 720).padding(.horizontal, 12).padding(.vertical, 8).frame(maxWidth: .infinity)
     }
     private var sendEnabled: Bool {
-        !chat.sending && !chat.starting && (chat.busy || ((mail.chatContextScope == .mail || mail.selected != nil) && !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+        !chat.sending && !chat.starting && (chat.busy || ((mail.chatContextScope == .mail || mail.selected != nil) && (!chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !chat.photos.isEmpty)))
     }
     private var contextPicker: some View {
         Menu {
@@ -160,7 +163,22 @@ struct ChatItemView: View {
         Group {
             switch item.kind {
             case .user:
-                HStack { Spacer(minLength: 32); Text(item.text).textSelection(.enabled).padding(12).background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 16, style: .continuous)) }
+                HStack { Spacer(minLength: 32)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if !item.photos.isEmpty {
+                            HStack(spacing: 6) {
+                                ForEach(item.photos.indices, id: \.self) { i in
+                                    Image(uiImage: item.photos[i]).resizable().scaledToFill().frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                        .accessibilityLabel("Sent photo").accessibilityIdentifier("chatSentPhoto")
+                                }
+                            }
+                        }
+                        if !item.text.isEmpty {
+                            Text(item.text).textSelection(.enabled).padding(12).background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                    }
+                }
                     .contextMenu { Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.text } }
             case .assistant:
                 ChatMarkdown(text: item.text).accessibilityIdentifier("chatAssistantMessage")
