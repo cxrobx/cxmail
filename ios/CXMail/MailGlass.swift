@@ -17,17 +17,17 @@ private struct MailGlass: ViewModifier {
     }
 }
 
-// Light mode uses warm off-whites (the #F8F7F5 canvas from T3 Code) instead of
+// Light mode uses warm paper tones (#F4F1EC canvas, #FAF8F4 cards) instead of
 // pure white. Dark mode resolves to the exact system colours it used before.
 extension Color {
     /// Full-screen paper behind writing surfaces (composer). Dark: systemBackground.
     static let mailPaper = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.systemBackground.resolvedColor(with: $0)
-        : UIColor(red: 0.973, green: 0.969, blue: 0.961, alpha: 1) })
+        : UIColor(red: 0.957, green: 0.945, blue: 0.925, alpha: 1) })
     /// Cards and grouped rows, one step above the canvas. Dark: secondarySystemGroupedBackground.
     static let mailSurface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.secondarySystemGroupedBackground.resolvedColor(with: $0)
-        : UIColor(red: 0.988, green: 0.984, blue: 0.976, alpha: 1) })
+        : UIColor(red: 0.980, green: 0.973, blue: 0.957, alpha: 1) })
 }
 
 /// A Form on the MailCanvas with off-white rows, so light-mode settings sheets
