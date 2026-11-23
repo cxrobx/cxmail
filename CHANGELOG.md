@@ -5,6 +5,7 @@ All notable changes to CXMail are documented here.
 ## Unreleased
 
 ### Changed
+- **Claude chat on iPhone, rebuilt on T3 Code's layout.** Tool calls fold into one work-log line ("Searched mail, read 2 emails · 4s") that opens to each step; approvals sit above the composer and close the keyboard; a Working capsule and a scroll-to-end button float above a composer the transcript never runs under. Replies are unboxed with copy and time; your messages are neutral bubbles.
 - **Paper-toned light mode on iPhone.** The inbox, reader, chat and composer use a warm paper canvas (#F4F1EC) with lighter cards (#FAF8F4) instead of a near-white.
 
 ### Fixed

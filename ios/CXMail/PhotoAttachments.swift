@@ -66,30 +66,51 @@ struct PhotoAddControls: View {
     let maxPixel: CGFloat
     /// Mail attaches any file; chat only takes images (all Claude can read).
     var anyFile = false
+    /// Chat shows one + menu (Photo Library / Choose Files) as T3's composer does.
+    var menu = false
     var onError: (String) -> Void = { _ in }
     @State private var picked: [PhotosPickerItem] = []
     @State private var importing = false
+    @State private var pickingPhotos = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            PhotosPicker(selection: $picked, maxSelectionCount: max(1, limit - photos.count), matching: .images) {
-                Image(systemName: "photo.on.rectangle")
-                    .font(.body.weight(.medium))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+        Group {
+            if menu {
+                Menu {
+                    Button("Photo Library", systemImage: "photo.on.rectangle") { pickingPhotos = true }
+                        .accessibilityIdentifier("addPhoto")
+                    Button("Choose Files", systemImage: "folder") { importing = true }
+                        .accessibilityIdentifier("addFile")
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 20, weight: .medium))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .disabled(photos.count >= limit)
+                .accessibilityLabel("Add attachment").accessibilityIdentifier("addAttachment")
+                .photosPicker(isPresented: $pickingPhotos, selection: $picked,
+                              maxSelectionCount: max(1, limit - photos.count), matching: .images)
+            } else {
+                HStack(spacing: 4) {
+                    PhotosPicker(selection: $picked, maxSelectionCount: max(1, limit - photos.count), matching: .images) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.body.weight(.medium))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(photos.count >= limit)
+                    .accessibilityLabel("Add photo")
+                    .accessibilityIdentifier("addPhoto")
+                    Button { importing = true } label: {
+                        Image(systemName: "paperclip")
+                            .font(.body.weight(.medium))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(photos.count >= limit)
+                    .accessibilityLabel(anyFile ? "Attach file" : "Add image from Files")
+                    .accessibilityIdentifier("addFile")
+                }
             }
-            .disabled(photos.count >= limit)
-            .accessibilityLabel("Add photo")
-            .accessibilityIdentifier("addPhoto")
-            Button { importing = true } label: {
-                Image(systemName: "paperclip")
-                    .font(.body.weight(.medium))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .disabled(photos.count >= limit)
-            .accessibilityLabel(anyFile ? "Attach file" : "Add image from Files")
-            .accessibilityIdentifier("addFile")
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: anyFile ? [.item] : [.image],
                       allowsMultipleSelection: true) { result in

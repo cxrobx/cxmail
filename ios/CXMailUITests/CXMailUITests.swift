@@ -523,6 +523,21 @@ final class CXMailUITests: XCTestCase {
         let stopped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == 'Send message'"), object: app.buttons["chatSend"])
         XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 5), .completed)
     }
+    /// Paper canvas and the T3-style chat in light mode, for visual review.
+    func testLightPaperInboxAndChat() {
+        launch(["-fixtureAppearance", "light", "--chat-rich"])
+        XCTAssertTrue(app.buttons["message-10"].waitForExistence(timeout: 10))
+        capture("Light paper inbox")
+        app.buttons["openChat"].tap()
+        let input = app.textViews["chatInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap(); input.typeText("Write a short plan")
+        app.buttons["chatSend"].tap()
+        XCTAssertTrue(app.staticTexts["Next steps"].waitForExistence(timeout: 10))
+        app.scrollViews.containing(.staticText, identifier: "Next steps").firstMatch.swipeDown()
+        capture("Light paper chat")
+    }
+
     func testChatMarkdownAndComposer() {
         launch(["--chat-rich"])
         app.buttons["openChat"].tap()
@@ -536,6 +551,13 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Reply to Jordan"].exists)
         XCTAssertTrue(app.staticTexts["Tuesday works well."].exists)
         XCTAssertFalse(app.staticTexts["## Next steps"].exists)
+        let work = app.buttons["chatWorkGroup"]
+        XCTAssertTrue(work.exists, "Tool calls fold into one work-log row")
+        XCTAssertTrue(work.label.contains("Searched mail, read 2 emails"), work.label)
+        XCTAssertEqual(app.buttons.matching(identifier: "chatWorkGroup").count, 1)
+        work.tap()
+        XCTAssertTrue(app.staticTexts["Read an email"].waitForExistence(timeout: 3), "Expanding shows each call")
+        capture("Chat work log expanded")
         XCTAssertEqual(app.buttons["chatSend"].label, "Send message")
         capture("Formatted chat transcript")
         app.buttons["chatContext"].tap()

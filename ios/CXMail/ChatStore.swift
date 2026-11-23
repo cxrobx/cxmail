@@ -13,6 +13,11 @@ struct ChatItem: Identifiable {
     var rememberable = false
     var permissionState = "pending"
     var photos: [UIImage] = []
+    /// When the item arrived, for timestamps and the work log's duration.
+    var created = Date()
+    /// A tool call's result time; nil while it runs.
+    var finished: Date?
+    var failed = false
 }
 
 @MainActor @Observable
@@ -30,6 +35,8 @@ final class ChatStore {
     /// Photos waiting to go with the next message; like `draft`, they survive docking.
     var photos: [ComposePhoto] = []
     var sending = false
+    /// Start of the running turn, for the "Working for 12s" control.
+    var turnStarted: Date?
     private var pollTask: Task<Void, Never>?
     private var pollEpoch: UUID?
     init(api: APIClient) { self.api = api }
@@ -88,7 +95,7 @@ final class ChatStore {
         guard !busy, !starting, !sending, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty else { return false }
         if !alive { await start(seed: context) }
         guard alive else { return false }
-        busy = true; sending = true; error = nil
+        busy = true; sending = true; error = nil; turnStarted = Date()
         defer { sending = false }
         // Put the outgoing turn before polling can append its streamed reply.
         items.append(.init(kind: .user, text: text, photos: photos.compactMap(\.thumbnail)))
@@ -146,7 +153,7 @@ final class ChatStore {
             }
         case "tool_result":
             if let index = items.firstIndex(where: { $0.id == event["tool_use_id"] as? String }) {
-                items[index].detail = text; items[index].text += event["is_error"] as? Bool == true ? " · Failed" : " · Done"
+                items[index].detail = text; items[index].finished = Date(); items[index].failed = event["is_error"] as? Bool == true
             }
         case "permission_request":
             finishStreaming()
@@ -161,14 +168,18 @@ final class ChatStore {
             items.append(.init(id: request, kind: .permission, text: event["display_name"] as? String ?? event["tool_name"] as? String ?? "Change mail",
                 detail: Self.pretty(["context": event["context"] ?? [:], "input": event["input"] ?? [:]]), context: summary.joined(separator: "\n"), requestID: request, rememberable: event["rememberable"] as? Bool ?? true))
         case "turn_done":
-            finishStreaming(); busy = false
+            finishStreaming(); busy = false; turnStarted = nil; finishTools()
             if event["is_error"] as? Bool == true { error = "Claude ended this turn with an error. You can ask it to continue." }
         case "notice": items.append(.init(kind: .notice, text: text))
         case "exited":
-            finishStreaming(); alive = false; busy = false; expirePermissions()
+            finishStreaming(); alive = false; busy = false; turnStarted = nil; finishTools(); expirePermissions()
             if let code = event["code"] as? Int, code != 0 { error = "Claude stopped unexpectedly. Start a new chat to continue." }
         default: break
         }
+    }
+    /// A turn that ended leaves no tool looking like it still runs.
+    private func finishTools() {
+        for index in items.indices where items[index].kind == .tool && items[index].finished == nil { items[index].finished = Date() }
     }
     private func finishStreaming() { if !items.isEmpty { items[items.count - 1].streaming = false } }
     private func expirePermissions() {

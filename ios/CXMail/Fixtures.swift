@@ -241,8 +241,12 @@ import UIKit
                 revision = 2
                 if ProcessInfo.processInfo.arguments.contains("--chat-rich") {
                     result = ["chat": 1, "seq": 3, "alive": true, "events": [
-                        ["event": ["type": "tool_use", "id": "search-1", "name": "search_email", "input": ["query": "Jordan"]]],
+                        ["event": ["type": "tool_use", "id": "search-1", "name": "mcp__cxmail__search_emails", "input": ["query": "Jordan"]]],
                         ["event": ["type": "tool_result", "tool_use_id": "search-1", "text": "Two matching messages"]],
+                        ["event": ["type": "tool_use", "id": "read-1", "name": "mcp__cxmail__read_email", "input": ["uid": 10]]],
+                        ["event": ["type": "tool_result", "tool_use_id": "read-1", "text": "A good place to pick this up"]],
+                        ["event": ["type": "tool_use", "id": "read-2", "name": "mcp__cxmail__read_email", "input": ["uid": 11]]],
+                        ["event": ["type": "tool_result", "tool_use_id": "read-2", "text": "The next steps for our project"]],
                         ["event": ["type": "assistant_text", "text": "## Next steps\n\nHere’s the **short version**:\n\n- Reply to Jordan\n- Pick **Tuesday** or Thursday\n\n> Nothing is sent until you review it.\n\n```text\nTuesday works well.\n```"]],
                         ["event": ["type": "turn_done"]]]]
                 } else {

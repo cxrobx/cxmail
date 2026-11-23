@@ -24,6 +24,10 @@ extension Color {
     static let mailPaper = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.systemBackground.resolvedColor(with: $0)
         : UIColor(red: 0.957, green: 0.945, blue: 0.925, alpha: 1) })
+    /// Your chat messages: one step darker than the paper. Dark: tertiarySystemFill on black.
+    static let chatBubble = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
+        ? UIColor(white: 0.13, alpha: 1)
+        : UIColor(red: 0.918, green: 0.902, blue: 0.871, alpha: 1) })
     /// Cards and grouped rows, one step above the canvas. Dark: secondarySystemGroupedBackground.
     static let mailSurface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
         ? UIColor.secondarySystemGroupedBackground.resolvedColor(with: $0)
