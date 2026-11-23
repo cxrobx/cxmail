@@ -13,6 +13,7 @@ import UIKit
     static var archived = Set<Int>()
     static var starred = Set<Int>()
     static var read = Set<Int>()
+    static var notify = Set<Int>()
     static var saved = false
     static var editedSubject: String?
     static var sent = false
@@ -50,7 +51,7 @@ import UIKit
             "subject": uid == 10 ? "A good place to pick this up" : "The next steps for our project",
             "from_name": uid == 10 ? "Jordan Lee" : "Alex Morgan", "from_email": "jordan@example.org",
             "date": "2026-11-14T17:30:00+00:00", "snippet": "Thanks for the thoughtful notes. Here’s what I’m thinking for next week.",
-            "read": read.contains(uid), "starred": starred.contains(uid), "attachments": true, "category": "primary", "recipients": ["Chris"]]
+            "read": read.contains(uid), "starred": starred.contains(uid), "notify": notify.contains(uid), "attachments": true, "category": "primary", "recipients": ["Chris"]]
         let examples: [Int: (String, String, String)] = [
             12: ("Bluebird Billing", "Your November statement is ready", ""),
             13: ("Morgan Chen", "Re: Thursday’s session", "Thursday at 2 works for me. I’ll send the notes over beforehand."),
@@ -135,6 +136,10 @@ import UIKit
                 body["image_policy"] = imagePolicy()
             }
             result = body
+        case "/api/notifications/thread":
+            let uid = body?["uid"] as? Int ?? 0
+            if body?["enabled"] as? Bool == true { notify.insert(uid) } else { notify.remove(uid) }
+            result = ["ok": true, "notify": notify.contains(uid)]
         case "/api/image-trust":
             imageSenderTrusted = body?["trusted"] as? Bool ?? false
             result = imagePolicy()

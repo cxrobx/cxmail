@@ -60,6 +60,8 @@ struct MailMessage: Codable, Hashable, Identifiable {
     var snippet: String
     var read: Bool
     var starred: Bool
+    /// Notify Me: the mini pushes every later reply in this conversation.
+    var notify: Bool?
     var attachments: Bool
     var category: String?
     var recipients: [String]?

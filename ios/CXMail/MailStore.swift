@@ -276,6 +276,29 @@ final class MailStore {
             self.error = friendly(error); return false
         }
     }
+    /// Notify Me / Stop Notifying for the message's whole conversation, like iOS Mail.
+    func setNotify(_ message: MailMessage, _ on: Bool) async {
+        guard !pending.contains(message.id) else { return }
+        pending.insert(message.id); defer { pending.remove(message.id) }
+        func apply(_ value: Bool?) {
+            if let index = rows.firstIndex(where: { $0.id == message.id }) { rows[index].notify = value }
+            snapshot.messages[message.id]?.notify = value
+        }
+        let previous = message.notify
+        apply(on)
+        do {
+            var body = message.ref.payload; body["enabled"] = on
+            let _: OK = try await api.post("/api/notifications/thread", body: body)
+            // Other copies of the thread pick up the flag on the next list refresh.
+            snapshot.lists = [:]; snapshot.lists[listKey] = rows; persist()
+            notice = on ? "You’ll be notified of replies" : "Reply notifications off"
+            if on, !api.fixture, !PushNotifications.shared.enabled { await PushNotifications.shared.enable() }
+        } catch {
+            if Self.isCancellation(error) { return }
+            apply(previous)
+            self.error = friendly(error)
+        }
+    }
     static func isCancellation(_ error: Error) -> Bool {
         if error is CancellationError { return true }
         if let url = error as? URLError, url.code == .cancelled { return true }

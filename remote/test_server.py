@@ -67,6 +67,7 @@ os.environ.update(
         "CXMAIL_T3_HOME_PROJECT": TMP,
         "CXMAIL_SCHEDULE_DB": os.path.join(TMP, 'scheduled.sqlite'),
         "CXMAIL_DRAFT_STATE": os.path.join(TMP, 'missing-drafts.json'),
+        "CXMAIL_NOTIFICATIONS_DB": os.path.join(TMP, 'notifications.sqlite'),
     }
 )
 os.environ.pop("CXMAIL_REMOTE_DEV", None)
@@ -287,6 +288,24 @@ class Api(unittest.TestCase):
             self.assertEqual(self.req('/api/notifications/disable',{'device':data['device']})[0],200)
             self.assertEqual(self.req('/api/notifications/trust',{'email':'a@example.org','trusted':False})[0],200)
             self.assertNotIn('a@example.org',self.j('/api/notifications')['trusted_senders'])
+        finally:
+            server.NOTIFICATIONS=original
+
+    def test_notify_me_marks_every_copy_of_the_watched_thread(self):
+        from notifications import Notifications
+        original=server.NOTIFICATIONS
+        server.NOTIFICATIONS=Notifications(server.db, os.path.join(TMP,'test-watch.sqlite'), sender=lambda *a:(200,''))
+        try:
+            ref={'account':'a1','folder':'INBOX','uid':10,'enabled':True}
+            self.assertEqual(self.req('/api/notifications/thread',ref,login=None)[0],403)
+            self.assertEqual(self.req('/api/notifications/thread',dict(ref,uid=999))[0],400)
+            self.assertEqual(json.loads(self.req('/api/notifications/thread',ref)[2]),{'ok':True,'notify':True})
+            rows={r['uid']:r for r in self.j('/api/messages?view=all&account=a1')}
+            self.assertTrue(rows[10]['notify'])
+            self.assertFalse(rows[11]['notify'])
+            self.assertTrue(self.j('/api/message?account=a1&folder=INBOX&uid=10')['notify'])
+            self.assertEqual(json.loads(self.req('/api/notifications/thread',dict(ref,enabled=False))[2]),{'ok':True,'notify':False})
+            self.assertFalse({r['uid']:r for r in self.j('/api/messages?view=all&account=a1')}[10]['notify'])
         finally:
             server.NOTIFICATIONS=original
 

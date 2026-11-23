@@ -35,6 +35,29 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.alerts.staticTexts["Opened a Claude thread in T3 on the mini."].waitForExistence(timeout: 8))
     }
 
+    func testInboxContextMenuNotifyMeToggles() {
+        XCUIDevice.shared.orientation = .portrait
+        launch()
+        let row = app.buttons["message-10"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.65)).press(forDuration: 1)
+        let notify = app.buttons["Notify Me"].firstMatch
+        XCTAssertTrue(notify.waitForExistence(timeout: 5))
+        capture("Context menu with Notify Me")
+        notify.tap()
+        XCTAssertTrue(app.alerts.staticTexts["You’ll be notified of replies"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.65)).press(forDuration: 1)
+        let stop = app.buttons["Stop Notifying"].firstMatch
+        XCTAssertTrue(stop.waitForExistence(timeout: 5), "A watched thread offers Stop Notifying")
+        XCTAssertFalse(app.buttons["Notify Me"].exists)
+        stop.tap()
+        XCTAssertTrue(app.alerts.staticTexts["Reply notifications off"].waitForExistence(timeout: 5))
+        app.alerts.buttons["OK"].tap()
+        row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.65)).press(forDuration: 1)
+        XCTAssertTrue(app.buttons["Notify Me"].firstMatch.waitForExistence(timeout: 5))
+    }
+
     func testFixedWidthEmailFitsClosedReaderAndRotation() {
         XCUIDevice.shared.orientation = .portrait
         launch(["--show-reader", "--fixed-width-email"])

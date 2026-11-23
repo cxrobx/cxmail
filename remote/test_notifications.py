@@ -19,7 +19,8 @@ class NotificationTests(unittest.TestCase):
             INSERT INTO folders VALUES ('b','INBOX','inbox',1);
             CREATE TABLE messages(id INTEGER PRIMARY KEY,account_id TEXT,folder_name TEXT,uid INTEGER,
                 message_id TEXT,from_email TEXT,is_read INTEGER,date TEXT,flags TEXT,category TEXT DEFAULT 'updates',
-                from_name TEXT DEFAULT 'Jordan', subject TEXT DEFAULT 'Tuesday plan', snippet TEXT DEFAULT 'Can we meet?');
+                from_name TEXT DEFAULT 'Jordan', subject TEXT DEFAULT 'Tuesday plan', snippet TEXT DEFAULT 'Can we meet?',
+                thread_root_id TEXT);
             CREATE TABLE message_bodies(account_id TEXT,folder_name TEXT,uid INTEGER,plain_text TEXT);
             CREATE TABLE triage_verdicts(account_id TEXT,folder_name TEXT,uid INTEGER,needs_response REAL,
                 needs_action REAL,category TEXT,urgency INTEGER,model TEXT,prompt_version TEXT,withheld_reason TEXT);
@@ -46,11 +47,11 @@ class NotificationTests(unittest.TestCase):
             with c: yield c
         finally: c.close()
 
-    def mail(self, uid=1, sender='trusted@example.org', date=None, account='a'):
+    def mail(self, uid=1, sender='trusted@example.org', date=None, account='a', thread=None):
         date = date or datetime.datetime.now(datetime.timezone.utc).isoformat()
         with self.mailbox() as c:
-            c.execute('INSERT INTO messages(id,account_id,folder_name,uid,message_id,from_email,is_read,date,flags) VALUES (?,?,?,?,?,?,?,?,?)',
-                      (uid, account,'INBOX',uid,'<m{}@example.org>'.format(uid),sender,0,date,''))
+            c.execute('INSERT INTO messages(id,account_id,folder_name,uid,message_id,from_email,is_read,date,flags,thread_root_id) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                      (uid, account,'INBOX',uid,'<m{}@example.org>'.format(uid),sender,0,date,'',thread))
             c.execute("INSERT INTO message_bodies VALUES (?,'INBOX',?,'fictional body')", (account, uid))
 
     def verdict(self, uid=1, category='primary', urgency=1, model='decisions:gpt-6-luna', withheld=None):
@@ -84,6 +85,58 @@ class NotificationTests(unittest.TestCase):
         self.mail(4, account='b')
         self.worker.tick()
         self.assertEqual([call[2]['uid'] for call in self.calls], [3])
+
+    def watch(self, uid, enabled=True, account='b'):
+        return self.worker.watch({'account': account, 'folder': 'INBOX', 'uid': uid, 'enabled': enabled})
+
+    def test_watched_thread_notifies_every_later_reply_without_inference(self):
+        # Account b has notifications off and nothing is important or trusted.
+        self.worker.register(self.device)
+        classified = []
+        self.worker.classifier = lambda row: classified.append(row['uid']) or {}
+        self.mail(1, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        self.mail(2, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        self.assertEqual(self.watch(1), {'ok': True, 'notify': True})
+        self.assertIn(('b', '<root@example.org>'), self.worker.watched())
+        self.worker.tick()
+        self.assertEqual(self.calls, [], 'replies before Notify Me are never backfilled')
+        self.mail(3, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        self.mail(4, account='b', sender='unknown@example.org', thread='<other@example.org>')
+        self.mail(5, account='b', sender='personal@example.org', thread='<root@example.org>')
+        self.worker.tick()
+        self.assertEqual([call[2]['uid'] for call in self.calls], [3])
+        self.assertEqual(classified, [], 'a watched reply skips inference; other mail stays out of scope')
+
+    def test_single_message_thread_matches_by_message_id(self):
+        self.worker.register(self.device)
+        self.mail(1, account='b', sender='unknown@example.org')
+        self.watch(1)
+        self.mail(2, account='b', sender='unknown@example.org', thread='<m1@example.org>')
+        self.worker.tick()
+        self.assertEqual([call[2]['uid'] for call in self.calls], [2])
+
+    def test_watched_thread_still_blocks_junk_and_phishing_and_stops_when_unwatched(self):
+        self.worker.register(self.device)
+        self.mail(1, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        self.watch(1)
+        for uid in (2, 3, 4):
+            self.mail(uid, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        with self.mailbox() as c:
+            c.execute("UPDATE messages SET flags='$Junk' WHERE uid=2")
+            c.execute("INSERT INTO message_risk VALUES ('b','m3@example.org',.9,0)")
+            c.execute("INSERT INTO triage_verdicts VALUES ('b','INBOX',4,0,0,'junk',0,'decisions:gpt-6-luna','v2',NULL)")
+        self.worker.tick()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.watch(1, enabled=False), {'ok': True, 'notify': False})
+        self.mail(5, account='b', sender='unknown@example.org', thread='<root@example.org>')
+        self.worker.tick()
+        self.assertEqual(self.calls, [])
+
+    def test_watch_rejects_bad_input_and_unknown_mail(self):
+        for bad in ({}, {'account': 'b', 'folder': 'INBOX', 'uid': '1', 'enabled': True},
+                    {'account': 'b', 'folder': 'INBOX', 'uid': 1, 'enabled': 'yes'}):
+            with self.assertRaises(ValueError): self.worker.watch(bad)
+        with self.assertRaises(ValueError): self.watch(99)
 
     def test_account_disabled_during_inference_prevents_delivery(self):
         self.worker.register(self.device)

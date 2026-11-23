@@ -16,6 +16,23 @@ import uuid
 from contextlib import contextmanager
 
 STATE = os.path.expanduser('~/Library/Application Support/com.cxmail.remote')
+# The desktop's conversation key (cxmail-db get_thread_uids_in_folder), so a
+# watched thread matches the same replies the desktop groups together.
+THREAD_KEY = "COALESCE(m.thread_root_id, m.message_id, 'uid:' || m.folder_name || ':' || m.uid)"
+
+
+def thread_key(row):
+    for column in ('thread_root_id', 'message_id'):
+        if row[column] is not None:
+            return row[column]
+    return 'uid:{}:{}'.format(row['folder_name'], row['uid'])
+
+
+def hard_excluded(row):
+    # Exclusions no preference can override: junk, read, likely phishing/impersonation.
+    return bool(row['is_read'] or row['category'] == 'junk'
+                or '$junk' in (row['flags'] or '').lower()
+                or (row['p_phishing'] or 0) >= .5 or (row['p_impersonation'] or 0) >= .5)
 
 
 def alert_text(row):
@@ -33,9 +50,7 @@ def alert_text(row):
 
 def important(row, trusted):
     # Trust is an explicit exact-address preference, never a display-name match.
-    if (row['is_read'] or row['category'] == 'junk'
-            or '$junk' in (row['flags'] or '').lower()
-            or (row['p_phishing'] or 0) >= .5 or (row['p_impersonation'] or 0) >= .5):
+    if hard_excluded(row):
         return False
     if (row['from_email'] or '').strip().lower() in trusted:
         return True
@@ -67,6 +82,9 @@ class Notifications:
                 CREATE TABLE IF NOT EXISTS trusted (email TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS notification_accounts (
                     account_id TEXT PRIMARY KEY, start_id INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS watched_threads (
+                    account_id TEXT NOT NULL, thread TEXT NOT NULL, start_id INTEGER NOT NULL,
+                    created REAL NOT NULL, PRIMARY KEY(account_id, thread));
                 CREATE TABLE IF NOT EXISTS verdicts (
                     message TEXT PRIMARY KEY, result TEXT, attempted REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS deliveries (
@@ -119,6 +137,40 @@ class Notifications:
                                (row['account_id'],)).fetchone()
         return account is not None and row['id'] > account['start_id']
 
+    def watch(self, data):
+        """Notify Me: every later reply in this conversation alerts, like iOS Mail."""
+        account, folder, uid, enabled = (data.get(k) for k in ('account', 'folder', 'uid', 'enabled'))
+        if (not isinstance(account, str) or not account or not isinstance(folder, str) or not folder
+                or type(uid) is not int or uid <= 0 or type(enabled) is not bool):
+            raise ValueError('An account, folder, uid and boolean enabled flag are required')
+        with self.lock, self.mailbox() as m, self.connect() as c:
+            row = m.execute('SELECT m.thread_root_id, m.message_id, m.folder_name, m.uid FROM messages m '
+                            'JOIN accounts a ON a.id=m.account_id '
+                            'WHERE m.account_id=? AND m.folder_name=? AND m.uid=? AND a.is_active=1',
+                            (account, folder, uid)).fetchone()
+            if not row:
+                raise ValueError('Message is unavailable for notifications')
+            key = thread_key(row)
+            if enabled:
+                # Only replies that arrive from now on; never backfill the thread.
+                start = m.execute('SELECT coalesce(max(id),0) FROM messages').fetchone()[0]
+                c.execute('INSERT OR IGNORE INTO watched_threads VALUES (?,?,?,?)',
+                          (account, key, start, time.time()))
+            else:
+                c.execute('DELETE FROM watched_threads WHERE account_id=? AND thread=?', (account, key))
+        return {'ok': True, 'notify': enabled}
+
+    def watched(self):
+        with self.connect() as c:
+            return {(r[0], r[1]) for r in c.execute('SELECT account_id, thread FROM watched_threads')}
+
+    def watch_allows(self, conn, row):
+        watch = conn.execute('SELECT start_id FROM watched_threads WHERE account_id=? AND thread=?',
+                             (row['account_id'], row['thread_key'])).fetchone()
+        # Your own reply in the thread is never news.
+        own = (row['from_email'] or '').strip().lower() == (row['account_email'] or '').strip().lower()
+        return watch is not None and row['id'] > watch['start_id'] and not own
+
     def trust(self, data):
         email = data.get('email')
         if not isinstance(email, str) or '*' in email or not re.fullmatch(r'[^\s@<>]{1,100}@[^\s@<>]{1,150}\.[^\s@<>]{1,50}', email):
@@ -170,10 +222,13 @@ class Notifications:
             devices = c.execute('SELECT * FROM devices WHERE enabled=1').fetchall()
             account_ids = [r[0] for r in c.execute('SELECT account_id FROM notification_accounts')]
             placeholders = ','.join('?' for _ in account_ids)
+            watched = [r[0] + '\x1f' + r[1] for r in c.execute('SELECT account_id, thread FROM watched_threads')]
+            watch_placeholders = ','.join('?' for _ in watched)
             for d in devices:
                 # Never backfill pre-registration mail, old sync imports, hidden accounts,
                 # read mail, or non-inbox folders. Pending triage is reconsidered next tick.
-                rows = m.execute('''SELECT m.*, v.needs_response, v.needs_action,
+                rows = m.execute('''SELECT m.*, ''' + THREAD_KEY + ''' AS thread_key, a.email AS account_email,
+                        v.needs_response, v.needs_action,
                         v.category AS triage_category, v.urgency, v.model, v.prompt_version, v.withheld_reason,
                         risk.p_phishing, risk.p_impersonation,
                         EXISTS(SELECT 1 FROM message_bodies b WHERE b.account_id=m.account_id
@@ -187,16 +242,20 @@ class Notifications:
                         AND risk.message_key=CASE WHEN trim(coalesce(m.message_id,'')) <> ''
                             THEN lower(trim(trim(m.message_id), '<>'))
                             ELSE 'uid:' || m.folder_name || ':' || m.uid END
-                    WHERE m.id>? AND m.account_id IN (''' + placeholders + ''')
+                    WHERE m.id>? AND (m.account_id IN (''' + placeholders + ''')
+                        OR m.account_id || char(31) || ''' + THREAD_KEY + ''' IN (''' + watch_placeholders + '''))
                         AND a.is_active=1 AND a.hidden_from_aggregates=0
                         AND f.folder_type='inbox' AND m.is_read=0
                         AND julianday(m.date)>julianday('now','-1 day')
-                    ORDER BY m.id DESC LIMIT 2000''', (d['start_id'], *account_ids)).fetchall()
+                    ORDER BY m.id DESC LIMIT 2000''', (d['start_id'], *account_ids, *watched)).fetchall()
                 for r in rows:
                     active = c.execute('SELECT enabled,start_id FROM devices WHERE id=?', (d['id'],)).fetchone()
                     if not active or not active['enabled']:
                         break
-                    if r['id'] <= active['start_id'] or not self.account_allows(c, r):
+                    if r['id'] <= active['start_id']:
+                        continue
+                    watching = self.watch_allows(c, r)
+                    if not watching and not self.account_allows(c, r):
                         continue
                     trusted = {t[0] for t in c.execute('SELECT email FROM trusted')}
                     r = dict(r)
@@ -207,7 +266,8 @@ class Notifications:
                     if (r['category'] == 'junk' or '$junk' in (r['flags'] or '').lower()
                             or (r['p_phishing'] or 0) >= .5 or (r['p_impersonation'] or 0) >= .5):
                         continue
-                    if r['withheld_reason'] and (r['from_email'] or '').strip().lower() not in trusted:
+                    if (not watching and r['withheld_reason']
+                            and (r['from_email'] or '').strip().lower() not in trusted):
                         continue
                     # Message-ID dedupes copies and moves; mailbox generation guards UID reuse.
                     mid = (r['message_id'] or '').strip().strip('<>').lower()
@@ -216,7 +276,8 @@ class Notifications:
                                                (r['account_id'], r['folder_name'])).fetchone()[0]
                         mid = '{}:{}:{}'.format(r['folder_name'], generation, r['uid'])
                     key = hashlib.sha256((r['account_id'] + ':' + mid).encode()).hexdigest()
-                    if (not important(r, trusted) and self.classifier
+                    # A watched thread skips the importance filter and its inference.
+                    if (not watching and not important(r, trusted) and self.classifier
                             and (r['model'] != 'decisions:gpt-6-luna' or r['prompt_version'] != 'v2')):
                         if not r['body_available']:
                             continue
@@ -247,7 +308,7 @@ class Notifications:
                         for field in ('needs_response','needs_action','category','urgency','model'):
                             r[field] = verdict.get(field)
                         r['prompt_version'] = 'v2'
-                    if not important(r, trusted):
+                    if not watching and not important(r, trusted):
                         continue
                     old = c.execute('SELECT * FROM deliveries WHERE device=? AND message=?', (d['id'], key)).fetchone()
                     if old and (old['state'] != 'retry' or old['retry_at'] > time.time() or old['attempts'] >= 5):
@@ -255,8 +316,9 @@ class Notifications:
                     # Serialize final delivery with account changes and device opt-out.
                     with self.lock:
                         current = c.execute('SELECT * FROM devices WHERE id=?', (d['id'],)).fetchone()
+                        watching = self.watch_allows(c, r)
                         if (not current or not current['enabled'] or r['id'] <= current['start_id']
-                                or not self.account_allows(c, r)):
+                                or not (watching or self.account_allows(c, r))):
                             continue
                         d = current
                         live = m.execute('''SELECT m.is_read,a.is_active,a.hidden_from_aggregates,f.folder_type
@@ -267,7 +329,7 @@ class Notifications:
                             continue
                         # Recheck trust revocation after slow inference.
                         fresh_trust = {t[0] for t in c.execute('SELECT email FROM trusted')}
-                        if not important(r, fresh_trust):
+                        if hard_excluded(r) or (not watching and not important(r, fresh_trust)):
                             continue
                         if deliveries >= 5:
                             break

@@ -261,6 +261,13 @@ Hidden accounts, read mail, non-inbox mail, known junk/phishing/impersonation,
 and messages older than a day are excluded. Enabling starts after the mailbox's
 current message ID, so an old inbox never floods the phone.
 
+**Notify Me** (long-press a message on iPhone) watches its conversation, keyed
+like the desktop's threading (`thread_root_id`, else Message-ID). Every later
+inbox reply in that thread alerts, even when its account is off or the mail
+isn't rated important, and without inference. Junk, likely phishing or
+impersonation, read mail and your own replies never alert. Replies that arrived
+before you tapped Notify Me are not backfilled; Stop Notifying removes the watch.
+
 Trusted addresses notify without inference. Other mail reuses current Luna
 Decisions `v2` verdicts or invokes `remote notification-verdict` on the signed
 helper for a cached plain-text body. It uses the existing Rust triage gate

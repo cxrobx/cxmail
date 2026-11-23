@@ -32,7 +32,7 @@ import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from scheduled import ScheduledQueue, ScheduleConflict
-from notifications import Notifications
+from notifications import Notifications, thread_key
 
 from word_preview import FORMATS, render_office, render_word
 
@@ -74,7 +74,8 @@ def notifications():
     global NOTIFICATIONS
     with NOTIFICATION_INIT_LOCK:
         if NOTIFICATIONS is None:
-            NOTIFICATIONS = Notifications(db, classifier=notification_verdict)
+            NOTIFICATIONS = Notifications(db, os.environ.get("CXMAIL_NOTIFICATIONS_DB"),
+                                          classifier=notification_verdict)
     return NOTIFICATIONS
 
 def notification_verdict(row):
@@ -165,12 +166,26 @@ def row_summary(r):
         "attachments": bool(r["has_attachments"]),
         "category": r["category"],
         "recipients": [a.get("name") or a.get("email") for a in addr_list(r["to_list"])],
+        "thread_key": thread_key(r),
     }
+
+
+def with_notify(rows):
+    """Mark rows whose conversation is watched (Notify Me). Never fails a list."""
+    try:
+        watched = notifications().watched()
+    except (OSError, sqlite3.Error):
+        return rows
+    for r in rows:
+        if r:
+            r["notify"] = (r["account"], r.get("thread_key")) in watched
+    return rows
 
 
 SUMMARY_COLS = (
     "m.account_id, m.folder_name, m.uid, m.subject, m.from_name, m.from_email, "
-    "m.date, m.snippet, m.is_read, m.is_flagged, m.has_attachments, m.category, m.to_list"
+    "m.date, m.snippet, m.is_read, m.is_flagged, m.has_attachments, m.category, m.to_list, "
+    "m.thread_root_id, m.message_id"
 )
 
 
@@ -428,7 +443,7 @@ def hybrid_search(conn, query, account=None, cursor=None, keyword=False, client=
                 summary["snippet"] = " ".join((row["preview_body"] or "").split())[:240]
             summary["semantic_match"] = bool(hit.get("semantic_match"))
             rows.append(summary)
-    return {"results": PENDING.apply(rows), "semantic_status": status,
+    return {"results": with_notify(PENDING.apply(rows)), "semantic_status": status,
             "next_cursor": "{}:{}".format(token, offset + PAGE) if len(hits) > offset + PAGE else None}
 
 
@@ -1431,7 +1446,7 @@ class Handler(BaseHTTPRequestHandler):
                         rows = search(c, q["q"], q.get("account"), q.get("before"))
                     else:
                         rows = list_messages(c, q.get("view", "primary"), q.get("account"), q.get("before"))
-                    return self._send(200, PENDING.apply(rows))
+                    return self._send(200, with_notify(PENDING.apply(rows)))
             if url.path == "/api/message":
                 ref = self._ref(q)
                 with db() as c:
@@ -1444,7 +1459,7 @@ class Handler(BaseHTTPRequestHandler):
                 msg = load_message_body(msg)
                 msg["image_policy"] = message_image_policy(ref)
                 msg["images_trusted"] = msg["image_policy"]["auto_load"]
-                return self._send(200, msg)
+                return self._send(200, with_notify([msg])[0])
             if url.path == "/api/body":
                 ref = self._ref(q)
                 with db() as c:
@@ -1588,6 +1603,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, notifications().trust(data))
             if url.path == "/api/notifications/account":
                 return self._send(200, notifications().set_account(data))
+            if url.path == "/api/notifications/thread":
+                return self._send(200, notifications().watch(data))
             if url.path == "/api/image-trust":
                 if type(data.get("uid")) is not int or not 1 <= data["uid"] <= 4294967295:
                     return self._err(400, "uid must be a positive integer")

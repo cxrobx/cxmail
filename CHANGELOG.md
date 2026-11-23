@@ -4,11 +4,15 @@ All notable changes to CXMail are documented here.
 
 ## Unreleased
 
+### Changed
+- **Paper-toned light mode on iPhone.** The inbox, reader, chat and composer use a warm paper canvas (#F4F1EC) with lighter cards (#FAF8F4) instead of a near-white.
+
 ### Fixed
 - **Duo mail tap targets.** Blank row space is tappable, and a pending mark-read request no longer disables opening or scrolling a message.
 - **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
 
 ### Added
+- **Notify Me for a conversation.** Long-press a message on iPhone and choose Notify Me to get an alert for every later reply in that thread, as in iOS Mail. Junk and likely phishing still never alert. Choose Stop Notifying to turn it off.
 - **Optional message when opening a T3 session.** Use Open in Session from an inbox row, the reader, or a notification. CXMail asks for an optional message before starting the session for that email.
 - **Mail previews and account switches for smart notifications.** Alerts show sender, subject, and an available snippet. Choose which inboxes can notify across your CXMail devices.
 - **Open in Session from a smart notification.** Turn on the action in CXMail Settings, then press and hold a new mail alert to start a T3 session for that message.

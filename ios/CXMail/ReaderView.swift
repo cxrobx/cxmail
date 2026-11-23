@@ -258,6 +258,11 @@ struct MailActions: View {
             Button("Archive", systemImage: "archivebox") { Task { await store.action("archive", message) } }
             Button(message.starred ? "Unstar" : "Star", systemImage: "star") { Task { await store.action(message.starred ? "unstar" : "star", message) } }
             Button(message.read ? "Mark unread" : "Mark read", systemImage: "envelope.badge") { Task { await store.action(message.read ? "unread" : "read", message) } }
+            if message.notify == true {
+                Button("Stop Notifying", systemImage: "bell.slash") { Task { await store.setNotify(message, false) } }
+            } else {
+                Button("Notify Me", systemImage: "bell") { Task { await store.setNotify(message, true) } }
+            }
         }
     }
     private func reply(_ all: Bool) async {
