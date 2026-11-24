@@ -5,6 +5,7 @@ All notable changes to CXMail are documented here.
 ## Unreleased
 
 ### Changed
+- **Finished chat turns fold.** Once Claude answers, its steps (tool calls, interim notes, approvals) collapse into one "Worked for 34s · searched mail, read 3 emails" row above the reply; tap to see each step.
 - **Claude chat on iPhone, rebuilt on T3 Code's layout.** Tool calls fold into one work-log line ("Searched mail, read 2 emails · 4s") that opens to each step; approvals sit above the composer and close the keyboard; a Working capsule and a scroll-to-end button float above a composer the transcript never runs under. Replies are unboxed with copy and time; your messages are neutral bubbles.
 - **Paper-toned light mode on iPhone.** The inbox, reader, chat and composer use a warm paper canvas (#F4F1EC) with lighter cards (#FAF8F4) instead of a near-white.
 
@@ -13,6 +14,7 @@ All notable changes to CXMail are documented here.
 - **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
 
 ### Added
+- **Message preview on long-press (iPhone).** Press and hold an inbox row to see the email itself (sender, recipients, subject and the rendered body, remote images off) above the actions, as in iOS Mail. It never marks the message read.
 - **Notify Me for a conversation.** Long-press a message on iPhone and choose Notify Me to get an alert for every later reply in that thread, as in iOS Mail. Junk and likely phishing still never alert. Choose Stop Notifying to turn it off.
 - **Optional message when opening a T3 session.** Use Open in Session from an inbox row, the reader, or a notification. CXMail asks for an optional message before starting the session for that email.
 - **Mail previews and account switches for smart notifications.** Alerts show sender, subject, and an available snippet. Choose which inboxes can notify across your CXMail devices.

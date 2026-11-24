@@ -79,7 +79,7 @@ struct ChatView: View {
 
     // MARK: Feed
 
-    private var entries: [ChatFeedEntry] { ChatFeedEntry.build(chat.items) }
+    private var entries: [ChatFeedEntry] { ChatFeedEntry.build(chat.items, busy: chat.busy) }
     /// A sent turn with nothing back yet shows T3's live "Thinking" row.
     private var thinking: Bool { chat.busy && chat.items.last?.kind == .user }
     private var pendingApprovals: [ChatItem] {
@@ -90,6 +90,8 @@ struct ChatView: View {
         switch entry {
         case .work(let id, let tools):
             WorkLogGroup(tools: tools, live: chat.busy && entry.id == entries.last?.id).id(id).padding(.bottom, 8)
+        case .turn(_, let work, let start, let end):
+            TurnWorkFold(items: work, duration: end.timeIntervalSince(start)).padding(.bottom, 8)
         case .item(let item):
             switch item.kind {
             case .user: UserMessage(item: item).padding(.top, 12).padding(.bottom, 8)
@@ -262,13 +264,40 @@ struct ChatView: View {
 enum ChatFeedEntry: Identifiable {
     case item(ChatItem)
     case work(String, [ChatItem])
+    /// A finished turn's steps (tools, interim notes, answered approvals), folded
+    /// under one "Worked for 34s" row as T3 does; only the final reply stays out.
+    case turn(String, [ChatItem], Date, Date)
     var id: String {
         switch self {
         case .item(let item): item.id
         case .work(let id, _): id
+        case .turn(let id, _, _, _): id
         }
     }
-    static func build(_ items: [ChatItem]) -> [ChatFeedEntry] {
+    static func build(_ items: [ChatItem], busy: Bool) -> [ChatFeedEntry] {
+        // Split into turns at each of your messages. A turn that has ended folds.
+        var turns: [[ChatItem]] = [[]]
+        for item in items {
+            if item.kind == .user { turns.append([item]) } else { turns[turns.count - 1].append(item) }
+        }
+        var entries: [ChatFeedEntry] = []
+        for (index, turn) in turns.enumerated() where !turn.isEmpty {
+            let live = busy && index == turns.count - 1
+            let pending = turn.contains { $0.kind == .permission && ($0.permissionState == "pending" || $0.permissionState == "answering") }
+            let body = turn.first?.kind == .user ? Array(turn.dropFirst()) : turn
+            let finalReply = body.last { $0.kind == .assistant && !$0.text.isEmpty }
+            let work = body.filter { $0.id != finalReply?.id }
+            guard !live, !pending, work.contains(where: { $0.kind == .tool }) else { entries += steps(turn); continue }
+            if let user = turn.first, user.kind == .user { entries.append(.item(user)) }
+            let start = turn.first?.created ?? work[0].created
+            let end = finalReply?.created ?? work.compactMap { $0.finished ?? $0.created }.max() ?? start
+            entries.append(.turn("turn-" + work[0].id, work, start, end))
+            if let finalReply { entries.append(.item(finalReply)) }
+        }
+        return entries
+    }
+    /// A running turn: consecutive tool calls fold into one live work log.
+    static func steps(_ items: [ChatItem]) -> [ChatFeedEntry] {
         var entries: [ChatFeedEntry] = []
         var tools: [ChatItem] = []
         func flush() {
@@ -431,6 +460,57 @@ struct WorkLogGroup: View {
             let end = tools.compactMap(\.finished).max() ?? tools.last?.created ?? .now
             Text(ToolActivity.summary(tools) + (failed > 0 ? ", \(failed) failed" : ""))
                 + Text("  ·  " + ChatTime.duration(end.timeIntervalSince(tools[0].created))).monospacedDigit()
+        }
+    }
+}
+
+/// A finished turn's steps behind one row: "Worked for 34s · searched mail, read 3 emails".
+struct TurnWorkFold: View {
+    let items: [ChatItem]
+    let duration: TimeInterval
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let tools = items.filter { $0.kind == .tool }
+        let summary = ToolActivity.summary(tools)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    (Text("Worked for " + ChatTime.duration(duration)).fontWeight(.medium).monospacedDigit()
+                        + Text(summary.isEmpty ? "" : "  ·  " + summary.prefix(1).lowercased() + summary.dropFirst()))
+                        .font(.subheadline).lineLimit(1)
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.secondary).frame(minHeight: 42).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .sensoryFeedback(.selection, trigger: expanded)
+            .accessibilityHint(expanded ? "Double tap to hide the steps." : "Double tap to show \(tools.count) steps.")
+            .accessibilityIdentifier("chatTurnWork")
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(items) { item in
+                        switch item.kind {
+                        case .tool: ToolRow(tool: item)
+                        case .assistant:
+                            // Claude's notes between steps, quieter than the reply.
+                            Text(item.text).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled).padding(.vertical, 4)
+                        case .permission:
+                            WorkStatusRow(symbol: item.permissionState.hasPrefix("Allowed") ? "checkmark.shield" : "hand.raised",
+                                          label: item.text, trailing: item.permissionState)
+                        default: Text(item.text).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) { Rectangle().fill(Color(uiColor: .separator)).frame(width: 1) }
+                .transition(.opacity)
+            }
         }
     }
 }

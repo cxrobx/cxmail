@@ -43,6 +43,9 @@ final class CXMailUITests: XCTestCase {
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.60, dy: 0.65)).press(forDuration: 1)
         let notify = app.buttons["Notify Me"].firstMatch
         XCTAssertTrue(notify.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["messagePreview"].waitForExistence(timeout: 5),
+                      "Long-press previews the message, as in iOS Mail")
+        XCTAssertTrue(app.webViews.staticTexts["Hi Chris,"].waitForExistence(timeout: 10), "The preview renders the email body")
         capture("Context menu with Notify Me")
         notify.tap()
         XCTAssertTrue(app.alerts.staticTexts["You’ll be notified of replies"].waitForExistence(timeout: 5))
@@ -551,10 +554,11 @@ final class CXMailUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Reply to Jordan"].exists)
         XCTAssertTrue(app.staticTexts["Tuesday works well."].exists)
         XCTAssertFalse(app.staticTexts["## Next steps"].exists)
-        let work = app.buttons["chatWorkGroup"]
-        XCTAssertTrue(work.exists, "Tool calls fold into one work-log row")
-        XCTAssertTrue(work.label.contains("Searched mail, read 2 emails"), work.label)
-        XCTAssertEqual(app.buttons.matching(identifier: "chatWorkGroup").count, 1)
+        let work = app.buttons["chatTurnWork"]
+        XCTAssertTrue(work.exists, "A finished turn folds its steps into one row")
+        XCTAssertTrue(work.label.contains("Worked for") && work.label.contains("searched mail, read 2 emails"), work.label)
+        XCTAssertEqual(app.buttons.matching(identifier: "chatTurnWork").count, 1)
+        XCTAssertFalse(app.staticTexts["Read an email"].exists, "Steps stay folded until asked")
         work.tap()
         XCTAssertTrue(app.staticTexts["Read an email"].waitForExistence(timeout: 3), "Expanding shows each call")
         capture("Chat work log expanded")

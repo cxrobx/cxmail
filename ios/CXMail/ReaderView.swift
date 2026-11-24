@@ -271,6 +271,80 @@ struct MailActions: View {
     }
 }
 
+/// The long-press preview, as in iOS Mail: the message itself above the actions.
+/// It loads the way the reader does (cached first, remote images off) and never
+/// marks the message read.
+struct MessagePreview: View {
+    let store: MailStore
+    let message: MailMessage
+    @State private var detail: MailMessage?
+    @State private var html: String?
+    @State private var height: CGFloat = 400
+    /// Unobserved, so filling it never redraws anything. Bounded by trimming.
+    @MainActor private static var loaded: [String: (MailMessage, String?)] = [:]
+
+    var body: some View {
+        let shown = detail ?? message
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(String(shown.sender.prefix(1)).uppercased())
+                        .font(.headline).foregroundStyle(.white)
+                        .frame(width: 40, height: 40).background(Color.accentColor.opacity(0.8), in: Circle())
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(shown.sender).font(.headline).lineLimit(1)
+                            Spacer(minLength: 8)
+                            if let date = shown.timestamp {
+                                Text(ChatTime.label(date)).font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        }
+                        let to = shown.to?.map(\.display).joined(separator: ", ")
+                            ?? shown.recipients?.joined(separator: ", ") ?? ""
+                        if !to.isEmpty { Text("To: " + to).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                }
+                Text(shown.subject).font(.title3.weight(.semibold)).lineLimit(3)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.mailSurface)
+            Divider()
+            Group {
+                if let html {
+                    EmailHTMLView(html: html, height: $height).frame(height: max(height, 400), alignment: .top)
+                } else if let text = shown.plainText, !text.isEmpty {
+                    Text(text).font(.body).padding(16)
+                } else {
+                    Text(shown.snippet.isEmpty ? "Loading…" : shown.snippet).font(.body).foregroundStyle(.secondary).padding(16)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(width: 360, height: 520, alignment: .top)
+        .background(Color("MailCanvas"))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("messagePreview")
+        .task {
+            // Read-only: never write the shared cache from here. A cache write
+            // redraws the inbox, which rebuilds every row's preview and loads
+            // again, so the app never settles (seen in the wide split layout).
+            if message.draft == true { return }
+            if let (cached, body) = Self.loaded[message.id] { detail = cached; html = body; return }
+            html = store.snapshot.html[message.id]
+            if let cached = store.snapshot.messages[message.id] { detail = cached }
+            guard html == nil else { return }
+            do {
+                let fetched: MailMessage = try await store.api.get("/api/message", query: message.ref.query)
+                detail = fetched
+                if fetched.hasHtml == true { html = try await store.api.imageDocument(query: message.ref.query).html }
+                if Self.loaded.count > 40 { Self.loaded.removeAll() }
+                Self.loaded[message.id] = (fetched, html)
+            } catch { }
+        }
+    }
+}
+
 struct MoveView: View {
     let store: MailStore
     let message: MailMessage

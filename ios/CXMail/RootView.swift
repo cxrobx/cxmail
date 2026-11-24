@@ -282,7 +282,7 @@ struct MailboxView: View {
                         .listRowBackground(store.selected == message.ref && split ? Color.accentColor.opacity(0.14) : Color.clear)
                         .listRowInsets(.init(top: 0, leading: 16, bottom: 0, trailing: 16))
                         .accessibilityIdentifier("message-\(message.uid)")
-                        .contextMenu { MailActions(store: store, message: message) }
+                        .contextMenu { MailActions(store: store, message: message) } preview: { MessagePreview(store: store, message: message) }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if tab != .drafts {
                                 Button("Archive", systemImage: "archivebox") { Task { await store.action("archive", message) } }.tint(.accentColor)
