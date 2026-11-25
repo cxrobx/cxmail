@@ -16,6 +16,12 @@ type TlsCompat = Compat<tokio_native_tls::TlsStream<TcpStream>>;
 type ImapStream = futures::io::BufReader<TlsCompat>;
 pub type ImapSession = async_imap::Session<ImapStream>;
 
+/// Any stream a session can run on. The command helpers take
+/// `Session<S: ImapIo>` rather than `ImapSession` so tests can drive them
+/// against a scripted server over an in-memory pipe.
+pub trait ImapIo: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin + std::fmt::Debug + Send {}
+impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin + std::fmt::Debug + Send> ImapIo for T {}
+
 // ---------------------------------------------------------------------------
 // Session ledger — diagnostic instrumentation, added 2026-08-11.
 //
@@ -851,30 +857,104 @@ pub async fn fetch_headers(
     Ok(headers)
 }
 
+/// Run one command and read every response up to its own tagged completion,
+/// handing each untagged response to `each`.
+///
+/// The library's typed helpers are not safe on a session that stays open
+/// (`body_fetch`): its FETCH stream drops the tagged status, so a NO and a
+/// hang-up both read as "no such message", and its SELECT returns an empty
+/// mailbox on a hang-up and stops reading at an untagged `* NO`, leaving the
+/// rest on the wire. Here the outcome is the tagged status only: OK, NO or BAD
+/// as such; the connection ending first is `ConnectionLost`; and a `* BYE` is
+/// `ConnectionLost` whatever follows, since that session is finished.
+pub async fn run_to_completion<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
+    command: &str,
+    mut each: impl FnMut(&async_imap::imap_proto::Response<'_>),
+) -> Result<(), async_imap::error::Error> {
+    use async_imap::error::Error;
+    use async_imap::imap_proto::{Response, Status};
+    let id = session.run_command(command).await?;
+    let mut bye = false;
+    loop {
+        let Some(resp) = session.read_response().await else {
+            return Err(Error::ConnectionLost);
+        };
+        let resp = resp?;
+        match resp.parsed() {
+            Response::Done { tag, status, information, .. } if *tag == id => {
+                let info = information.as_deref().unwrap_or_default().to_string();
+                return match status {
+                    _ if bye => Err(Error::ConnectionLost),
+                    Status::Ok => Ok(()),
+                    Status::No => Err(Error::No(info)),
+                    Status::Bad => Err(Error::Bad(info)),
+                    // PREAUTH/BYE never complete a command: treat as a dead stream.
+                    _ => Err(Error::ConnectionLost),
+                };
+            }
+            Response::Data { status: Status::Bye, .. } => bye = true,
+            other => each(other),
+        }
+    }
+}
+
+/// A mailbox name as an IMAP quoted string. Refuses line breaks, which would
+/// end the command early.
+pub fn quote_mailbox(name: &str) -> Result<String, async_imap::error::Error> {
+    if name.contains(['\r', '\n']) {
+        return Err(async_imap::error::Error::Bad(format!("mailbox name {name:?} contains a line break")));
+    }
+    Ok(format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")))
+}
+
+/// SELECT `folder`, read through its tagged completion. For held sessions,
+/// which need neither UIDVALIDITY nor UIDNEXT (some servers omit UIDNEXT).
+pub async fn select_checked<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
+    folder: &str,
+) -> Result<(), async_imap::error::Error> {
+    let command = format!("SELECT {}", quote_mailbox(folder)?);
+    run_to_completion(session, &command, |_| {}).await
+}
+
+/// `UID FETCH uid BODY.PEEK[]`, read through its tagged completion.
+/// `Ok(None)` means the server answered OK and sent no body: the message is
+/// gone. A refusal or a hang-up is an error, never "not found". Takes the
+/// FETCH whose UID matches, skipping any unsolicited `* n FETCH (FLAGS ...)`
+/// the server pushes about other messages on a SELECTed mailbox.
+pub async fn fetch_body_checked<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
+    uid: u32,
+) -> Result<Option<Vec<u8>>, async_imap::error::Error> {
+    use async_imap::imap_proto::{AttributeValue, Response};
+    let mut body = None;
+    run_to_completion(session, &format!("UID FETCH {uid} BODY.PEEK[]"), |resp| {
+        let Response::Fetch(_, attrs) = resp else { return };
+        if body.is_some() || !attrs.iter().any(|a| matches!(a, AttributeValue::Uid(u) if *u == uid)) {
+            return;
+        }
+        body = attrs.iter().find_map(|a| match a {
+            AttributeValue::BodySection { data: Some(d), .. } => Some(d.to_vec()),
+            _ => None,
+        });
+    })
+    .await?;
+    Ok(body)
+}
+
 /// Fetch the full RFC822 body of a message by UID.
-pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<Vec<u8>, AppError> {
-    let range = format!("{}", uid);
-    let mut fetch_stream = session
-        .uid_fetch(&range, "BODY.PEEK[]")
+pub async fn fetch_body<S: ImapIo>(session: &mut async_imap::Session<S>, uid: u32) -> Result<Vec<u8>, AppError> {
+    let body = fetch_body_checked(session, uid)
         .await
-        .map_err(|e| AppError::Imap(format!("FETCH body failed: {}", e)))?;
-
-    let fetch = fetch_stream
-        .next()
-        .await
-        .ok_or_else(|| AppError::NotFound(format!("Message UID {} not found", uid)))?
-        .map_err(|e| AppError::Imap(format!("FETCH body item error: {}", e)))?;
-
-    let body = fetch
-        .body()
-        .ok_or_else(|| AppError::Imap("No body in FETCH response".to_string()))?;
-
+        .map_err(|e| AppError::Imap(format!("FETCH body failed: {}", e)))?
+        .ok_or_else(|| AppError::NotFound(format!("Message UID {} not found", uid)))?;
     log::info!(
         "imap::fetch_body: uid={} returned {} bytes",
         uid,
         body.len()
     );
-    Ok(body.to_vec())
+    Ok(body)
 }
 
 /// Fetch ONLY the verbatim RFC 5322 header block of one message.
@@ -1045,8 +1125,8 @@ pub async fn uid_search_range(
 /// its own responses before the next command is sent, so the buffer is clean in
 /// practice — but pipelining two commands on one session would break that
 /// silently.
-pub async fn store_flags(
-    session: &mut ImapSession,
+pub async fn store_flags<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
     uid: u32,
     add: bool,
     flags: &str,
@@ -1065,44 +1145,62 @@ pub async fn store_flags(
     Ok(())
 }
 
-/// Move a message to another folder using UID MOVE (or COPY+DELETE fallback).
-pub async fn move_message(
-    session: &mut ImapSession,
+/// Move a message to another folder with UID MOVE (RFC 6851).
+///
+/// Only a BAD falls back to copy-and-remove: BAD is how a server without MOVE
+/// answers an unknown command, and only then are the two the same operation. A
+/// NO is a refusal (no such folder, read-only, already there) and a transport
+/// error leaves the outcome unknown; either one falling through to a COPY could
+/// duplicate the message, or on Gmail, where a COPY into the folder a message is
+/// already in does nothing, mark it `\Deleted` and expunge it.
+pub async fn move_message<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
     uid: u32,
     destination: &str,
 ) -> Result<(), AppError> {
-    // Try MOVE first (RFC 6851), fall back to COPY+DELETE
-    let range = format!("{}", uid);
-    match session.uid_mv(&range, destination).await {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // Fallback: COPY + mark deleted + expunge
-            session
-                .uid_copy(&range, destination)
-                .await
-                .map_err(|e| AppError::Imap(format!("COPY failed: {}", e)))?;
-            // Through `store_flags`, not a second inline `uid_store` + drain:
-            // this had the identical swallowed-refusal bug (see its doc comment),
-            // and here the consequence is worse than a wrong flag — EXPUNGE
-            // follows, so a refused `\Deleted` used to mean the copy landed, the
-            // original was never marked, and the message was silently duplicated
-            // rather than moved. Failing here leaves the copy behind, which is
-            // visible and recoverable; the old behaviour was neither.
-            store_flags(session, uid, true, "\\Deleted").await?;
-            expunge(session).await?;
-            Ok(())
+    match session.uid_mv(uid.to_string(), destination).await {
+        Ok(()) => Ok(()),
+        Err(async_imap::error::Error::Bad(resp)) => {
+            log::warn!("UID MOVE answered BAD ({}); copying and removing instead", resp.trim());
+            copy_and_remove(session, uid, destination).await
         }
+        Err(e) => Err(AppError::Imap(format!("UID MOVE {} to {} failed: {}", uid, destination, e))),
     }
 }
 
-pub async fn expunge(session: &mut ImapSession) -> Result<(), AppError> {
-    let stream = session
-        .expunge()
+/// The pre-RFC 6851 move: COPY, mark the original `\Deleted`, expunge it.
+/// Never retry this after the COPY went out: the copy may have landed.
+pub async fn copy_and_remove<S: ImapIo>(
+    session: &mut async_imap::Session<S>,
+    uid: u32,
+    destination: &str,
+) -> Result<(), AppError> {
+    // Quoted here: unlike `uid_mv`, the library's `uid_copy` sends the name
+    // as given, so "Deleted Messages" would reach the server as two words.
+    let quoted = quote_mailbox(destination).map_err(|e| AppError::Imap(format!("COPY failed: {}", e)))?;
+    session
+        .uid_copy(uid.to_string(), quoted)
         .await
-        .map_err(|e| AppError::Imap(format!("EXPUNGE failed: {}", e)))?;
-    futures::pin_mut!(stream);
-    while stream.as_mut().next().await.is_some() {}
-    Ok(())
+        .map_err(|e| AppError::Imap(format!("COPY failed: {}", e)))?;
+    // Through `store_flags`, not a second inline `uid_store` + drain: that had
+    // the swallowed-refusal bug (see its doc comment), and here a refused
+    // `\Deleted` used to mean the copy landed, the original was never marked,
+    // and the message was silently duplicated rather than moved. Failing here
+    // leaves the copy behind, which is visible and recoverable.
+    store_flags(session, uid, true, "\\Deleted").await?;
+    // This one UID only: a mailbox-wide EXPUNGE would also purge whatever
+    // another client has marked `\Deleted` in the folder.
+    uid_expunge(session, uid).await
+}
+
+/// Mailbox-wide EXPUNGE. Through `run_command_and_check_ok`: draining the
+/// library's expunge stream swallows a tagged NO/BAD (gotcha #38), which made a
+/// refused expunge read as success.
+pub async fn expunge<S: ImapIo>(session: &mut async_imap::Session<S>) -> Result<(), AppError> {
+    session
+        .run_command_and_check_ok("EXPUNGE")
+        .await
+        .map_err(|e| AppError::Imap(format!("EXPUNGE failed: {}", e)))
 }
 
 /// Expunge exactly one UID (`UID EXPUNGE`, RFC 4315 UIDPLUS).
@@ -1114,7 +1212,7 @@ pub async fn expunge(session: &mut ImapSession) -> Result<(), AppError> {
 /// #38), and the BAD is the one signal this needs — it is how a server without
 /// UIDPLUS answers an unknown command, and the only case where falling back to
 /// the mailbox-wide form is correct. A NO is a refusal and propagates.
-pub async fn uid_expunge(session: &mut ImapSession, uid: u32) -> Result<(), AppError> {
+pub async fn uid_expunge<S: ImapIo>(session: &mut async_imap::Session<S>, uid: u32) -> Result<(), AppError> {
     let command = format!("UID EXPUNGE {}", uid);
     match session.run_command_and_check_ok(&command).await {
         Ok(()) => Ok(()),

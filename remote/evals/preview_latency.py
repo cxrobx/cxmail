@@ -12,9 +12,14 @@ Scenarios, each on messages whose body the desktop has NOT cached yet:
   reopen   tap again:  the same two calls
   burst    10 long-presses on 10 different uncached messages, back to back
 
-It never mutates mail: GETs only. (Since the body-persist change, a GET that
-fetches a body stores it in the desktop cache -- the same write opening the
-message on the desktop makes.)
+By default it never mutates mail: GETs only. (Since the body-persist change, a
+GET that fetches a body stores it in the desktop cache -- the same write
+opening the message on the desktop makes.)
+
+`--actions` instead runs the one mutating scenario, opt-in: it toggles
+read/unread on ONE inbox message the way the phone does (POST /api/action),
+first after the MCP's held session has idled out (cold), then as a quick
+burst (warm), and always restores the message's original read state.
 
     CXMAIL_REMOTE_URL=https://<host>.ts.net:<port> \
       python3 remote/evals/preview_latency.py --label after --skip 0 --out result.json
@@ -73,6 +78,62 @@ def mcp_logins():
             return sum(1 for line in f if "IMAP greeting" in line)
     except OSError:
         return 0
+
+
+def post(base, path, payload):
+    req = urllib.request.Request(base + path, json.dumps(payload).encode(),
+                                 {"Content-Type": "application/json", "X-CXMail-Remote": "1"})
+    t = time.monotonic()
+    with urllib.request.urlopen(req, timeout=240) as r:
+        r.read()
+        status = r.status
+    return time.monotonic() - t, status
+
+
+def action_target(base):
+    """Newest inbox message (not a draft): its ref and current read state."""
+    _, _, body = get(base, "/api/messages", {"view": "primary"})
+    for m in json.loads(body):
+        if not m.get("draft") and m["folder"].upper() == "INBOX":
+            return {"account": m["account"], "folder": m["folder"], "uid": m["uid"]}, bool(m["read"])
+    raise SystemExit("no inbox message to toggle")
+
+
+def run_actions(base, label, out, burst, idle):
+    ref, was_read = action_target(base)
+    flips = ["unread", "read"] if was_read else ["read", "unread"]
+    watch = ImapConnWatcher(); watch.start()
+    report = {"label": label, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "uid": ref["uid"], "was_read": was_read}
+    state = was_read
+    try:
+        print("waiting {}s so any held session idles out...".format(idle), flush=True)
+        time.sleep(idle)
+        def one(i):
+            nonlocal state
+            act = flips[i % 2]
+            t, s = post(base, "/api/action", dict(ref, action=act))
+            if s != 200: raise SystemExit("action {} returned {}".format(act, s))
+            state = act == "read"
+            return {"action": t}
+        report["cold"] = scenario(watch, one, 0)
+        calls = []
+        def many():
+            for i in range(1, burst + 1):
+                calls.append(one(i)["action"])
+            return {"sum": sum(calls)}
+        b = scenario(watch, many)
+        report["warm_burst"] = {"calls": burst, "total_s": b["total"], "median_s": round(statistics.median(calls), 3),
+                                "max_s": round(max(calls), 3), "imap_logins": b["imap_logins"],
+                                "by_process": b["by_process"], "mcp_log_logins": b["mcp_log_logins"]}
+    finally:
+        if state != was_read:
+            post(base, "/api/action", dict(ref, action="read" if was_read else "unread"))
+            state = was_read
+        watch.stop = True
+    report["restored"] = state == was_read
+    with open(out, "w") as f:
+        json.dump(report, f, indent=2)
+    print(json.dumps(report, indent=2))
 
 
 def get(base, path, query):
@@ -143,8 +204,12 @@ def main():
     ap.add_argument("--burst", type=int, default=10)
     ap.add_argument("--skip", type=int, default=0)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--actions", action="store_true", help="run the read/unread toggle scenario (mutates, restores)")
+    ap.add_argument("--idle", type=int, default=60, help="seconds to wait before the cold action")
     a = ap.parse_args()
     base = os.environ["CXMAIL_REMOTE_URL"].rstrip("/")
+    if a.actions:
+        return run_actions(base, a.label, a.out, a.burst, a.idle)
 
     refs = uncached(base, a.messages + a.burst, a.skip)
     if len(refs) < a.messages + a.burst:

@@ -7,6 +7,7 @@ use crate::email::{
     gcal::{Conferencing, EventPatch, GcalClient, NewEvent, SendUpdates},
     imap, loose_text, parser, smtp, zoom_sync,
 };
+use crate::email::body_fetch::MailAction;
 use futures::StreamExt;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -5381,15 +5382,20 @@ impl CxMailMcp {
     ) -> Result<CallToolResult, McpError> {
         let conn = self.open_db()?;
         let account = self.get_account(&conn, &params.account_id)?;
+        // An error, not a no-op success: the phone treats a successful move
+        // as "gone" and would hide a message that never left.
+        if params.from_folder == params.to_folder {
+            return Err(McpError::invalid_params(
+                format!("UID {} is already in {}; nothing to move", params.uid, params.to_folder),
+                None,
+            ));
+        }
 
-        let mut session = imap::connect_for_account(&account)
-            .await
-            .map_err(|e| McpError::internal_error(format!("IMAP connect failed: {}", e), None))?;
-        let _ = imap::select_folder(&mut session, &params.from_folder).await;
-        imap::move_message(&mut session, params.uid, &params.to_folder)
+        // On the account's held session (gotcha #69): no login per action.
+        crate::email::body_fetch::shared()
+            .act(&account, &params.from_folder, params.uid, MailAction::Move { to: &params.to_folder })
             .await
             .map_err(|e| McpError::internal_error(format!("Move failed: {}", e), None))?;
-        let _ = imap::disconnect(session, &account.email).await;
 
         // The row leaves `from_folder`; notify so any list showing it refreshes.
         notify(
@@ -5417,15 +5423,20 @@ impl CxMailMcp {
         let archive =
             db::folders::folder_for_account(&conn, &account.id, &account.provider, "archive");
         let archive = archive.as_str();
+        // A message opened from search can already be in the archive (Gmail's
+        // All Mail). Moving it onto itself is at best a refusal, and a success
+        // here would make the phone hide a message that never left.
+        if params.folder == archive {
+            return Err(McpError::invalid_params(
+                format!("UID {} is already in {}; nothing to archive", params.uid, archive),
+                None,
+            ));
+        }
 
-        let mut session = imap::connect_for_account(&account)
+        crate::email::body_fetch::shared()
+            .act(&account, &params.folder, params.uid, MailAction::Move { to: archive })
             .await
             .map_err(|e| McpError::internal_error(format!("{}", e), None))?;
-        let _ = imap::select_folder(&mut session, &params.folder).await;
-        imap::move_message(&mut session, params.uid, archive)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{}", e), None))?;
-        let _ = imap::disconnect(session, &account.email).await;
 
         notify(
             &Envelope::new("email-mutated", &params.account_id, &params.folder, params.uid)
@@ -5463,14 +5474,10 @@ impl CxMailMcp {
             }
         };
 
-        let mut session = imap::connect_for_account(&account)
+        crate::email::body_fetch::shared()
+            .act(&account, &params.folder, params.uid, MailAction::Flag { add, flag })
             .await
             .map_err(|e| McpError::internal_error(format!("{}", e), None))?;
-        let _ = imap::select_folder(&mut session, &params.folder).await;
-        imap::store_flags(&mut session, params.uid, add, flag)
-            .await
-            .map_err(|e| McpError::internal_error(format!("{}", e), None))?;
-        let _ = imap::disconnect(session, &account.email).await;
 
         // The row persists (only its flag/read state changed), so the list
         // refresh + row flash both apply.
@@ -6098,12 +6105,13 @@ impl CxMailMcp {
 
         let permanent = params.permanent.unwrap_or(false);
 
-        let mut session = imap::connect_for_account(&account)
-            .await
-            .map_err(|e| McpError::internal_error(format!("IMAP connect failed: {}", e), None))?;
-        let _ = imap::select_folder(&mut session, &params.folder).await;
-
         if permanent {
+            // Its own session, logged out after: the mailbox-wide EXPUNGE is
+            // rare and destructive, and stays off the shared held session.
+            let mut session = imap::connect_for_account(&account)
+                .await
+                .map_err(|e| McpError::internal_error(format!("IMAP connect failed: {}", e), None))?;
+            let _ = imap::select_folder(&mut session, &params.folder).await;
             // Mark \Deleted and expunge
             imap::store_flags(&mut session, params.uid, true, "\\Deleted")
                 .await
@@ -6113,20 +6121,24 @@ impl CxMailMcp {
             imap::expunge(&mut session)
                 .await
                 .map_err(|e| McpError::internal_error(format!("Expunge failed: {}", e), None))?;
+            let _ = imap::disconnect(session, &account.email).await;
         } else {
-            // Move to trash
-            let trash = {
-                let conn = self.open_db()?;
-                db::folders::folder_for_account(&conn, &account.id, &account.provider, "trash")
-            };
-            let trash = trash.as_str();
-            imap::move_message(&mut session, params.uid, trash)
+            let trash = db::folders::folder_for_account(&conn, &account.id, &account.provider, "trash");
+            // Trash onto itself used to fall through to COPY + \Deleted +
+            // EXPUNGE: a permanent delete nobody asked for.
+            if params.folder == trash {
+                return Err(McpError::invalid_params(
+                    format!("UID {} is already in {}. Pass permanent=true to delete it for good.", params.uid, trash),
+                    None,
+                ));
+            }
+            crate::email::body_fetch::shared()
+                .act(&account, &params.folder, params.uid, MailAction::Move { to: &trash })
                 .await
                 .map_err(|e| {
                     McpError::internal_error(format!("Move to trash failed: {}", e), None)
                 })?;
         }
-        let _ = imap::disconnect(session, &account.email).await;
 
         // Remove from local DB cache
         conn.execute(
@@ -11421,5 +11433,95 @@ mod attachment_read_regression {
             .unwrap()
             .unwrap();
         std::fs::remove_file(fifo).unwrap();
+    }
+}
+
+/// The phone's actions run on the account's held session (gotcha #69). These
+/// use an account whose provider `connect_for_account` rejects before any
+/// network or Keychain access, so "tried to log in" is visible as that error
+/// and "never touched IMAP" as its absence.
+#[cfg(test)]
+mod held_session_actions {
+    use super::*;
+
+    fn mcp(name: &str) -> (CxMailMcp, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("cxmail-mcp-actions-{name}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        crate::db::schema::initialize(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts (id, email, provider, imap_host, smtp_host)
+               VALUES ('acct', 'me@example.net', 'offline', 'imap.example.net', 'smtp.example.net');
+             INSERT INTO folders (account_id, name, folder_type) VALUES
+               ('acct', 'INBOX', 'inbox'), ('acct', 'Archive', 'archive'), ('acct', 'Trash', 'trash');",
+        )
+        .unwrap();
+        (CxMailMcp::new(path.to_string_lossy().to_string()), path)
+    }
+
+    /// Refused before any IMAP, and as an error: the phone hides a message on
+    /// a successful archive or move, and this one never left.
+    #[tokio::test]
+    async fn actions_onto_the_folder_a_message_is_already_in_are_refused_without_imap() {
+        let (mcp, path) = mcp("noop");
+        let archived = mcp
+            .archive_email(Parameters(ReadEmailParams { account_id: "acct".into(), folder: "Archive".into(), uid: 7 }))
+            .await
+            .expect_err("archiving from the archive must not report success");
+        assert!(archived.message.contains("already in Archive"), "{}", archived.message);
+        let moved = mcp
+            .move_email(Parameters(MoveEmailParams {
+                account_id: "acct".into(),
+                from_folder: "INBOX".into(),
+                to_folder: "INBOX".into(),
+                uid: 7,
+            }))
+            .await
+            .expect_err("a same-folder move must not report success");
+        assert!(moved.message.contains("already in INBOX"), "{}", moved.message);
+        for e in [&archived, &moved] {
+            assert!(!e.message.contains("Unsupported provider"), "it tried to log in: {}", e.message);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn trashing_from_the_trash_is_refused_not_turned_into_a_permanent_delete() {
+        let (mcp, path) = mcp("trash");
+        let err = mcp
+            .delete_email(Parameters(DeleteEmailParams {
+                account_id: "acct".into(),
+                folder: "Trash".into(),
+                uid: 7,
+                permanent: None,
+                confirmed: Some(true),
+            }))
+            .await
+            .expect_err("Trash onto Trash must not reach IMAP");
+        assert!(err.message.contains("permanent=true"), "{}", err.message);
+        assert!(!err.message.contains("Unsupported provider"), "it tried to log in: {}", err.message);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn real_actions_go_through_the_shared_runner() {
+        let (mcp, path) = mcp("runner");
+        let flag = mcp
+            .flag_email(Parameters(FlagEmailParams {
+                account_id: "acct".into(),
+                folder: "INBOX".into(),
+                uid: 7,
+                flag: "read".into(),
+            }))
+            .await
+            .expect_err("the offline provider cannot log in");
+        assert!(flag.message.contains("Unsupported provider"), "{}", flag.message);
+        let archive = mcp
+            .archive_email(Parameters(ReadEmailParams { account_id: "acct".into(), folder: "INBOX".into(), uid: 7 }))
+            .await
+            .expect_err("the offline provider cannot log in");
+        assert!(archive.message.contains("Unsupported provider"), "{}", archive.message);
+        assert_eq!(crate::email::body_fetch::shared().held_count(), 0, "a failed login holds nothing");
+        let _ = std::fs::remove_file(&path);
     }
 }

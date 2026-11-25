@@ -199,7 +199,11 @@ async fn main() -> anyhow::Result<()> {
         .inspect_err(|e| tracing::error!("MCP init error: {:?}", e))?;
 
     tracing::info!("MCP server running");
-    service.waiting().await?;
+    let waited = service.waiting().await;
+    // Held IMAP sessions live in a `static`, which is never dropped: log them
+    // out now or they close without LOGOUT (gotcha #69).
+    cxmail_lib::email::body_fetch::shared().close_all().await;
+    waited?;
     Ok(())
 }
 
@@ -314,9 +318,11 @@ async fn serve_http(db_path: String, port: u16) -> anyhow::Result<()> {
         shutdown.cancel();
     });
 
-    axum::serve(listener, router)
+    let served = axum::serve(listener, router)
         .with_graceful_shutdown(async move { ct.cancelled_owned().await })
-        .await?;
+        .await;
+    cxmail_lib::email::body_fetch::shared().close_all().await;
+    served?;
     Ok(())
 }
 
