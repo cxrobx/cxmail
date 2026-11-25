@@ -314,6 +314,9 @@ pub(crate) async fn mini_sync(
 
     let existing_uids = prepared.existing_uids;
     let mut total_new = 0usize;
+    // Every UID this sync added, read or not: their bodies are prefetched
+    // below on this same session, so the phone never logs in to open them.
+    let mut arrived: Vec<u32> = Vec::new();
     let mut final_last_uid = plan.initial_last_uid;
     // Single-batch = real-time IDLE arrival. Multi-batch = catch-up after a
     // long disconnect; suppress per-message popups to avoid notification storms.
@@ -373,6 +376,7 @@ pub(crate) async fn mini_sync(
             }
         }
 
+        arrived.extend(batch_headers.iter().map(|h| h.uid).filter(|uid| !existing_uids.contains(uid)));
         final_last_uid = end_uid;
     }
 
@@ -387,6 +391,29 @@ pub(crate) async fn mini_sync(
             plan.uidnext,
         ) {
             log::warn!("IDLE mini_sync: finalize failed for {}: {}", email, e);
+            return;
+        }
+    }
+
+    // Store the new mail's bodies now, on the session already open: without
+    // this, IDLE takes the new headers first and the periodic sync's body
+    // prefetch never sees them, so every phone open of recent mail logged in.
+    if folder.eq_ignore_ascii_case("INBOX") && !arrived.is_empty() {
+        arrived.sort_unstable_by(|a, b| b.cmp(a));
+        let healthy = crate::email::body_fetch::prefetch_on_session(
+            &state.db,
+            session,
+            account_id,
+            folder,
+            &arrived,
+            crate::email::body_fetch::IDLE_PREFETCH_LIMIT,
+            crate::email::body_fetch::IDLE_PREFETCH_BUDGET,
+        )
+        .await;
+        if !healthy {
+            // A FETCH was cut off mid-response; this session can't be trusted
+            // for reconciliation. The IDLE loop reconnects on its next error.
+            log::warn!("IDLE mini_sync: body prefetch timed out for {}; skipping reconciliation", email);
             return;
         }
     }

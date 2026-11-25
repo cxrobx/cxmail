@@ -1,7 +1,7 @@
 //! Human-reader image permissions. An address allowlist is never proof of origin.
 //! Google authentication is accepted only from the configured Google mailbox's
 //! receiver trace. No BIMI/brand claim, model call, or new agent capability.
-use super::{imap, parser, risk};
+use super::risk;
 use crate::{db, error::AppError};
 use regex::Regex;
 use rusqlite::Connection;
@@ -383,6 +383,20 @@ fn evaluate(
     ))
 }
 
+/// The stored copy, when it is complete enough to judge from. It is evidence
+/// only when its attachment list was stored too: a body-only row (as older
+/// MCP paths wrote) reads as attachment-free, which would skip the Medium/High
+/// attachment signals and could allow images on a risky message.
+fn stored_evidence<'a>(
+    raw: Option<&'a str>,
+    body: Option<&'a db::messages::MessageBodyRow>,
+) -> Option<(&'a str, &'a db::messages::MessageBodyRow)> {
+    match (raw, body) {
+        (Some(raw), Some(body)) if body.attachment_metadata_checked => Some((raw, body)),
+        _ => None,
+    }
+}
+
 /// Shared by Tauri and the signed remote helper. Missing evidence is fetched
 /// with BODY.PEEK, never by enabling images. Network work holds no DB lock.
 pub async fn load(
@@ -392,7 +406,7 @@ pub async fn load(
     uid: u32,
 ) -> Result<ImagePolicy, AppError> {
     let (account, raw, body, attachments) = {
-        let conn = Connection::open(db_path)?;
+        let conn = super::body_store::open_for_write(db_path)?;
         let account = db::accounts::get_by_id(&conn, account_id)?
             .ok_or_else(|| AppError::NotFound("Account not found".into()))?;
         let raw = db::messages::get_raw_headers(&conn, account_id, folder, uid)?;
@@ -404,8 +418,8 @@ pub async fn load(
             .collect::<Vec<_>>();
         (account, raw, body, attachments)
     };
-    if let (Some(raw), Some(body)) = (&raw, &body) {
-        let conn = Connection::open(db_path)?;
+    if let Some((raw, body)) = stored_evidence(raw.as_deref(), body.as_ref()) {
+        let conn = super::body_store::open_for_write(db_path)?;
         return evaluate(
             &conn,
             &account,
@@ -417,20 +431,19 @@ pub async fn load(
             &attachments,
         );
     }
-    let mut session = imap::connect_for_account(&account).await?;
-    let fetched = async {
-        imap::select_folder(&mut session, folder).await?;
-        imap::fetch_body(&mut session, uid).await
-    }
-    .await;
-    let _ = imap::disconnect(session, &account.email).await;
-    let bytes = fetched?;
-    let parsed = std::panic::catch_unwind(|| parser::parse_message(&bytes))
-        .map_err(|_| AppError::Parse("Message could not be checked".into()))?;
-    let conn = Connection::open(db_path)?;
-    if let Some(raw) = &parsed.raw_headers {
-        db::messages::store_raw_headers(&conn, account_id, folder, uid, raw)?;
-    }
+    // One login, logged out on every path, and stored in full so the next
+    // check (and the phone's body read) never fetches this message again.
+    let bytes = super::body_fetch::fetch_once(&account, folder, uid).await?;
+    let parsed = super::body_fetch::parse_and_store(
+        db_path.to_path_buf(),
+        account_id.to_string(),
+        folder.to_string(),
+        uid,
+        bytes,
+    )
+    .await
+    .map_err(|_| AppError::Parse("Message could not be checked".into()))?;
+    let conn = super::body_store::open_for_write(db_path)?;
     let attachments = parsed
         .attachments
         .iter()
@@ -658,5 +671,61 @@ mod integration_tests {
         c.execute("INSERT INTO message_risk (account_id,message_key,rules_version,signals_json,p_phishing) VALUES ('a','one@example.org',1,'[]',0.9)", []).unwrap();
         let p = evaluate_fixture(&c, &a, "Hello");
         assert!(p.suspicious && !p.auto_load);
+    }
+}
+
+#[cfg(test)]
+mod stored_evidence_tests {
+    use super::*;
+    use crate::email::{body_store, parser};
+
+    fn row(checked: bool) -> db::messages::MessageBodyRow {
+        db::messages::MessageBodyRow {
+            plain_text: Some("Hello".into()),
+            sanitized_html: None,
+            attachment_metadata_checked: checked,
+            cid_resolved: true,
+        }
+    }
+
+    #[test]
+    fn a_stored_body_is_evidence_only_with_its_attachment_list_and_headers() {
+        assert!(stored_evidence(Some("From: x"), Some(&row(true))).is_some());
+        assert!(stored_evidence(Some("From: x"), Some(&row(false))).is_none(), "body-only row must be refetched");
+        assert!(stored_evidence(None, Some(&row(true))).is_none());
+        assert!(stored_evidence(Some("From: x"), None).is_none());
+    }
+
+    #[test]
+    fn a_risky_attachment_blocks_images_once_the_fetched_body_is_stored() {
+        let c = body_store::tests::db();
+        db::trusted_senders::add(&c, "news@example.org").unwrap();
+        let account = db::accounts::get_by_id(&c, "a").unwrap().unwrap();
+        // A body-only row: the shape the old fast path judged as attachment-free.
+        c.execute_batch(
+            "INSERT INTO message_bodies (account_id,folder_name,uid,plain_text,sanitized_html)
+             VALUES ('a','INBOX',1,'Hello','<p>Hello</p><img src=\"\" data-original-src=\"https://example.org/image.png\">');",
+        )
+        .unwrap();
+        let parsed = parser::parse_message(body_store::tests::RISKY.as_bytes());
+        let raw = parsed.raw_headers.clone().unwrap();
+        let body = db::messages::get_body(&c, "a", "INBOX", 1).unwrap().unwrap();
+        let none: Vec<(String, String)> = Vec::new();
+        let old_fast_path = evaluate(&c, &account, "INBOX", 1, Some(&raw), body.sanitized_html.as_deref(), body.plain_text.as_deref(), &none).unwrap();
+        assert!(old_fast_path.auto_load, "precondition: judged without attachments, images would load");
+        assert!(stored_evidence(Some(&raw), Some(&body)).is_none(), "so the body-only row is not used");
+
+        body_store::store_fetched_body(&c, "a", "INBOX", 1, &parsed).unwrap();
+        let body = db::messages::get_body(&c, "a", "INBOX", 1).unwrap().unwrap();
+        let stored_raw = db::messages::get_raw_headers(&c, "a", "INBOX", 1).unwrap().unwrap();
+        let (raw, body) = stored_evidence(Some(&stored_raw), Some(&body)).expect("complete after the store");
+        let attachments: Vec<(String, String)> = db::messages::get_attachments(&c, "a", "INBOX", 1)
+            .unwrap()
+            .into_iter()
+            .filter(|a| !a.is_inline)
+            .map(|a| (a.filename.unwrap_or_default(), a.content_type))
+            .collect();
+        let p = evaluate(&c, &account, "INBOX", 1, Some(raw), body.sanitized_html.as_deref(), body.plain_text.as_deref(), &attachments).unwrap();
+        assert!(p.suspicious && !p.auto_load, "the stored .exe must block automatic images");
     }
 }

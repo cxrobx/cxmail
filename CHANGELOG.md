@@ -10,6 +10,8 @@ All notable changes to CXMail are documented here.
 - **Paper-toned light mode on iPhone.** The inbox, reader, chat and composer use a warm paper canvas (#F4F1EC) with lighter cards (#FAF8F4) instead of a near-white.
 
 ### Fixed
+- **Slow message opens and previews on iPhone.** Opening or long-pressing mail the desktop hadn't shown yet logged in to IMAP up to five times, and every reopen logged in again. New inbox mail now has its body stored as it arrives, every fetched body is stored with its attachment list, and the mini keeps one short-lived connection per account for the rest. The preview also skips the sender image check, since it never loads images.
+- **Images could load on a message with a risky attachment.** A body stored without its attachment list was judged as attachment-free, which skipped the executable/double-extension check behind automatic images. The image check now uses a stored copy only when its attachments were stored too.
 - **Duo mail tap targets.** Blank row space is tappable, and a pending mark-read request no longer disables opening or scrolling a message.
 - **Wide emails cropped on the closed Duo.** Fixed-width HTML now fits the native reader, recalculates after rotation or pane resizing, and preserves the full footer. Responsive emails retain their normal size; email scripts remain disabled and image permissions are unchanged.
 

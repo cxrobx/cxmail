@@ -1,5 +1,5 @@
 use crate::db;
-use crate::email::{categorize, detect_events, imap, parser, sync};
+use crate::email::{categorize, imap, parser, sync};
 use crate::error::AppError;
 use crate::AppState;
 use crate::LockExt;
@@ -388,124 +388,7 @@ async fn repair_cached_body(
     ))
 }
 
-/// Write the full set of parsed metadata (body, snippet, address lists,
-/// attachments, calendar events) for a single message inside an open
-/// transaction. Mirrors the cache-miss branch of `fetch_message_body` so that
-/// prefetch paths populate the same tables the on-demand read expects.
-fn persist_parsed_metadata(
-    tx: &rusqlite::Connection,
-    account_id: &str,
-    folder: &str,
-    uid: u32,
-    parsed: &parser::ParsedMessage,
-) {
-    if let Err(e) = db::messages::insert_body(
-        tx,
-        account_id,
-        folder,
-        uid,
-        parsed.plain_text.as_deref(),
-        parsed.html_body.as_deref(),
-        parsed.sanitized_html.as_deref(),
-        true,
-    ) {
-        log::warn!("Failed to store prefetched body for UID {uid}: {e}");
-    }
-
-    // Free ride: this path always ran on a full raw RFC822 message, so the
-    // header block is already in hand and costs no extra IMAP. Everything that
-    // reaches here — sync body prefetch, the on-demand cache miss, mbox import
-    // — populates `message_headers` from now on. Best-effort: a failure here
-    // must never lose the body write (gotcha: headers are an audit nicety, the
-    // body is the product).
-    if let Some(ref headers) = parsed.raw_headers {
-        if let Err(e) = db::messages::store_raw_headers(tx, account_id, folder, uid, headers) {
-            log::warn!("Failed to store raw headers for UID {uid}: {e}");
-        }
-    }
-
-    if let Some(ref snippet) = parsed.snippet {
-        if !snippet.is_empty() {
-            let _ = db::messages::update_snippet(tx, account_id, folder, uid, snippet);
-        }
-    }
-
-    if let Ok(to_json) = serde_json::to_string(&parsed.to_list) {
-        let cc_json = serde_json::to_string(&parsed.cc_list).unwrap_or_default();
-        let bcc_json = serde_json::to_string(&parsed.bcc_list).unwrap_or_default();
-        if let Err(e) = db::messages::store_address_lists(tx, account_id, folder, uid, &to_json, &cc_json, &bcc_json) {
-            log::error!("Failed to store address lists for message {uid}: {e}");
-        }
-    }
-
-    if let Err(e) = db::messages::insert_attachments(tx, account_id, folder, uid, &parsed.attachments) {
-        log::error!("Failed to insert attachments for message {uid}: {e}");
-    }
-
-    if let Ok(id) = db::intelligence::message_id(tx, account_id, folder, uid) {
-        if let Err(e) =
-            db::knowledge::index_source(tx, id, "Email", parsed.plain_text.as_deref().unwrap_or(""))
-        {
-            log::warn!("Body indexing failed: {e}");
-        }
-        for (source, text) in &parsed.attachment_text {
-            if let Err(e) = db::knowledge::index_source(tx, id, source, text) {
-                log::warn!("Attachment indexing failed: {e}");
-            }
-        }
-    }
-
-    for event in &parsed.calendar_events {
-        if let Err(e) = db::calendar::insert(
-            tx,
-            account_id,
-            folder,
-            uid,
-            event.event_uid.as_deref(),
-            event.summary.as_deref(),
-            event.description.as_deref(),
-            event.location.as_deref(),
-            &event.dtstart,
-            event.dtend.as_deref(),
-            event.organizer_name.as_deref(),
-            event.organizer_email.as_deref(),
-            event.status.as_deref(),
-            event.method.as_deref(),
-            Some(&event.raw_ics),
-        ) {
-            log::error!("Failed to insert calendar event for message {uid}: {e}");
-        }
-    }
-
-    if parsed.calendar_events.is_empty() {
-        if let Ok(msg_row) = db::messages::get_by_uid(tx, account_id, folder, uid) {
-            let detected = detect_events::detect_events(
-                parsed.subject.as_deref(),
-                parsed.plain_text.as_deref(),
-                &parsed.from_email,
-                msg_row.as_ref().map(|m| m.date.as_str()).unwrap_or(""),
-            );
-            for event in &detected {
-                if event.confidence >= 0.6 {
-                    if let Err(e) = db::calendar::insert_detected(
-                        tx,
-                        account_id,
-                        folder,
-                        uid,
-                        &event.summary,
-                        &event.dtstart,
-                        event.dtend.as_deref(),
-                        event.location.as_deref(),
-                        event.description.as_deref(),
-                        event.confidence,
-                    ) {
-                        log::error!("Failed to insert detected event for message {uid}: {e}");
-                    }
-                }
-            }
-        }
-    }
-}
+use crate::email::body_store::persist_parsed_metadata;
 
 /// Canonical body-write path: persist parsed metadata to SQLite in one
 /// transaction. The v40 FTS triggers index the body inside the same

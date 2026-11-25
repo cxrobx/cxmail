@@ -1388,6 +1388,26 @@ Pattern: `crates/cxmail-email/src/email/draft_revisions.rs`, `src-tauri/src/draf
 
 ---
 
+### 69. A stored body is not a cache hit until its attachment list is stored too, and a phone open must never log in twice
+
+**Symptom (2026-11-25):** opening or long-pressing mail on the phone took 2–7 s, and reopening a message already read still took ~2 s. A live eval counted ~1.8 IMAP logins per open and 20 logins for ten quick previews. Separately, any body row written without its attachment list (MCP quoted-history write-back) was judged by the image policy as attachment-free, so an `.exe` or double-extension attachment could no longer block automatic images.
+
+**Why:** three paths fetched a body and only one stored it whole. MCP `preview_email_html` and `read_email` fetched over a fresh connection and stored nothing; `image_policy::load` fetched again, every call, and stored only the raw headers; IDLE's `mini_sync` took new headers first, so the periodic sync's body prefetch never saw them. And `image_policy::load`'s fast path accepted any body row, whether or not `attachment_metadata_checked` was set.
+
+**Guard:**
+- **One write path.** `email::body_store::persist_parsed_metadata` (moved from the app) is what every full-message fetch writes through; `store_fetched_body` adds the "row already exists" case (keep the body and summary, gotcha #14; add headers and, when unchecked, attachments) in one transaction. `is_fully_cached` means body **and** `attachment_metadata_checked`.
+- **The image policy judges a stored copy only when it is complete** (`image_policy::stored_evidence`); otherwise it refetches with `body_fetch::fetch_once`, which logs out on every path, and stores the result.
+- **One held session per account in the MCP process** (`email::body_fetch::shared()`), reused while requests come and logged out 45 s after the last; the per-account lock is held through the store, so a racing preview and open share one fetch. Every SELECT/FETCH has a 20 s timeout and a session that timed out is closed, never reused.
+- **IDLE stores new INBOX bodies** on the session it already holds (`body_fetch::prefetch_on_session`, 10 messages, 12 s budget), in the app (`idle.rs`) and the helper (`bin/helper.rs`); a timed-out fetch skips reconciliation on that session.
+- **The phone's long-press preview sends `policy=0`**: it never loads images, so the server skips the image-policy helper and answers `images_trusted: false`.
+- No server-side cache of policy results: a remembered positive policy is never permission (ios/AGENTS.md).
+
+Pinned by `body_store::tests`, `image_policy::stored_evidence_tests` (including the risky-attachment case that the old fast path allowed), `body_fetch::tests`, and `remote/test_server.py::test_preview_skips_the_policy_helper_and_never_grants_images`; each was checked against a deliberately broken build. **Live eval:** `remote/evals/preview_latency.py` (read-only; counts new TCP connections to :993 with `lsof`, gotcha #46). Before → after on six uncached inbox messages: preview median 2.6 s / 1.8 logins → 0.17 s / 0.17 (one login, then reuse); open 2.6 s → 0.08 s and reopen 2.1 s → 0.07 s, both 0 logins; ten previews 35 s / 20 logins → 2.5 s / 2 MCP logins.
+
+Pattern: `crates/cxmail-email/src/email/{body_store,body_fetch,image_policy}.rs`.
+
+---
+
 ## Lifecycle Management
 
 - **SUPERSEDED**: When a gotcha is resolved, mark it: `## #N: [Title] ~~SUPERSEDED~~`

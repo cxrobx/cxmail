@@ -706,6 +706,30 @@ class Api(unittest.TestCase):
         c.commit()
         c.close()
 
+    def test_preview_skips_the_policy_helper_and_never_grants_images(self):
+        # policy=0 (the long-press preview) must not spawn the image-policy
+        # helper, and must read as "no images" even for a fully trusted sender.
+        old = server.run_send_bin
+        calls = []
+        def helper(command, *ref):
+            calls.append(command)
+            return {"authentication": {"status": "passed", "domain": "example.org", "provider": "Google", "explanation": "Domain authenticated"},
+                    "sender_email": "ann@example.org", "sender_trusted": True, "auto_load": True,
+                    "suspicious": False, "has_remote_images": True, "blocked_reason": None}
+        server.run_send_bin = helper
+        try:
+            msg = self.j("/api/message?account=a1&folder=INBOX&uid=10&policy=0")
+            self.assertEqual(calls, [])
+            self.assertFalse(msg["images_trusted"])
+            self.assertNotIn("image_policy", msg)
+            # Without the flag the reader still gets the full check.
+            full = self.j("/api/message?account=a1&folder=INBOX&uid=10")
+            self.assertEqual(calls, ["image-policy"])
+            self.assertTrue(full["images_trusted"])
+            self.assertTrue(full["image_policy"]["auto_load"])
+        finally:
+            server.run_send_bin = old
+
     def test_automatic_images_recheck_policy_and_restore_only_https_placeholders(self):
         old = server.run_send_bin
         allowed = {"value": True}

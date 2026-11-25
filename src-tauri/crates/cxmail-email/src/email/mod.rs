@@ -2,6 +2,8 @@ pub mod ai;
 pub mod attachment_file;
 pub mod attachment_safety;
 pub mod autoconfig;
+pub mod body_fetch;
+pub mod body_store;
 pub mod calendar;
 pub mod categorize;
 pub mod chat_agent;

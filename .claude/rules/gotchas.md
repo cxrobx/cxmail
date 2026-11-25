@@ -49,6 +49,7 @@ entry there, then add its one line here.
 - **#58** MCP draft prose comes from the calling agent; `instruction` → `agy` is a separate authorship path with a test-pinned containment argv. Sign `cxmail-mcp` with its default identifier.
 - **#68** A draft's current revision is the server's to say: writers `draft_revisions::scan` + `resolve` before the APPEND and `retire` older revisions after; cross-Mac live updates go through `draft_watch` (held session, NOOP every 3 s, never IDLE on Gmail Drafts, which arrives ~30 s late, and never a login per check).
 - **#67** Send never writes a `Bcc:` header (mail-send writes the builder verbatim): Bcc goes in the envelope only via `smtp::envelope_rcpts`; drafts keep theirs.
+- **#69** Every full-message fetch stores through `body_store`; a body row is a cache hit only with `attachment_metadata_checked` (the image policy judges nothing less); phone body misses go through `body_fetch::shared()` (one held session per account), never a fresh login per call.
 - **#64** In-app chat security is `--tools` + `--permission-mode manual` + `--strict-mcp-config`; `--allowedTools` is additive; CXTasks writes always ask.
 
 ## Database

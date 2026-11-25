@@ -2983,6 +2983,12 @@ impl CxMailMcp {
     fn open_db(&self) -> Result<rusqlite::Connection, McpError> {
         let conn = rusqlite::Connection::open(&self.db_path)
             .map_err(|e| McpError::internal_error(format!("DB open failed: {}", e), None))?;
+        // The app, its helper and this process all write the same file. With
+        // SQLite's 0 ms default a write during a sync fails at once with
+        // SQLITE_BUSY; wait up to 5 s like the app does.
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+            log::warn!("MCP open_db: busy_timeout failed: {e}");
+        }
         // PRAGMA foreign_keys is per-connection in SQLite. Schema declares
         // ON DELETE CASCADE for message_bodies / attachments / calendar_events,
         // but the cascade won't fire without this. edit_draft relies on it.
@@ -3463,10 +3469,27 @@ impl CxMailMcp {
         )
         .unwrap_or((None, None, None));
 
-        // Try cached body first
-        if let Ok(Some(body)) =
-            db::messages::get_body(&conn, &params.account_id, &params.folder, params.uid)
-        {
+        // A miss is fetched through the shared held session and stored, so
+        // the cached branch below serves every later read of this message.
+        let mut fetched: Option<parser::ParsedMessage> = None;
+        if !matches!(
+            db::messages::get_body(&conn, &params.account_id, &params.folder, params.uid),
+            Ok(Some(_))
+        ) {
+            if let crate::email::body_fetch::Fetched::Parsed(parsed) = crate::email::body_fetch::shared()
+                .fetch(Path::new(&self.db_path), &account, &params.folder, params.uid)
+                .await
+                .map_err(|e| McpError::internal_error(format!("Fetch failed: {}", e), None))?
+            {
+                fetched = Some(*parsed);
+            }
+        }
+
+        // Cached body (including one another request just stored)
+        if let (None, Ok(Some(body))) = (
+            &fetched,
+            db::messages::get_body(&conn, &params.account_id, &params.folder, params.uid),
+        ) {
             // Query basic headers from DB for the cached path
             let msg =
                 db::messages::get_by_uid(&conn, &params.account_id, &params.folder, params.uid)
@@ -3516,17 +3539,9 @@ impl CxMailMcp {
             ]));
         }
 
-        // Fetch from IMAP
-        let mut session = imap::connect_for_account(&account)
-            .await
-            .map_err(|e| McpError::internal_error(format!("IMAP connect failed: {}", e), None))?;
-        let _ = imap::select_folder(&mut session, &params.folder).await;
-        let raw_body = imap::fetch_body(&mut session, params.uid)
-            .await
-            .map_err(|e| McpError::internal_error(format!("Fetch failed: {}", e), None))?;
-        let _ = imap::disconnect(session, &account.email).await;
-
-        let parsed = parser::parse_message(&raw_body);
+        let parsed = fetched.ok_or_else(|| {
+            McpError::internal_error("The message body could not be loaded. Try again.".to_string(), None)
+        })?;
         // Before any field is moved out of `parsed` below.
         let risk = risk_note(&self.db_path, &params.account_id, &params.folder, params.uid, Some(&parsed)).await;
         let text = parsed
@@ -3748,22 +3763,24 @@ impl CxMailMcp {
         let conn = self.open_db()?;
         let account = self.get_account(&conn, &params.account_id)?;
 
-        let html = if let Ok(Some(body)) =
-            db::messages::get_body(&conn, &params.account_id, &params.folder, params.uid)
-        {
+        let stored = |conn: &rusqlite::Connection| {
+            db::messages::get_body(conn, &params.account_id, &params.folder, params.uid).ok().flatten()
+        };
+        let html = if let Some(body) = stored(&conn) {
             body.sanitized_html.unwrap_or_default()
         } else {
-            let mut session = imap::connect_for_account(&account)
+            // Shared held session, stored on arrival (`email::body_fetch`):
+            // the phone's next open of this message reads SQLite.
+            match crate::email::body_fetch::shared()
+                .fetch(Path::new(&self.db_path), &account, &params.folder, params.uid)
                 .await
-                .map_err(|e| {
-                    McpError::internal_error(format!("IMAP connect failed: {}", e), None)
-                })?;
-            let _ = imap::select_folder(&mut session, &params.folder).await;
-            let raw_body = imap::fetch_body(&mut session, params.uid)
-                .await
-                .map_err(|e| McpError::internal_error(format!("Fetch failed: {}", e), None))?;
-            let _ = imap::disconnect(session, &account.email).await;
-            parser::parse_message(&raw_body).sanitized_html.unwrap_or_default()
+                .map_err(|e| McpError::internal_error(format!("Fetch failed: {}", e), None))?
+            {
+                crate::email::body_fetch::Fetched::Parsed(parsed) => parsed.sanitized_html.unwrap_or_default(),
+                crate::email::body_fetch::Fetched::AlreadyCached => stored(&self.open_db()?)
+                    .and_then(|b| b.sanitized_html)
+                    .unwrap_or_default(),
+            }
         };
 
         if html.trim().is_empty() {

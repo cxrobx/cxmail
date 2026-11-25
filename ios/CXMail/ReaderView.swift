@@ -335,7 +335,9 @@ struct MessagePreview: View {
             if let cached = store.snapshot.messages[message.id] { detail = cached }
             guard html == nil else { return }
             do {
-                let fetched: MailMessage = try await store.api.get("/api/message", query: message.ref.query)
+                // policy=0: the preview never loads images, so the mini skips
+                // the sender check (a helper process) for it.
+                let fetched: MailMessage = try await store.api.get("/api/message", query: message.ref.query + [.init(name: "policy", value: "0")])
                 detail = fetched
                 if fetched.hasHtml == true { html = try await store.api.imageDocument(query: message.ref.query).html }
                 if Self.loaded.count > 40 { Self.loaded.removeAll() }

@@ -1457,8 +1457,14 @@ class Handler(BaseHTTPRequestHandler):
                 msg = dict(msg, **{k: applied[0][k] for k in ("read", "starred")})
                 msg["thread"] = PENDING.apply(msg["thread"])
                 msg = load_message_body(msg)
-                msg["image_policy"] = message_image_policy(ref)
-                msg["images_trusted"] = msg["image_policy"]["auto_load"]
+                if q.get("policy") == "0":
+                    # The long-press preview never loads images, so it skips
+                    # the sender check (a helper subprocess). Absent policy
+                    # can only mean "no images", never permission.
+                    msg["images_trusted"] = False
+                else:
+                    msg["image_policy"] = message_image_policy(ref)
+                    msg["images_trusted"] = msg["image_policy"]["auto_load"]
                 return self._send(200, with_notify([msg])[0])
             if url.path == "/api/body":
                 ref = self._ref(q)
