@@ -48,7 +48,7 @@ struct DraftAttachmentTile: View {
                 .font(.title3)
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 36, height: 36)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
@@ -63,7 +63,7 @@ struct DraftAttachmentTile: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .contentShape(Rectangle())
     }
 }

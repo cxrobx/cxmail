@@ -33,7 +33,7 @@ for PROFILE in compact wide; do
     -resultBundlePath "$OUT/$PROFILE-$RUN.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- "${ONLY[@]}" test > "$LOG" 2>&1 || {
       tail -80 "$LOG"; exit 1;
     }
-  rg 'Executed .* tests|TEST SUCCEEDED' "$LOG"
+  grep -E 'Executed .* tests|TEST SUCCEEDED' "$LOG"
 done
 /usr/bin/python3 ../remote/test_server.py
 PREFLIGHT="$HOME/.claude/skills/ios-design/scripts/preflight.sh"

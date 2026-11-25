@@ -26,9 +26,9 @@ fi
 xcodebuild -project CXMail.xcodeproj -scheme CXMail -configuration Release \
   -destination "platform=iOS,id=$UDID" -derivedDataPath "$OUT" \
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration ${AUTH[@]+"${AUTH[@]}"} build > "$OUT/device-build.log" 2>&1 || {
-  rg 'error:|BUILD FAILED' "$OUT/device-build.log"; exit 1;
+  grep -E 'error:|BUILD FAILED' "$OUT/device-build.log"; exit 1;
 }
-rg 'BUILD SUCCEEDED' "$OUT/device-build.log"
+grep -E 'BUILD SUCCEEDED' "$OUT/device-build.log"
 [ "${1:-}" = build ] && exit 0
 APP="$OUT/Build/Products/Release-iphoneos/CXMail.app"
 xcrun devicectl device install app --device "$DEVICE" "$APP" || xcrun devicectl device install app --device "$DEVICE" "$APP"

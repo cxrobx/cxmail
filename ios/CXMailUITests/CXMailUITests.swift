@@ -663,9 +663,19 @@ final class CXMailUITests: XCTestCase {
         capture("Docked chat with keyboard")
         XCTAssertTrue(divider.exists, "Showing the keyboard must keep split chat docked")
         XCTAssertTrue(input.isHittable,"Docked input must remain reachable with the keyboard open")
-        XCTAssertLessThanOrEqual(input.frame.maxY,app.keyboards.firstMatch.frame.minY,"Docked composer must sit above the software keyboard")
+        // A headless simulator (no Simulator.app, as on the Mac mini) acts as if a
+        // hardware keyboard is attached: iPadOS shows only the shortcut bar while
+        // the keyboard element still reports the full keyboard's frame. Hold the
+        // composer above the keyboard only when the full keyboard is on screen.
+        let keyboard = app.keyboards.firstMatch
+        if keyboard.keys["q"].exists || keyboard.keys["Q"].exists {
+            XCTAssertLessThanOrEqual(input.frame.maxY,keyboard.frame.minY,"Docked composer must sit above the software keyboard")
+        }
+        // The tap puts the caret wherever it lands in the wrapped draft, so check
+        // that the typing joined the kept draft rather than where it went.
         let edited = input.value as? String ?? ""
-        XCTAssertTrue(edited.contains("Keep this draft while docking.")); XCTAssertTrue(edited.contains("Still docked."))
+        let kept = edited.replacingOccurrences(of: "Still docked.", with: "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(edited.contains("Still docked.")); XCTAssertEqual(kept, "Keep this draft while docking.", "Docking must keep the draft")
         // The iPad keyboard pans the fixed-size virtual phone. Restore its
         // viewport before testing navigation controls; real Duo windows resize.
         app.keyboards.buttons["Hide keyboard"].tap()
