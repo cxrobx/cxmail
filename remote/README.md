@@ -62,8 +62,12 @@ If Remote uses a separately signed send helper, `remote/install.sh` carries
 its existing `CXMAIL_SEND_BIN` override through a reinstall.
 
 A Rust change to `remote_send.rs` (send, edit, attachment preview) reaches the
-phone only through that helper, not the desktop app: `cargo build --release --bin
-cxmail-mcp`, copy it under the name `cxmail-mcp` and `codesign --force --timestamp`
+phone only through that helper, not the desktop app: build it with the Google OAuth
+client (`secret run -k CXMAIL_GOOGLE_CLIENT_ID -k CXMAIL_GOOGLE_CLIENT_SECRET -- cargo
+build --release --bin cxmail-mcp`) and check `strings <binary> | grep -c
+apps.googleusercontent.com` is not 0. A plain `cargo build` compiles an empty client
+in, and the helper works until a Gmail access token expires on its watch, then every
+review fails with "Could not determine client ID from request". Copy it under the name `cxmail-mcp` and `codesign --force --timestamp`
 it with the Developer ID (the default identifier `cxmail-mcp`; confirm `codesign -d -r-`
 matches the current helper's designated requirement, or the Keychain prompts), keep
 the old file in a dated `rollback-send-*` folder beside it, then `mv` the new one over
