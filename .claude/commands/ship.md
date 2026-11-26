@@ -299,6 +299,17 @@ export PATH="$HOME/.nvm/versions/node/v24.11.1/bin:$PATH"
      && launchctl kickstart -k gui/$(id -u)/com.cx.mcp.cxmail
    ```
 
+4c. **Refresh the phone's send helper, if Remote uses one.** The phone's draft review, edit and
+   send run `CXMAIL_SEND_BIN` from the `com.cx.cxmail-remote` LaunchAgent, not the app you just
+   swapped, so without this step it falls behind (gotcha #70: on 2026-11-25 a Nov 21 helper built
+   without the Google client failed every review once a Gmail token expired). The script prints
+   "Nothing to do" where Remote has no separate helper, and refuses a binary with no Google client
+   or a different signature. Only after the swap: the helper runs migrations, so it must not be
+   newer than the app Chris kept.
+   ```bash
+   remote/install-send-helper.sh src-tauri/target/release/cxmail-mcp
+   ```
+
 5. **Verify**:
    ```bash
    pgrep -f "cxmail.app" >/dev/null && echo "app running" || echo "APP NOT RUNNING"

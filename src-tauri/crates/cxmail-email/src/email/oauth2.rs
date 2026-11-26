@@ -320,9 +320,26 @@ async fn fetch_gmail_email(access_token: &str) -> Result<String, AppError> {
         .ok_or_else(|| AppError::OAuth2("No email in userinfo response".to_string()))
 }
 
+/// A build compiled without the Google client (no `CXMAIL_GOOGLE_CLIENT_ID`/`_SECRET`
+/// at build time) cannot renew Gmail access. Say so, instead of sending
+/// `client_id=""` and passing on Google's "Could not determine client ID from
+/// request", which reads like a broken account (gotcha #70).
+fn google_refresh_client(id: &str, secret: &str) -> Result<(), AppError> {
+    if id.trim().is_empty() || secret.trim().is_empty() {
+        return Err(AppError::OAuth2(
+            "This CXMail build has no Google sign-in client compiled in, so it can't renew \
+             Gmail access. Rebuild it with CXMAIL_GOOGLE_CLIENT_ID and \
+             CXMAIL_GOOGLE_CLIENT_SECRET set."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Refresh an access token using the stored refresh token.
 pub async fn refresh_access_token(email: &str) -> Result<String, AppError> {
     log::info!("Refreshing access token for {}", email);
+    google_refresh_client(secrets::GOOGLE_CLIENT_ID, secrets::GOOGLE_CLIENT_SECRET)?;
     let key_prefix = format!("gmail:{}", email);
     let refresh_token = keychain::get_credential(&format!("{}:refresh", key_prefix))?
         .ok_or_else(|| AppError::OAuth2("No refresh token found".to_string()))?;
@@ -597,6 +614,7 @@ pub fn invalidate_gcal_connection(email: &str) -> Result<(), AppError> {
 
 
 pub async fn refresh_gcal_access_token(email: &str) -> Result<String, AppError> {
+    google_refresh_client(secrets::GOOGLE_CLIENT_ID, secrets::GOOGLE_CLIENT_SECRET)?;
     let prefix = format!("gmail:{email}:calendar");
     let refresh = keychain::get_credential(&format!("{prefix}:refresh"))?
         .ok_or_else(|| AppError::OAuth2("No Calendar refresh token found".to_string()))?;
@@ -1005,6 +1023,40 @@ fn url_decode(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod refresh_client_tests {
+    use super::*;
+
+    #[test]
+    fn a_build_without_the_google_client_says_so() {
+        for (id, secret) in [("", ""), ("", "s"), ("id.apps.googleusercontent.com", ""), ("  ", " ")] {
+            let err = google_refresh_client(id, secret).unwrap_err().to_string();
+            assert!(err.contains("no Google sign-in client compiled in"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_build_with_the_google_client_refreshes() {
+        assert!(google_refresh_client("id.apps.googleusercontent.com", "secret").is_ok());
+    }
+
+    /// Both refreshes check before touching the Keychain or Google. A plain
+    /// `cargo test` build has no client, which is the case being pinned; a build
+    /// with one compiled in skips this (it would read the Keychain).
+    #[tokio::test]
+    async fn both_refreshes_stop_before_the_keychain_without_a_client() {
+        if google_refresh_client(secrets::GOOGLE_CLIENT_ID, secrets::GOOGLE_CLIENT_SECRET).is_ok() {
+            return;
+        }
+        for err in [
+            refresh_access_token("nobody@example.invalid").await.unwrap_err(),
+            refresh_gcal_access_token("nobody@example.invalid").await.unwrap_err(),
+        ] {
+            assert!(err.to_string().contains("no Google sign-in client compiled in"), "{err}");
+        }
+    }
 }
 
 #[cfg(test)]

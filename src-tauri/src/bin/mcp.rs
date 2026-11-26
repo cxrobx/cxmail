@@ -98,6 +98,17 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // What this build can sign in to. remote/install-send-helper.sh refuses a phone
+    // helper without the Google client (gotcha #70). Never prints the client itself.
+    if args.len() == 3 && args[1] == "remote" && args[2] == "build-info" {
+        use cxmail_lib::secrets::require_client_id;
+        println!("{}", serde_json::json!({
+            "google_oauth": require_client_id("gmail").is_ok(),
+            "outlook_oauth": require_client_id("outlook").is_ok(),
+        }));
+        return Ok(());
+    }
+
     // Readiness only: never reads mail, calls a provider, or prints credentials.
     if args.len() == 3 && args[1] == "remote" && args[2] == "notification-status" {
         use cxmail_lib::email::inference::{InferenceClient, ProviderKind};

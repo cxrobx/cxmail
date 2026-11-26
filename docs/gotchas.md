@@ -1418,6 +1418,18 @@ Pattern: `crates/cxmail-email/src/email/{body_store,body_fetch,image_policy}.rs`
 
 ---
 
+### 70. Every Gmail-refreshing binary needs the Google client compiled in, and the phone's send helper is one of them
+
+**Symptom:** The phone's "Review before sending" shows `OAuth2 error: Token refresh failed (400 Bad Request): "invalid_request", "Could not determine client ID from request."` for one account. Earlier reviews of the same draft worked. It reads like a broken account; it isn't one.
+
+**Why:** `secrets::GOOGLE_CLIENT_ID`/`_SECRET` come from `option_env!` at build time, and the public source deliberately has none. A bare `cargo build --release --bin cxmail-mcp` succeeds and sends `client_id=""` on every refresh. It works while some other process keeps the Keychain token fresh, then fails the first time it is the one to renew. Seen twice: 2026-09-23 (the loose MCP, `/ship` step 2 run bare) and 2026-11-25 (the Remote send helper `CXMAIL_SEND_BIN`, built bare on Nov 21 and never touched by `/ship`).
+
+**Guards:**
+- `oauth2::google_refresh_client` runs before both Google refreshes and fails with "no Google sign-in client compiled in" instead of calling Google (`refresh_client_tests`).
+- `cxmail-mcp remote build-info` reports `google_oauth` without printing the client.
+- `remote/install-send-helper.sh` is the only install path for the phone helper: it refuses a binary whose build-info is not `google_oauth: true` or whose signature differs from the current helper's, keeps a rollback copy and swaps with `mv` (`remote/test_install_send_helper.py`).
+- `/ship` step 4c runs that script after every app swap, so the helper never falls behind the app; step 2 keeps its `strings` check for the loose MCP.
+
 ## Lifecycle Management
 
 - **SUPERSEDED**: When a gotcha is resolved, mark it: `## #N: [Title] ~~SUPERSEDED~~`
