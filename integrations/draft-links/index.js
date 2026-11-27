@@ -18,6 +18,6 @@ export default {
     const match = DRAFT.exec(url.pathname);
     if (!match) return reply("Not found", 404, "text/plain");
     const target = `cxmail://draft/${match[1]}`;
-    return reply(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Open in CXMail</title><body><h1>Open in CXMail</h1><p>Review this draft in CXMail on your iPhone.</p><p><a href="${target}">Open in CXMail</a></p><p>CXMail must be installed and connected to your Mac through Tailscale.</p><script>location.replace(${JSON.stringify(target)})</script></body></html>`, 200, "text/html; charset=utf-8");
+    return reply(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Open in CXMail</title><body><h1>Open in CXMail</h1><p>Review this draft in CXMail on your Mac or iPhone.</p><p><a href="${target}">Open in CXMail</a></p><p>If your browser asks for permission, choose <strong>Open Link</strong> or <strong>Open CXMail</strong>. If you missed the prompt, select the link above to try again.</p><p>On your Mac, CXMail opens the draft from the synced mail account. On your iPhone, CXMail needs its Tailscale connection to your Mac.</p><script>location.replace(${JSON.stringify(target)})</script></body></html>`, 200, "text/html; charset=utf-8");
   }
 };

@@ -1,10 +1,14 @@
-# Draft links from agent sessions to CXMail on iPhone
+# Draft links from agent sessions to CXMail
 
 After `compose_draft` or `edit_draft`, include the returned **Open in CXMail** HTTPS
 link in the session reply. The link names a stable draft UUID, not an IMAP UID.
-It survives draft re-saves and opens the current revision in the native review
-screen. Recipients, rendered HTML and the reviewed digest use the existing review
-pipeline. Opening a link never sends or approves a send.
+It survives draft re-saves. On iPhone it opens the native review screen, where
+recipients, rendered HTML and the reviewed digest use the existing review pipeline.
+On Mac the HTTPS fallback hands off to the registered `cxmail:` handler, which
+opens and focuses the linked draft in compose once its UUID has synced to that
+Mac. The browser can require confirmation. Choose **Open Link** or **Open CXMail**
+when prompted, or select **Open in CXMail** on the page to retry the handoff.
+Opening a link never sends or approves a send.
 
 The public metadata Worker in `integrations/draft-links` has no storage bindings,
 mail endpoint, credentials or outbound requests. Its only successful routes are:

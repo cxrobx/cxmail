@@ -19,7 +19,11 @@ test("all UUIDs get the generic fallback; no existence oracle or network access"
     const r = await get(`/draft/${draft}`);
     assert.equal(r.status, 200);
     const body = await r.text();
-    assert.ok(body.includes(`cxmail://draft/${draft}`));
+    const target = `cxmail://draft/${draft}`;
+    assert.ok(body.includes(`href="${target}"`));
+    assert.ok(body.includes(`location.replace(${JSON.stringify(target)})`));
+    assert.ok(body.includes("Mac or iPhone"));
+    assert.ok(body.includes("Open Link"));
     assert.ok(!body.includes("<img") && !body.includes("https://"));
     assert.equal(r.headers.get("Cache-Control"), "no-store");
     assert.equal(r.headers.get("Referrer-Policy"), "no-referrer");
